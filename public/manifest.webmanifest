@@ -1,0 +1,17 @@
+{
+  "name": "AgoraMesh",
+  "short_name": "AgoraMesh",
+  "description": "Local-first voluntary trade and dispute resolution.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#11100d",
+  "theme_color": "#d99a22",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

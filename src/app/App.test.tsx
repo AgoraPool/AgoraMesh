@@ -1,0 +1,1668 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { vi } from 'vitest';
+import { I18nProvider } from '../i18n/I18nProvider';
+import { db, deleteLocalData } from '../lib/storage/db';
+import { App } from './App';
+import type { Agreement, DisputeCase, IdentityRecord, Listing, NostrReviewItem, RelayHealth, SyncedPublicRecord } from '../types/domain';
+
+function renderAppAt(hash: string): void {
+  window.location.hash = hash;
+  render(
+    <I18nProvider>
+      <App />
+    </I18nProvider>
+  );
+}
+
+function listingFixture(overrides: Partial<Listing> = {}): Listing {
+  return {
+    id: 'listing_fixture',
+    authorPublicKey: 'c'.repeat(64),
+    title: 'Public repair help',
+    type: 'offer',
+    category: 'repairs',
+    description: 'Repair help available.',
+    region: 'Brno',
+    status: 'active',
+    price: { amount: '0', currency: 'FREE' },
+    paymentPreferences: ['cash'],
+    barterAccepted: false,
+    tags: ['tools'],
+    expiresAt: '2026-06-30',
+    contactMethod: { id: 'contact_public', kind: 'matrix', value: '@repair:matrix.org' },
+    visibility: 'public',
+    createdAt: '2026-05-31T00:00:00.000Z',
+    updatedAt: '2026-05-31T00:00:00.000Z',
+    ...overrides
+  };
+}
+
+function identityFixture(): IdentityRecord {
+  return {
+    id: 'identity_1',
+    displayName: 'alice',
+    publicKey: 'a'.repeat(64),
+    encryptedPrivateKey: {
+      ciphertext: 'encrypted',
+      iv: 'iv',
+      salt: 'salt',
+      iterations: 210000,
+      algorithm: 'AES-GCM',
+      kdf: 'PBKDF2-SHA-256'
+    },
+    createdAt: '2026-05-31T00:00:00.000Z',
+    updatedAt: '2026-05-31T00:00:00.000Z'
+  };
+}
+
+describe('production readiness UI', () => {
+  beforeEach(async () => {
+    localStorage.clear();
+    await deleteLocalData();
+    URL.createObjectURL = vi.fn((_object: Blob | MediaSource) => 'blob:agoramesh-test');
+    URL.revokeObjectURL = vi.fn((_url: string) => undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'nostr');
+    vi.restoreAllMocks();
+  });
+
+  it('exposes skip navigation, page landmarks, and active navigation state', async () => {
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('link', { name: 'Skip to main content' })).toHaveAttribute('href', '#main-content');
+    expect(screen.getByRole('main', { name: 'Marketplace' })).toHaveAttribute('id', 'main-content');
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Secondary navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Mobile navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Marketplace' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Post' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Marketplace mobile tab' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('button', { name: 'Mediators mobile tab' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse mediators' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Language selector' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Mobile language selector' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Post' }));
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: 'Post' })).toHaveAttribute('aria-current', 'page');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+    const shell = document.querySelector('.app-shell') as HTMLElement;
+    expect(shell).toHaveClass('sidebar-collapsed');
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument();
+  });
+
+  it('labels tablists, supports keyboard tab switching, and connects disclosures to their panels', async () => {
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('tablist', { name: 'Marketplace' })).toBeInTheDocument();
+    const discoverTab = screen.getByRole('tab', { name: 'Discover' });
+    expect(discoverTab).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(discoverTab, { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Discover' }));
+    const filters = screen.getByRole('button', { name: 'Filters' });
+    expect(filters).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(filters);
+    expect(filters).toHaveAttribute('aria-expanded', 'true');
+    const panelId = filters.getAttribute('aria-controls');
+    expect(panelId).toBeTruthy();
+    expect(document.getElementById(panelId as string)).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(await screen.findByRole('tablist', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('shows the minimal landing page without setup status clutter', async () => {
+    renderAppAt('#home');
+
+    expect(await screen.findByRole('heading', { name: 'AgoraMesh' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse Marketplace' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create listing' })).toBeInTheDocument();
+    expect(screen.getByText(/No custody, no KYC/i)).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'AgoraMesh marketplace flow' })).toBeInTheDocument();
+    expect(screen.getByText('Public where useful, private where it matters.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Setup status' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Create your identity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Getting started' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What AgoraMesh is' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Security promises' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What stays local' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'What can be public' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'How Nostr sync works' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Signer and keys' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Payments without custody' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Trade and disputes' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Community trust' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Release verification' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'FAQ' })).toBeInTheDocument();
+  });
+
+  it('renders guided empty states for blank production workflows', async () => {
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Review' }));
+    expect(await screen.findByText('Review queue is empty')).toBeInTheDocument();
+    expect(screen.getByText('Review queue is empty').closest('.empty-state')).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Trust lists' }));
+    expect(screen.getByText('No trusted keys saved')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish receipts' }));
+    expect(screen.getByText('No publish receipts yet')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trade' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Dispute' }));
+    expect(await screen.findByText('No trade agreements yet')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reputation' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Browse' }));
+    expect(await screen.findByText('No attestations in this view')).toBeInTheDocument();
+  });
+
+  it('shows optional browser signer status and connects when an extension is available', async () => {
+    Object.defineProperty(window, 'nostr', {
+      configurable: true,
+      value: {
+        getPublicKey: vi.fn().mockResolvedValue('e'.repeat(64)),
+        signEvent: vi.fn()
+      }
+    });
+
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Account & signer' }));
+    expect(await screen.findByText('Signer available')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect signer' }));
+    expect(await screen.findByText('Signer connected.')).toBeInTheDocument();
+    expect(screen.getByText('e'.repeat(64))).toBeInTheDocument();
+  });
+
+  it('allows signer connection retry when the extension appears after initial detection', async () => {
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Account & signer' }));
+    expect(await screen.findByText('Signer unavailable')).toBeInTheDocument();
+
+    Object.defineProperty(window, 'nostr', {
+      configurable: true,
+      value: {
+        getPublicKey: vi.fn().mockResolvedValue('f'.repeat(64)),
+        signEvent: vi.fn()
+      }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect signer' }));
+
+    expect(await screen.findByText('Signer connected.')).toBeInTheDocument();
+    expect(screen.getByText('f'.repeat(64))).toBeInTheDocument();
+  });
+
+  it('shows reputation workflow tabs and clearer settings sections', async () => {
+    renderAppAt('#reputation');
+
+    expect(await screen.findByRole('tablist', { name: 'Reputation attestations' })).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: 'Create attestation' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Browse' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Trade context' })).toBeInTheDocument();
+    expect(screen.getByText(/Create and review signed trade context/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create signed attestation' })).toBeDisabled();
+    expect(screen.getByText('Create an identity before using this action.')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(await screen.findByRole('tab', { name: 'Account & signer' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Relays & sync' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Review' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Public cache' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Trust lists' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Media servers' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Backup & danger' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Diagnostics' })).toBeInTheDocument();
+  });
+
+  it('routes legacy agreement and dispute hashes into the trade workspace', async () => {
+    renderAppAt('#agreements');
+
+    expect(await screen.findByRole('main', { name: 'Trade' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Agreement' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('uses signed receipt controls instead of local acceptance checkboxes', async () => {
+    await db.listings.put(listingFixture({ id: 'listing_trade_receipts', title: 'Receipt-backed trade' }));
+    await db.agreements.put({
+      id: 'agreement_receipts',
+      buyer: 'alice',
+      seller: 'bob',
+      buyerPublicKey: 'a'.repeat(64),
+      sellerPublicKey: 'c'.repeat(64),
+      buyerLabel: 'alice',
+      sellerLabel: 'bob',
+      listingId: 'listing_trade_receipts',
+      exchangeDescription: 'Receipt-backed trade',
+      priceAndPayment: 'cash',
+      fulfillmentTerms: 'meet in public',
+      deadline: '2026-06-30',
+      refundTerms: 'refund if not fulfilled',
+      mediator: '',
+      evidenceExpectations: 'receipts',
+      buyerAccepted: true,
+      sellerAccepted: true,
+      hashVersion: 2,
+      hash: 'b'.repeat(64),
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    });
+
+    renderAppAt('#trade');
+
+    expect(await screen.findByLabelText('Buyer public key')).toBeInTheDocument();
+    expect(screen.getByLabelText('Seller public key')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Buyer/requester accepts')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Seller/provider accepts')).not.toBeInTheDocument();
+    expect(screen.getByText('Agreement exchange')).toBeInTheDocument();
+    expect(screen.getByText('Prepare terms')).toBeInTheDocument();
+    expect(screen.getByText('Share packet')).toBeInTheDocument();
+    expect(screen.getByText('Sign receipts')).toBeInTheDocument();
+    expect(screen.getByText(/Missing receipts/i)).toBeInTheDocument();
+    expect(screen.getByText('Draft')).toBeInTheDocument();
+    expect(screen.getByText(/Public keys are intended signers only/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign as buyer' })).toHaveAttribute('title', 'Connect a browser signer or create a local identity before signing.');
+    expect(screen.getByRole('button', { name: 'Sign as seller' })).toHaveAttribute('title', 'Connect a browser signer or create a local identity before signing.');
+  });
+
+  it('shows safety copy for publishing, identity backup, and review import', async () => {
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('main', { name: 'Marketplace' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByPlaceholderText('Example: Repair help for bicycles')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Profile' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Backup' }));
+    expect(await screen.findByText(/Losing the key means losing the identity/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    fireEvent.click(await screen.findByRole('tab', { name: 'Relays & sync' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Why this matters' }));
+    expect(screen.getByText(/Live sync and manual fetch contact relays directly/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Why this matters' }));
+    expect(screen.getByText(/Fetched Nostr events land here first/i)).toBeInTheDocument();
+  });
+
+  it('hides advanced browse filters until requested', async () => {
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('tab', { name: 'Discover' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText('Create a public-ready listing')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    expect(screen.getByText(/Showing 0 of 0/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText('Search')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Type' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create listing' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Listing fetch scope')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fetch listings' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Category')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Quick fulfillment filters')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Quick payment filters')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quick fulfillment filters')).toBeInTheDocument();
+    expect(screen.getByLabelText('Quick payment filters')).toBeInTheDocument();
+    expect(screen.getByLabelText('Data source')).toBeInTheDocument();
+    expect(screen.getByLabelText('Visibility')).toBeInTheDocument();
+    expect(screen.getByLabelText('Show expired listings')).toBeInTheDocument();
+  });
+
+  it('hides expired listings by default and can show them on demand', async () => {
+    await db.listings.bulkPut([
+      listingFixture({ id: 'active_listing', title: 'Active listing', expiresAt: '2099-06-30' }),
+      listingFixture({ id: 'expired_listing', title: 'Expired listing', expiresAt: '2020-06-30' })
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Active listing')).toBeInTheDocument();
+    expect(screen.queryByText('Expired listing')).not.toBeInTheDocument();
+    expect(screen.getByText(/Showing 1 of 1/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+    fireEvent.click(screen.getByLabelText('Show expired listings'));
+
+    expect(await screen.findByText('Expired listing')).toBeInTheDocument();
+    expect(screen.getByText(/Showing 2 of 2/i)).toBeInTheDocument();
+  });
+
+  it('loads busy marketplace results incrementally and resets filters', async () => {
+    await db.listings.bulkPut(
+      Array.from({ length: 30 }, (_, index) =>
+        listingFixture({
+          id: `listing_many_${index}`,
+          title: `Bulk listing ${index}`,
+          expiresAt: '2099-06-30',
+          createdAt: `2026-05-${String(index + 1).padStart(2, '0')}T00:00:00.000Z`
+        })
+      )
+    );
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Bulk listing 29')).toBeInTheDocument();
+    expect(screen.queryByText('Bulk listing 0')).not.toBeInTheDocument();
+    expect(screen.getByText(/Showing 24 of 30/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show more records' }));
+    expect(await screen.findByText('Bulk listing 0')).toBeInTheDocument();
+    expect(screen.getByText(/Showing 30 of 30/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Search'), { target: { value: 'Bulk listing 29' } });
+    expect(await screen.findByText(/Showing 1 of 1/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText(/Showing 24 of 30/i)).toBeInTheDocument();
+  });
+
+  it('guides marketplace users toward relay setup, direct fetch, publish, and trade', async () => {
+    await db.listings.put(listingFixture());
+    await db.relays.clear();
+    await db.relays.bulkPut([{ url: 'wss://disabled.example', enabled: false }]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
+    expect(await screen.findByText('Add a relay when you want public reach')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Configure relays' })).toBeInTheDocument();
+  });
+
+  it('guides marketplace users to fetch public records directly', async () => {
+    await db.listings.put(listingFixture());
+    await db.nostrReview.put({
+      id: 'review_pending',
+      eventId: 'event_pending',
+      kind: 30402,
+      relay: 'wss://relay.example',
+      authorPublicKey: 'b'.repeat(64),
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      signatureValid: true,
+      importStatus: 'pending',
+      payloadPreview: 'Pending listing',
+      rawEvent: '{}'
+    });
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
+    expect(await screen.findByText('Fetch public marketplace records')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /Fetch listings/i }).length).toBeGreaterThan(0);
+  });
+
+  it('guides from fetched public data toward publishing and then private trade', async () => {
+    const listing = listingFixture();
+    const syncedListing = listingFixture({ id: 'listing_synced_ready', authorPublicKey: 'd'.repeat(64), title: 'Synced ready listing' });
+    await db.listings.put(listing);
+    await db.syncedListings.put({
+      id: 'synced_ready',
+      eventId: 'event_ready',
+      kind: 30402,
+      authorPublicKey: syncedListing.authorPublicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: syncedListing,
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
+    expect(await screen.findByText('Publish your listing when ready')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish from My listings' }));
+    expect(await screen.findByRole('tab', { name: 'My listings' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('creates local community curation lists from visible marketplace records', async () => {
+    const identity: IdentityRecord = {
+      id: 'identity_1',
+      displayName: 'alice',
+      publicKey: 'a'.repeat(64),
+      encryptedPrivateKey: {
+        ciphertext: 'encrypted',
+        iv: 'iv',
+        salt: 'salt',
+        iterations: 210000,
+        algorithm: 'AES-GCM',
+        kdf: 'PBKDF2-SHA-256'
+      },
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.identity.put(identity);
+    await db.listings.put(listingFixture({ expiresAt: '2099-06-30' }));
+
+    renderAppAt('#browse');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync and discovery' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Community curation lists' }));
+    fireEvent.change(screen.getByLabelText('List title'), { target: { value: 'Repair picks' } });
+    fireEvent.change(screen.getByLabelText('List description'), { target: { value: 'Useful repair listings.' } });
+    fireEvent.click(screen.getByLabelText(/Public repair help · Repairs · Local/i));
+    fireEvent.click(screen.getByRole('button', { name: 'Save curation list' }));
+
+    expect(await screen.findByText('Community curation list saved locally.')).toBeInTheDocument();
+    await waitFor(async () => expect(await db.communityLists.count()).toBe(1));
+  });
+
+  it('shows workflow hints and action-specific next steps after creating an identity', async () => {
+    renderAppAt('#profile');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Status details' }));
+    expect(await screen.findByRole('heading', { name: 'Status details' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Use existing Nostr account' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Generate new identity' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Example: Agora gardener')).toBeInTheDocument();
+    expect(screen.getByText(/AgoraMesh cannot recover it/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getAllByLabelText('Display name')[1], { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: 'correct horse battery staple' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted identity' }));
+
+    expect(await screen.findByText('Encrypted identity saved locally.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Next step' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create listing' })).toBeInTheDocument();
+  });
+
+  it('connects an existing Nostr account without storing private key material', async () => {
+    const publicKey = 'b'.repeat(64);
+    await db.syncedProfiles.put({
+      id: 'synced_profile_existing',
+      eventId: 'event_profile_existing',
+      kind: 39001,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      trusted: true,
+      hidden: false,
+      payload: {
+        id: 'profile_existing',
+        displayName: 'Published Alice',
+        publicKey,
+        avatarUrl: 'https://example.com/alice.png',
+        bio: 'Existing public profile',
+        region: 'Prague',
+        languages: ['en', 'cs'],
+        contactMethods: [{ id: 'contact_existing', kind: 'matrix', value: '@alice:matrix.org' }],
+        skills: ['repairs'],
+        mediatorAvailable: false,
+        publicVisibility: true,
+        createdAt: '2026-05-30T00:00:00.000Z',
+        updatedAt: '2026-05-31T00:00:00.000Z'
+      }
+    });
+    Object.defineProperty(window, 'nostr', {
+      configurable: true,
+      value: {
+        getPublicKey: vi.fn().mockResolvedValue(publicKey),
+        signEvent: vi.fn()
+      }
+    });
+
+    renderAppAt('#profile');
+
+    fireEvent.change((await screen.findAllByLabelText('Display name'))[0], { target: { value: 'Existing Nostr' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use existing Nostr account' }));
+
+    expect(await screen.findByText('Existing Nostr account connected and matching public profile restored locally.')).toBeInTheDocument();
+    await waitFor(async () => {
+      const identity = await db.identity.toCollection().first();
+      expect(identity).toMatchObject({ publicKey, keySource: 'nostr-extension', displayName: 'Published Alice' });
+      expect(JSON.stringify(identity)).not.toContain('encryptedPrivateKey');
+    });
+    await expect(db.profile.toCollection().first()).resolves.toMatchObject({
+      displayName: 'Published Alice',
+      publicKey,
+      bio: 'Existing public profile'
+    });
+    expect(await screen.findByDisplayValue('Published Alice')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Public profile' }));
+    expect(screen.getByDisplayValue('Existing public profile')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unlock for signing' })).not.toBeInTheDocument();
+  });
+
+  it('does not create a mediator profile when mediator availability is unchecked', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#profile');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Public profile' }));
+    fireEvent.change(screen.getByLabelText('Bio'), { target: { value: 'Public repair profile' } });
+    fireEvent.change(screen.getByLabelText('Approximate region'), { target: { value: 'Prague' } });
+    fireEvent.change(screen.getByLabelText('Languages'), { target: { value: 'en, cs' } });
+    fireEvent.change(screen.getByLabelText('Skills/interests'), { target: { value: 'repairs' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Profile saved locally.')).toBeInTheDocument();
+    await expect(db.profile.toCollection().first()).resolves.toMatchObject({ mediatorAvailable: false });
+    await expect(db.mediators.count()).resolves.toBe(0);
+  });
+
+  it('creates and updates one local mediator profile from a mediator-enabled marketplace profile', async () => {
+    const identity = identityFixture();
+    await db.identity.put(identity);
+
+    renderAppAt('#profile');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Public profile' }));
+    fireEvent.change(screen.getByLabelText('Bio'), { target: { value: 'Public mediator profile' } });
+    fireEvent.change(screen.getByLabelText('Approximate region'), { target: { value: 'Brno' } });
+    fireEvent.change(screen.getByLabelText('Languages'), { target: { value: 'en, cs' } });
+    fireEvent.change(screen.getByLabelText('Skills/interests'), { target: { value: 'mediation, repairs' } });
+    fireEvent.change(screen.getAllByLabelText('Contact methods')[1], { target: { value: '@alice:matrix.org' } });
+    fireEvent.click(screen.getByLabelText('Available as mediator'));
+    expect(await screen.findByText('Mediator marketplace profile')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Specialties'), { target: { value: 'marketplace disputes, repairs' } });
+    fireEvent.change(screen.getByLabelText('Fee model'), { target: { value: 'Sliding scale' } });
+    fireEvent.change(screen.getByLabelText('Mediation style'), { target: { value: 'Calm written facilitation.' } });
+    fireEvent.change(screen.getByLabelText('Response time estimate'), { target: { value: 'Within 24 hours' } });
+    fireEvent.change(screen.getByLabelText('Rules of procedure'), { target: { value: 'Both parties share signed receipts and evidence summaries.' } });
+    fireEvent.click(screen.getByLabelText('Public profile visibility'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Profile and mediator marketplace profile saved locally.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review profile publish' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review mediator publish' })).toBeInTheDocument();
+    await waitFor(async () => expect(await db.mediators.count()).toBe(1));
+    await expect(db.mediators.toCollection().first()).resolves.toMatchObject({
+      id: expect.stringMatching(/^mediator_profile_/),
+      displayName: 'alice',
+      publicKey: identity.publicKey,
+      feeModel: 'Sliding scale',
+      specialties: ['marketplace disputes', 'repairs']
+    });
+
+    fireEvent.change(screen.getByLabelText('Fee model'), { target: { value: 'Donation optional' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(async () => expect(await db.mediators.count()).toBe(1));
+    await expect(db.mediators.toCollection().first()).resolves.toMatchObject({
+      id: expect.stringMatching(/^mediator_profile_/),
+      feeModel: 'Donation optional'
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mediators' }));
+    expect(await screen.findByText('alice')).toBeInTheDocument();
+    expect(screen.getByText('Calm written facilitation.')).toBeInTheDocument();
+  });
+
+  it('shows remote profile-only mediator availability as an incomplete signal, not a full mediator', async () => {
+    const publicKey = 'd'.repeat(64);
+    await db.syncedProfiles.put({
+      id: 'synced_profile_mediator_signal',
+      eventId: 'event_profile_mediator_signal',
+      kind: 39001,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      trusted: false,
+      hidden: false,
+      payload: {
+        id: 'profile_mediator_signal',
+        displayName: 'Signal Mediator',
+        publicKey,
+        avatarUrl: '',
+        bio: 'Profile-only mediator signal',
+        region: 'Prague',
+        languages: ['en'],
+        contactMethods: [],
+        skills: ['mediation'],
+        mediatorAvailable: true,
+        publicVisibility: true,
+        createdAt: '2026-05-31T00:00:00.000Z',
+        updatedAt: '2026-05-31T00:00:00.000Z'
+      }
+    });
+
+    renderAppAt('#mediators');
+
+    expect(await screen.findByText('Signal Mediator')).toBeInTheDocument();
+    expect(screen.getByText(/no reviewed mediator profile/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Publish' })).not.toBeInTheDocument();
+  });
+
+  it('shows imported synced mediator records as full mediator cards', async () => {
+    const publicKey = 'e'.repeat(64);
+    await db.syncedMediators.put({
+      id: 'synced_mediator_full',
+      eventId: 'event_mediator_full',
+      kind: 39003,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      trusted: false,
+      hidden: false,
+      payload: {
+        id: 'mediator_full',
+        displayName: 'Full Mediator',
+        publicKey,
+        region: 'Brno',
+        languages: ['en', 'cs'],
+        specialties: ['marketplace disputes'],
+        feeModel: 'Sliding scale',
+        mediationStyle: 'Structured voluntary mediation.',
+        responseTime: 'Within 48 hours',
+        caseCount: 2,
+        contactMethods: [{ id: 'contact_full', kind: 'matrix', value: '@full:matrix.org' }],
+        procedure: 'Both parties share signed trade context before mediation.',
+        createdAt: '2026-05-31T00:00:00.000Z',
+        updatedAt: '2026-05-31T00:00:00.000Z'
+      }
+    });
+
+    renderAppAt('#mediators');
+
+    expect(await screen.findByText('Full Mediator')).toBeInTheDocument();
+    expect(screen.getByText('Structured voluntary mediation.')).toBeInTheDocument();
+    expect(screen.getByText('Both parties share signed trade context before mediation.')).toBeInTheDocument();
+    expect(screen.queryByText(/no reviewed mediator profile/i)).not.toBeInTheDocument();
+  });
+
+  it('shows listing form guidance and disabled action explanations', async () => {
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByPlaceholderText('Example: Repair help for bicycles')).toBeInTheDocument();
+    expect(screen.queryByText(/Save the listing locally first/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Create an identity first/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create identity' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Listing readiness' })).toBeInTheDocument();
+    expect(screen.getByText('Create or connect an identity before saving a listing.')).toBeInTheDocument();
+    expect(screen.getByText('Add title, description, location, and contact before saving.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByLabelText('Price amount')).toHaveValue('0');
+    expect(screen.getByLabelText('Currency')).toHaveValue('FREE');
+    expect(screen.getByLabelText('Status')).toHaveValue('active');
+    expect(screen.getByLabelText('Visibility')).toHaveValue('public');
+    expect(screen.getByLabelText('Expiration date')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create identity' }));
+    expect(await screen.findByRole('main', { name: 'Profile' })).toBeInTheDocument();
+  });
+
+  it('keeps optional listing controls limited to trade context while essentials stay visible', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('Visibility')).toHaveValue('public');
+    expect(screen.getByLabelText('Expiration date')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Payment')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Listing images')).toBeInTheDocument();
+    expect(screen.getByLabelText('Tags')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Optional listing details' }));
+    expect(screen.getByRole('group', { name: 'Trade context' })).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Payment' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fulfillment')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fulfillment notes')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cash')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Payment method')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Payment address or URI')).not.toBeInTheDocument();
+  });
+
+  it('uses the same compact listing card structure in Discover and My listings', async () => {
+    await db.listings.put(listingFixture({ title: 'Stable card item', region: 'South Moravia' }));
+
+    renderAppAt('#browse');
+
+    const discoverCard = (await screen.findByText('Stable card item')).closest('article');
+    expect(discoverCard).toHaveClass('listing-card');
+    expect(discoverCard?.querySelector('.listing-card-thumb')).not.toBeNull();
+    expect(discoverCard?.querySelector('.listing-card-body')).not.toBeNull();
+    expect(discoverCard).toHaveTextContent('Repairs');
+    expect(discoverCard).toHaveTextContent('South Moravia');
+    expect(within(discoverCard as HTMLElement).getByRole('button', { name: 'View item' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'My listings' }));
+
+    const myListingsCard = (await screen.findByText('Stable card item')).closest('article');
+    expect(myListingsCard).toHaveClass('listing-card');
+    expect(myListingsCard?.querySelector('.listing-card-thumb')).not.toBeNull();
+    expect(myListingsCard?.querySelector('.listing-card-body')).not.toBeNull();
+    expect(within(myListingsCard as HTMLElement).getByRole('button', { name: 'View item' })).toBeInTheDocument();
+  });
+
+  it('prioritizes NIP-99 price, status, location, and tags on listing cards', async () => {
+    await db.listings.put(
+      listingFixture({
+        title: 'Priced classified',
+        price: { amount: '500', currency: 'CZK' },
+        region: 'Ostrava',
+        images: [{ id: 'external_image', url: 'https://shop.example/listing.webp' }],
+        tags: ['bike', 'repair'],
+        paymentPreferences: ['cashu'],
+        fulfillmentType: 'shipping'
+      })
+    );
+
+    renderAppAt('#browse');
+
+    const card = (await screen.findByText('Priced classified')).closest('article') as HTMLElement;
+    expect(card.querySelector('.listing-card-primary')).toHaveTextContent('500 CZK');
+    expect(card.querySelector('.listing-card-primary')).toHaveTextContent('Active');
+    expect(card.querySelector('.listing-card-region')).toHaveTextContent('Ostrava');
+    expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('bike');
+    expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('repair');
+    expect(card.querySelector('.listing-card-settlement')).toHaveTextContent('Cashu');
+    expect(card.querySelector('img')).toHaveAttribute('src', 'https://shop.example/listing.webp');
+  });
+
+  it('hides deleted NIP-99 listings from Discover by default', async () => {
+    await db.listings.bulkPut([
+      listingFixture({ id: 'active_status_listing', title: 'Active status listing', status: 'active' }),
+      listingFixture({ id: 'deleted_status_listing', title: 'Deleted status listing', status: 'deleted' })
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Active status listing')).toBeInTheDocument();
+    expect(screen.queryByText('Deleted status listing')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'My listings' }));
+    expect(await screen.findByText('Deleted status listing')).toBeInTheDocument();
+  });
+
+  it('allows the local author to edit a listing without publishing', async () => {
+    const identity = identityFixture();
+    const listing = listingFixture({
+      id: 'listing_edit_author',
+      authorPublicKey: identity.publicKey,
+      title: 'Original classified',
+      price: { amount: '100', currency: 'CZK' },
+      paymentPreferences: ['cashu'],
+      fulfillmentType: 'local-pickup',
+      fulfillmentNotes: 'Meet near the library.'
+    });
+    await db.identity.put(identity);
+    await db.listings.put(listing);
+
+    renderAppAt('#listing/local/listing_edit_author');
+
+    expect(await screen.findByRole('heading', { name: 'Original classified' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit listing' }));
+    expect(await screen.findByRole('heading', { name: 'Edit listing' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Price amount')).toHaveValue('100');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Updated classified' } });
+    fireEvent.change(screen.getByLabelText('Price amount'), { target: { value: '150' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Listing saved locally.')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Review publish update' })).toBeInTheDocument();
+    await waitFor(async () => {
+      const updated = await db.listings.get('listing_edit_author');
+      expect(updated).toMatchObject({
+        id: 'listing_edit_author',
+        title: 'Updated classified',
+        price: { amount: '150', currency: 'CZK' },
+        paymentPreferences: ['cashu'],
+        fulfillmentType: 'local-pickup',
+        fulfillmentNotes: 'Meet near the library.',
+        createdAt: listing.createdAt
+      });
+    });
+    await expect(db.publishReceipts.count()).resolves.toBe(0);
+  });
+
+  it('does not offer editing for non-author local or synced listings', async () => {
+    await db.identity.put(identityFixture());
+    await db.listings.put(listingFixture({ id: 'listing_not_author', authorPublicKey: 'b'.repeat(64), title: 'Other local listing' }));
+    await db.syncedListings.put({
+      id: 'synced_not_author',
+      eventId: 'event_not_author',
+      kind: 30402,
+      authorPublicKey: 'c'.repeat(64),
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listingFixture({ id: 'listing_synced_not_author', authorPublicKey: 'c'.repeat(64), title: 'Other synced listing' }),
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#listing/local/listing_not_author');
+
+    expect(await screen.findByRole('heading', { name: 'Other local listing' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit listing' })).not.toBeInTheDocument();
+
+    cleanup();
+    renderAppAt('#listing/synced/synced_not_author');
+
+    expect(await screen.findByRole('heading', { name: 'Other synced listing' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit listing' })).not.toBeInTheDocument();
+  });
+
+  it('saves public-ready listings without publishing to relays', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Repair help for bicycles' } });
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Weekend repair help near Prague.' } });
+    fireEvent.change(screen.getByLabelText('Location'), { target: { value: 'Prague' } });
+    fireEvent.change(screen.getByLabelText('Contact method'), { target: { value: '@alice:matrix.org' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Listing saved locally.')).toBeInTheDocument();
+    expect(await screen.findByRole('main', { name: 'Listing details' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review publish options' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish options' }));
+    expect(await screen.findByText('No relay receipts for this listing yet.')).toBeInTheDocument();
+    await waitFor(async () => expect(await db.listings.count()).toBe(1));
+    const savedListing = (await db.listings.toArray())[0];
+    expect(savedListing.paymentPreferences).toEqual(['other']);
+    expect(savedListing.fulfillmentType).toBeUndefined();
+    expect(savedListing.fulfillmentNotes).toBeUndefined();
+    await expect(db.publishReceipts.count()).resolves.toBe(0);
+  });
+
+  it('saves local listings without public-ready next-step copy', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Local repair help' } });
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Local-only repair help near Prague.' } });
+    fireEvent.change(screen.getByLabelText('Location'), { target: { value: 'Prague' } });
+    fireEvent.change(screen.getByLabelText('Contact method'), { target: { value: '@alice:matrix.org' } });
+    fireEvent.change(screen.getByLabelText('Visibility'), { target: { value: 'local' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Listing saved locally.')).toBeInTheDocument();
+    expect(screen.queryByText('This listing is public-ready but not published yet. Open My listings when you are ready to publish it to relays.')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review publish options' })).not.toBeInTheDocument();
+    await waitFor(async () => expect((await db.listings.toArray())[0]?.visibility).toBe('local'));
+  });
+
+  it('shows a form alert and does not save prohibited listing text', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#listing');
+
+    expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Stolen phone' } });
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'No questions asked.' } });
+    fireEvent.change(screen.getByLabelText('Location'), { target: { value: 'Prague' } });
+    fireEvent.change(screen.getByLabelText('Contact method'), { target: { value: '@alice:matrix.org' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/prohibited/i);
+    await expect(db.listings.count()).resolves.toBe(0);
+  });
+
+  it('shows non-blocking media guidance when images are selected without a Blossom server', async () => {
+    await db.identity.put(identityFixture());
+
+    renderAppAt('#listing');
+
+    const image = new File(['image'], 'listing.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Listing images'), { target: { files: [image] } });
+
+    expect(await screen.findByText(/Images are selected, but no Blossom media server is enabled/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Repair help with image' } });
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Weekend repair help near Prague.' } });
+    fireEvent.change(screen.getByLabelText('Location'), { target: { value: 'Prague' } });
+    fireEvent.change(screen.getByLabelText('Contact method'), { target: { value: '@alice:matrix.org' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Listing saved locally.')).toBeInTheDocument();
+    await waitFor(async () => expect(await db.listings.count()).toBe(1));
+  });
+
+  it('prompts to link a connected browser signer before uploading listing images', async () => {
+    await db.identity.put(identityFixture());
+    await db.blossomServers.put({ id: 'blossom_test', url: 'https://blossom.primal.net', enabled: true });
+    Object.defineProperty(window, 'nostr', {
+      configurable: true,
+      value: {
+        getPublicKey: vi.fn().mockResolvedValue('b'.repeat(64)),
+        signEvent: vi.fn()
+      }
+    });
+
+    renderAppAt('#listing');
+
+    const image = new File(['image'], 'listing.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Listing images'), { target: { files: [image] } });
+
+    expect(await screen.findByText(/connect the matching Nostr signer/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect signer' }));
+
+    expect(await screen.findByRole('button', { name: 'Use as active identity' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Use as active identity' }));
+
+    await waitFor(async () => {
+      await expect(db.identity.toCollection().first()).resolves.toMatchObject({ publicKey: 'b'.repeat(64), keySource: 'nostr-extension' });
+    });
+  });
+
+  it('supports identity backup verification and locking the decrypted key', async () => {
+    renderAppAt('#profile');
+
+    fireEvent.change((await screen.findAllByLabelText('Display name'))[1], { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: 'correct horse battery staple' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create encrypted identity' }));
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Backup' }));
+    const backupWarning = await screen.findByText(/Identity backup is not confirmed/i);
+    expect(backupWarning.closest('[role="status"]')).not.toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: 'Identity' }));
+    fireEvent.click(screen.getByRole('button', { name: /Unlock for signing/i }));
+
+    const backupConfirmed = await screen.findByText(/Identity backup\/passphrase verified/i);
+    expect(backupConfirmed.closest('[role="status"]')).not.toBeNull();
+    expect(screen.getByRole('button', { name: /Unlocked/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Lock key/i }));
+    expect(screen.getByRole('button', { name: /Unlock for signing/i })).toBeInTheDocument();
+  });
+
+  it('forgets the active identity without deleting marketplace records', async () => {
+    const identity: IdentityRecord = {
+      id: 'identity_forget',
+      displayName: 'alice',
+      publicKey: 'a'.repeat(64),
+      keySource: 'local',
+      encryptedPrivateKey: {
+        ciphertext: 'encrypted',
+        iv: 'iv',
+        salt: 'salt',
+        iterations: 210000,
+        algorithm: 'AES-GCM',
+        kdf: 'PBKDF2-SHA-256'
+      },
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.identity.put(identity);
+    await db.listings.put(listingFixture());
+
+    renderAppAt('#profile');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Forget active identity' }));
+
+    expect(await screen.findByText('Active identity forgotten locally.')).toBeInTheDocument();
+    await expect(db.identity.count()).resolves.toBe(0);
+    await expect(db.listings.count()).resolves.toBe(1);
+  });
+
+  it('shows encrypted dispute bundle controls alongside unencrypted export', async () => {
+    const agreement: Agreement = {
+      id: 'agreement_1',
+      buyer: 'alice',
+      seller: 'bob',
+      exchangeDescription: 'Laptop repair',
+      priceAndPayment: 'cash',
+      fulfillmentTerms: 'public meetup',
+      deadline: '2026-06-30',
+      refundTerms: 'refund if not fulfilled',
+      evidenceExpectations: 'receipts',
+      buyerAccepted: true,
+      sellerAccepted: true,
+      hash: 'b'.repeat(64),
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    const dispute: DisputeCase = {
+      id: 'dispute_1',
+      state: 'opened',
+      agreementHash: agreement.hash,
+      claimant: 'alice',
+      respondent: 'bob',
+      claimSummary: 'Private claim',
+      requestedResolution: 'Refund',
+      timeline: [],
+      evidence: [],
+      publishOutcomeAttestation: false,
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.agreements.put(agreement);
+    await db.disputes.put(dispute);
+
+    renderAppAt('#disputes');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Outcome' }));
+
+    expect(await screen.findByText('Export unencrypted JSON')).toBeInTheDocument();
+    expect(screen.getByText('Export encrypted bundle')).toBeInTheDocument();
+    expect(screen.getByText('Import encrypted bundle')).toBeInTheDocument();
+    expect(screen.getByLabelText('Import encrypted bundle')).toHaveAttribute('type', 'file');
+    expect(screen.getByText('Choose a JSON file from this device.')).toHaveClass('sr-only');
+    expect(screen.getByRole('button', { name: /Export encrypted bundle/i })).toHaveAttribute(
+      'title',
+      'Enter at least 10 characters before exporting an encrypted bundle.'
+    );
+  });
+
+  it('renders review queue items without auto-importing them', async () => {
+    const item: NostrReviewItem = {
+      id: 'review_event',
+      eventId: 'event_1',
+      kind: 30402,
+      relay: 'wss://relay.example',
+      authorPublicKey: 'a'.repeat(64),
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      signatureValid: false,
+      importStatus: 'invalid',
+      payloadPreview: 'Invalid signature',
+      rawEvent: '{}'
+    };
+    await db.nostrReview.put(item);
+
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Review' }));
+    expect(await screen.findByRole('button', { name: 'Invalid and unsupported (1)' })).toBeInTheDocument();
+    expect(screen.queryByText('event_1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Invalid and unsupported (1)' }));
+    expect(await screen.findByText('event_1')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Import reviewed item' })).not.toBeInTheDocument();
+    await waitFor(async () => expect(await db.listings.count()).toBe(0));
+  });
+
+  it('filters review items and bulk-rejects visible invalid records only', async () => {
+    await db.nostrReview.bulkPut([
+      {
+        id: 'review_pending_valid',
+        eventId: 'event_pending_valid',
+        kind: 30402,
+        relay: 'wss://relay.example',
+        authorPublicKey: 'a'.repeat(64),
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        signatureValid: true,
+        importStatus: 'pending',
+        payloadPreview: 'Encrypted AgoraMesh relay content.',
+        rawEvent: '{}'
+      },
+      {
+        id: 'review_expired_listing',
+        eventId: 'event_expired_listing',
+        kind: 30402,
+        relay: 'wss://relay.example',
+        authorPublicKey: 'c'.repeat(64),
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        signatureValid: true,
+        importStatus: 'pending',
+        payloadPreview: JSON.stringify(listingFixture({ id: 'expired_review_listing', title: 'Expired review listing', expiresAt: '2020-06-30' })),
+        rawEvent: '{}'
+      },
+      {
+        id: 'review_invalid',
+        eventId: 'event_invalid',
+        kind: 30402,
+        relay: 'wss://relay.example',
+        authorPublicKey: 'b'.repeat(64),
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        signatureValid: false,
+        importStatus: 'invalid',
+        payloadPreview: 'Invalid signature',
+        rawEvent: '{}'
+      }
+    ]);
+
+    renderAppAt('#settings:review');
+
+    expect(await screen.findByText('event_pending_valid')).toBeInTheDocument();
+    expect(screen.queryByText('event_expired_listing')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show expired listings'));
+    expect(await screen.findByText('event_expired_listing')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show expired listings'));
+    fireEvent.change(screen.getByLabelText('Review status'), { target: { value: 'invalid' } });
+    expect(screen.queryByText('event_pending_valid')).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Invalid and unsupported (1)' }));
+    expect(await screen.findByText('event_invalid')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reject visible invalid/unsupported' }));
+
+    await waitFor(async () => expect((await db.nostrReview.get('review_invalid'))?.importStatus).toBe('rejected'));
+    await expect(db.nostrReview.get('review_pending_valid')).resolves.toMatchObject({ importStatus: 'pending' });
+  });
+
+  it('shows synced listings through the source filter without local import', async () => {
+    const listing: Listing = {
+      id: 'listing_synced',
+      authorPublicKey: 'b'.repeat(64),
+      title: 'Synced tutoring',
+      type: 'offer',
+      category: 'tutoring',
+      description: 'Public synced listing.',
+      region: 'Prague',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['math'],
+      expiresAt: '2026-06-30',
+      contactMethod: { id: 'contact_1', kind: 'matrix', value: '@teacher:matrix.org' },
+      visibility: 'public',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    const record: SyncedPublicRecord<Listing> = {
+      id: 'synced_event_1',
+      eventId: 'event_1',
+      kind: 30402,
+      authorPublicKey: listing.authorPublicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listing,
+      trusted: false,
+      hidden: false
+    };
+    await db.syncedListings.put(record);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Synced tutoring')).toBeInTheDocument();
+    expect(screen.queryByText('matrix: @teacher:matrix.org')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByText('Item details')).toBeInTheDocument();
+    expect(screen.getByText('matrix: @teacher:matrix.org')).toBeInTheDocument();
+    await expect(db.listings.count()).resolves.toBe(0);
+  });
+
+  it('keeps marketplace cards compact until details are opened', async () => {
+    const longDescription =
+      'Repair help for bicycles with standard tools and a calm meetup near the public square. This short summary should stay readable while the card remains compact for scanning. The private tail stays hidden until details open.';
+    await db.listings.put(
+      listingFixture({
+        title: 'Compact repair card',
+        description: longDescription,
+        contactMethod: { id: 'contact_compact', kind: 'matrix', value: '@compact:matrix.org' },
+        tags: ['quiet-detail']
+      })
+    );
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Compact repair card')).toBeInTheDocument();
+    expect(screen.queryByText(/Repair help for bicycles with standard tools/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private tail stays hidden/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('matrix: @compact:matrix.org')).not.toBeInTheDocument();
+    expect(screen.getByText('quiet-detail')).toBeInTheDocument();
+    expect(screen.queryByText(/Marketplace shows local listings/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
+    expect(screen.getByText(/Marketplace shows local listings/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByText(/Repair help for bicycles with standard tools/i)).toBeInTheDocument();
+    expect(screen.getByText(/private tail stays hidden/i)).toBeInTheDocument();
+    expect(screen.getByText('matrix: @compact:matrix.org')).toBeInTheDocument();
+    expect(screen.getByText('quiet-detail')).toBeInTheDocument();
+  });
+
+  it('shows marketplace discovery badges and seller context only in listing details', async () => {
+    await db.profile.put({
+      id: 'profile_seller',
+      displayName: 'Repair Seller',
+      publicKey: 'a'.repeat(64),
+      bio: 'Local repair profile',
+      region: 'Brno',
+      languages: ['en'],
+      contactMethods: [],
+      skills: ['repair'],
+      mediatorAvailable: false,
+      publicVisibility: true,
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    });
+    await db.listings.put(
+      listingFixture({
+        title: 'Cashu repair offer',
+        authorPublicKey: 'a'.repeat(64),
+        paymentPreferences: ['cashu'],
+        paymentIntents: [{ id: 'intent_cashu', method: 'cashu', value: 'cashuAexample', note: 'Public token instruction' }],
+        fulfillmentType: 'local-pickup',
+        fulfillmentNotes: 'Meet near the library.',
+        tags: ['cashu-ok']
+      })
+    );
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Cashu repair offer')).toBeInTheDocument();
+    expect(screen.getAllByText('Repairs').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Local pickup .* Cashu/)).toBeInTheDocument();
+    expect(screen.queryByText('Repair Seller')).not.toBeInTheDocument();
+    expect(screen.queryByText('cashuAexample')).not.toBeInTheDocument();
+    expect(screen.getByText('cashu-ok')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByText('Repair Seller')).toBeInTheDocument();
+    expect(screen.getByText('cashuAexample')).toBeInTheDocument();
+    expect(screen.getByText('cashu-ok')).toBeInTheDocument();
+    expect(screen.getByText('Meet near the library.')).toBeInTheDocument();
+    expect(screen.getByText(/do not verify legal identity/i)).toBeInTheDocument();
+  });
+
+  it('shows public sync wizard steps for missing relays and ready marketplace data', async () => {
+    await db.relays.put({ url: 'wss://disabled.example', enabled: false });
+    renderAppAt('#settings');
+
+    expect(await screen.findByRole('heading', { name: 'Public Sync Wizard' })).toBeInTheDocument();
+    expect(screen.getByText('Add or enable a relay before fetching public records.')).toBeInTheDocument();
+
+    cleanup();
+    await deleteLocalData();
+    await db.relays.put({ url: 'wss://relay.example', enabled: true });
+    await db.listings.put(listingFixture());
+    await db.nostrReview.put({
+      id: 'review_sync_wizard',
+      eventId: 'event_sync_wizard',
+      kind: 30402,
+      relay: 'wss://relay.example',
+      authorPublicKey: 'b'.repeat(64),
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      signatureValid: true,
+      importStatus: 'pending',
+      payloadPreview: 'Pending listing',
+      rawEvent: '{}'
+    });
+    await db.syncedListings.put({
+      id: 'synced_sync_wizard',
+      eventId: 'event_synced_sync_wizard',
+      kind: 30402,
+      authorPublicKey: 'b'.repeat(64),
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listingFixture({ id: 'synced_sync_listing', title: 'Synced sync wizard listing', authorPublicKey: 'b'.repeat(64) }),
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#settings');
+
+    expect(await screen.findByText('At least one relay is enabled for public marketplace sync.')).toBeInTheDocument();
+    expect(screen.getByText('Approved public records are in the local public cache.')).toBeInTheDocument();
+    expect(screen.getByText('Open Marketplace to publish your own listing or browse public records.')).toBeInTheDocument();
+  });
+
+  it('starts a private trade from a local marketplace listing', async () => {
+    const listing = listingFixture({ title: 'Local trade listing', paymentPreferences: ['cash', 'barter'] });
+    await db.listings.put(listing);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Local trade listing')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start private trade' }));
+
+    expect(await screen.findByRole('main', { name: 'Trade' })).toBeInTheDocument();
+    expect(screen.getByText('Trade details stay local; copy or export them through your chosen channel.')).toBeInTheDocument();
+    expect(screen.queryByText(/Agreement terms, dispute details/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Local sharing model' }));
+    expect(screen.getByText(/Agreement terms, dispute details/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Exchange description')).toHaveValue('Local trade listing');
+    expect(screen.getByLabelText('Seller/provider')).toHaveValue(listing.authorPublicKey);
+    expect(screen.getByLabelText('Price/payment method')).toHaveValue('FREE · cash, barter');
+    expect(screen.getByLabelText('Listings')).toHaveValue(listing.id);
+  });
+
+  it('starts a private trade from a synced listing without local import', async () => {
+    const listing = listingFixture({
+      id: 'listing_synced_trade',
+      authorPublicKey: 'b'.repeat(64),
+      title: 'Synced trade listing',
+      paymentPreferences: ['lightning']
+    });
+    await db.syncedListings.put({
+      id: 'synced_trade_1',
+      eventId: 'event_trade_1',
+      kind: 30402,
+      authorPublicKey: listing.authorPublicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listing,
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Synced trade listing')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Start private trade' }));
+
+    expect(await screen.findByRole('main', { name: 'Trade' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Exchange description')).toHaveValue('Synced trade listing');
+    expect(screen.getByLabelText('Seller/provider')).toHaveValue(listing.authorPublicKey);
+    expect(screen.getByLabelText('Price/payment method')).toHaveValue('FREE · lightning');
+    expect(screen.getByLabelText('Listings')).toHaveValue('synced:synced_trade_1');
+    await expect(db.listings.count()).resolves.toBe(0);
+  });
+
+  it('excludes expired synced listings from public cache by default', async () => {
+    await db.syncedListings.bulkPut([
+      {
+        id: 'synced_active_cache',
+        eventId: 'event_active_cache',
+        kind: 30402,
+        authorPublicKey: 'a'.repeat(64),
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        importedAt: '2026-05-31T00:00:00.000Z',
+        payload: listingFixture({ id: 'active_cache_listing', title: 'Active cache listing', expiresAt: '2026-06-30' }),
+        trusted: false,
+        hidden: false
+      },
+      {
+        id: 'synced_expired_cache',
+        eventId: 'event_expired_cache',
+        kind: 30402,
+        authorPublicKey: 'b'.repeat(64),
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        importedAt: '2026-05-31T00:00:00.000Z',
+        payload: listingFixture({ id: 'expired_cache_listing', title: 'Expired cache listing', expiresAt: '2020-06-30' }),
+        trusted: false,
+        hidden: false
+      }
+    ]);
+
+    renderAppAt('#settings:cache');
+
+    expect(await screen.findByText('Synced public listings')).toBeInTheDocument();
+    expect(screen.getByText('Active cache listing')).toBeInTheDocument();
+    expect(screen.queryByText('Expired cache listing')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Show expired listings'));
+    expect(await screen.findByText('Expired cache listing')).toBeInTheDocument();
+  });
+
+  it('keeps local listing publish controls off cards and on local item pages', async () => {
+    const listing: Listing = {
+      id: 'listing_public',
+      authorPublicKey: 'c'.repeat(64),
+      title: 'Public repair help',
+      type: 'offer',
+      category: 'repairs',
+      description: 'Repair help available.',
+      region: 'Brno',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['tools'],
+      expiresAt: '2026-06-30',
+      contactMethod: { id: 'contact_public', kind: 'matrix', value: '@repair:matrix.org' },
+      visibility: 'public',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.listings.put(listing);
+    await db.publishReceipts.bulkPut([
+      {
+        id: 'receipt_accepted',
+        objectType: 'listing',
+        objectId: listing.id,
+        eventId: 'event_accepted',
+        relayUrl: 'wss://relay.example',
+        status: 'accepted',
+        message: 'accepted',
+        at: '2026-05-31T00:00:00.000Z'
+      },
+      {
+        id: 'receipt_failed',
+        objectType: 'listing',
+        objectId: listing.id,
+        eventId: 'event_failed',
+        relayUrl: 'wss://failed.example',
+        status: 'failed',
+        message: 'failed',
+        at: '2026-05-31T00:00:01.000Z'
+      }
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Public repair help')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Publish' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.queryByText('Relay receipts')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish options' }));
+    expect(screen.getByText('Relay receipts')).toBeInTheDocument();
+    expect(screen.getByText(/Accepted: 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Failed: 1/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish NIP-99 classified' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Why this matters' }));
+    expect(screen.getByText(/Public publishing sends this listing/i)).toBeInTheDocument();
+  });
+
+  it('disables listing publishing when no relay is enabled', async () => {
+    await db.listings.put(listingFixture());
+    await db.relays.clear();
+    await db.relays.bulkPut([{ url: 'wss://disabled.example', enabled: false }]);
+
+    renderAppAt('#browse:mine');
+
+    expect(await screen.findByText('Public repair help')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish options' }));
+    expect(screen.getByText('Add and enable a relay before publishing.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Publish NIP-99 classified' })).toBeDisabled();
+  });
+
+  it('hides and unhides synced listings without writing local records', async () => {
+    const listing: Listing = {
+      id: 'listing_hidden',
+      authorPublicKey: 'd'.repeat(64),
+      title: 'Synced repair',
+      type: 'offer',
+      category: 'repairs',
+      description: 'Public synced repair listing.',
+      region: 'Prague',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['repair'],
+      expiresAt: '2026-06-30',
+      contactMethod: { id: 'contact_2', kind: 'matrix', value: '@repair:matrix.org' },
+      visibility: 'public',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.syncedListings.put({
+      id: 'synced_hidden_1',
+      eventId: 'event_hidden_1',
+      kind: 30402,
+      authorPublicKey: listing.authorPublicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listing,
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Synced repair')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide synced record' }));
+    await waitFor(async () => expect((await db.syncedListings.get('synced_hidden_1'))?.hidden).toBe(true));
+    await expect(db.listings.count()).resolves.toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Marketplace' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+    fireEvent.change(screen.getByLabelText('Visibility'), { target: { value: 'hidden' } });
+    expect(await screen.findByText('Synced repair')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(await screen.findByText('Hidden locally')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Unhide synced record' }));
+    await waitFor(async () => expect((await db.syncedListings.get('synced_hidden_1'))?.hidden).toBe(false));
+  });
+
+  it('labels synced conflicts and offers duplicate moderation actions', async () => {
+    const listing: Listing = {
+      id: 'listing_conflict',
+      authorPublicKey: 'e'.repeat(64),
+      title: 'Conflict listing',
+      type: 'offer',
+      category: 'tutoring',
+      description: 'First version.',
+      region: 'Prague',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['math'],
+      expiresAt: '2026-06-30',
+      contactMethod: { id: 'contact_3', kind: 'matrix', value: '@first:matrix.org' },
+      visibility: 'public',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.syncedListings.bulkPut([
+      {
+        id: 'synced_conflict_1',
+        eventId: 'event_conflict_1',
+        kind: 30402,
+        authorPublicKey: listing.authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        importedAt: '2026-05-31T00:00:00.000Z',
+        payload: listing,
+        trusted: false,
+        hidden: false
+      },
+      {
+        id: 'synced_conflict_2',
+        eventId: 'event_conflict_2',
+        kind: 30402,
+        authorPublicKey: listing.authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:01.000Z',
+        importedAt: '2026-05-31T00:00:01.000Z',
+        payload: { ...listing, description: 'Second version.', updatedAt: '2026-05-31T00:00:01.000Z' },
+        trusted: false,
+        hidden: false
+      }
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Conflict listing')).toBeInTheDocument();
+    expect(screen.getByText(/Hidden duplicates: 1/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByText(/Ranking signals:/i)).toBeInTheDocument();
+    expect(await screen.findByText('Possible duplicate')).toBeInTheDocument();
+    expect(screen.getByText('Latest conflict version')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Hide duplicate' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Keep visible' })).toBeInTheDocument();
+  });
+
+  it('shows relay scores in settings', async () => {
+    const health: RelayHealth = {
+      url: 'wss://healthy.example',
+      enabled: true,
+      latencyMs: 300,
+      eventsReceived: 10,
+      eventsPublished: 5,
+      consecutiveFailures: 0
+    };
+    await db.relayHealth.put(health);
+
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Diagnostics' }));
+    expect(await screen.findByText('wss://healthy.example')).toBeInTheDocument();
+    expect(screen.getByText(/Relay score: 100\/100/i)).toBeInTheDocument();
+    expect(screen.getByText('Excellent')).toBeInTheDocument();
+  });
+
+  it('manages allowlist entries in settings', async () => {
+    renderAppAt('#settings');
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Trust lists' }));
+    fireEvent.change(await screen.findByLabelText('Public key'), { target: { value: 'c'.repeat(64) } });
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Mutual aid group' } });
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'Known local organizer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add trusted key' }));
+
+    await screen.findByText('Mutual aid group');
+    await expect(db.allowlist.count()).resolves.toBe(1);
+  });
+
+  it('imports community allowlists and recomputes synced trust', async () => {
+    const publicKey = 'f'.repeat(64);
+    const listing: Listing = {
+      id: 'listing_trust',
+      authorPublicKey: publicKey,
+      title: 'Trust import listing',
+      type: 'offer',
+      category: 'tutoring',
+      description: 'Public synced listing.',
+      region: 'Prague',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['math'],
+      expiresAt: '2026-06-30',
+      contactMethod: { id: 'contact_4', kind: 'matrix', value: '@trust:matrix.org' },
+      visibility: 'public',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    await db.syncedListings.put({
+      id: 'synced_trust_1',
+      eventId: 'event_trust_1',
+      kind: 30402,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      payload: listing,
+      trusted: false,
+      hidden: false
+    });
+
+    renderAppAt('#settings');
+    fireEvent.click(await screen.findByRole('tab', { name: 'Trust lists' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+
+    const file = new File(
+      [
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: 'community-allowlist',
+          exportedAt: '2026-05-31T00:00:00.000Z',
+          entries: [{ publicKey, label: 'Imported group', note: 'shared trust list' }]
+        })
+      ],
+      'allowlist.json',
+      { type: 'application/json' }
+    );
+    fireEvent.change(await screen.findByLabelText('Import community allowlist'), { target: { files: [file] } });
+
+    expect(await screen.findByText('Imported group')).toBeInTheDocument();
+    await waitFor(async () => expect((await db.syncedListings.get('synced_trust_1'))?.trusted).toBe(true));
+  });
+});

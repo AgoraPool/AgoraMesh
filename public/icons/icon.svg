@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="AgoraMesh icon">
+  <rect width="128" height="128" rx="24" fill="#11100d"/>
+  <path d="M28 80 64 28l36 52H28Z" fill="none" stroke="#d99a22" stroke-width="8" stroke-linejoin="round"/>
+  <circle cx="28" cy="80" r="8" fill="#f5e7c8"/>
+  <circle cx="64" cy="28" r="8" fill="#f5e7c8"/>
+  <circle cx="100" cy="80" r="8" fill="#f5e7c8"/>
+  <path d="M42 80h44M53 63h22" stroke="#d99a22" stroke-width="6" stroke-linecap="round"/>
+</svg>

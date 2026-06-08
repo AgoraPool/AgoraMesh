@@ -1,0 +1,12 @@
+node_modules
+dist
+release
+coverage
+.DS_Store
+.env
+.env.*
+!.env.example
+*.local
+*.tsbuildinfo
+.codex
+.agents

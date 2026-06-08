@@ -898,15 +898,6 @@ export function syncedRecordFromReviewItem<T extends CacheablePayload>(
   };
 }
 
-  if (item.kind === AGORAMESH_EVENT_KINDS.profile) return { ...base, payload: payload as PublicProfile };
-  if (item.kind === AGORAMESH_EVENT_KINDS.listing) return { ...base, discoveryScope: item.discoveryScope, payload: payload as Listing };
-  if (item.kind === AGORAMESH_EVENT_KINDS.mediator) return { ...base, payload: payload as MediatorProfile };
-  if (item.kind === AGORAMESH_EVENT_KINDS.reputation) return { ...base, payload: payload as ReputationAttestation };
-  if (item.kind === AGORAMESH_EVENT_KINDS.disputeOutcome) return { ...base, payload: payload as PublicDisputeOutcome };
-  if (item.kind === AGORAMESH_EVENT_KINDS.communityList) return { ...base, payload: payload as CommunityCurationList };
-  throw new Error('This event kind is not cacheable.');
-}
-
 export function subscribeToAgoraEvents(
   relays: RelayConfig[],
   onItem: (item: NostrReviewItem) => void,

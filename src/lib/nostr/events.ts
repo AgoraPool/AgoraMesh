@@ -73,11 +73,14 @@ export interface NostrEvent {
   sig: string;
 }
 
-export interface AgoraRelayFilter {
+interface AgoraRelayFilter {
   kinds: number[];
-  limit: number;
+  authors?: string[];
   since?: number;
+  until?: number;
+  limit?: number;
   '#t'?: string[];
+  '#client'?: string[];
 }
 
 interface NostrMetadataFilter {

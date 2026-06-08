@@ -46,6 +46,14 @@ export const AGORAMESH_EVENT_KINDS = {
   communityList: 30004
 } as const;
 
+type CacheablePayload =
+  | PublicProfile
+  | Listing
+  | MediatorProfile
+  | ReputationAttestation
+  | PublicDisputeOutcome
+  | CommunityCurationList;
+
 const paymentPreferences = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'] as const;
 const contactKinds = ['matrix', 'simplex', 'session', 'email', 'custom'] as const;
 const fulfillmentTypes = ['local-pickup', 'shipping', 'delivery', 'digital', 'other'] as const;
@@ -115,14 +123,18 @@ export function publicProfilePayload(profile: PublicProfile): PublicProfile {
 
 export function publicListingPayload(listing: Listing): Listing {
   const parsed = listingSchema.parse(listing);
+
   assertPublicPaymentIntentText(`${parsed.price.amount} ${parsed.price.currency}`, parsed.price.note);
+
   for (const intent of parsed.paymentIntents ?? []) {
     assertPublicPaymentIntentText(intent.value, intent.note);
   }
-  const payload = {
+
+  const payload: Listing = {
     ...parsed,
     visibility: 'public'
   };
+
   assertPublishablePayload(payload);
   return payload;
 }
@@ -861,19 +873,16 @@ export async function importablePayloadFromReviewItem(
   throw new Error('This event kind is not importable.');
 }
 
-export function syncedRecordFromReviewItem(
+export function syncedRecordFromReviewItem<T extends CacheablePayload>(
   item: NostrReviewItem,
   allowlist: CommunityAllowlistEntry[],
-  payload: PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList
-):
-  | SyncedPublicRecord<PublicProfile>
-  | SyncedPublicRecord<Listing>
-  | SyncedPublicRecord<MediatorProfile>
-  | SyncedPublicRecord<ReputationAttestation>
-  | SyncedPublicRecord<PublicDisputeOutcome>
-  | SyncedPublicRecord<CommunityCurationList> {
-  const trusted = allowlist.some((entry) => entry.publicKey === item.authorPublicKey);
-  const base = {
+  payload: T
+): SyncedPublicRecord<T> {
+  const trusted = allowlist.some(
+    (entry) => entry.publicKey.toLowerCase() === item.authorPublicKey.toLowerCase()
+  );
+
+  return {
     id: `synced_${item.eventId}`,
     eventId: item.eventId,
     kind: item.kind,
@@ -883,8 +892,11 @@ export function syncedRecordFromReviewItem(
     importedAt: nowIso(),
     trusted,
     hidden: false,
-    rawEvent: item.rawEvent
+    rawEvent: item.rawEvent,
+    discoveryScope: item.kind === AGORAMESH_EVENT_KINDS.listing ? item.discoveryScope : undefined,
+    payload
   };
+}
 
   if (item.kind === AGORAMESH_EVENT_KINDS.profile) return { ...base, payload: payload as PublicProfile };
   if (item.kind === AGORAMESH_EVENT_KINDS.listing) return { ...base, discoveryScope: item.discoveryScope, payload: payload as Listing };

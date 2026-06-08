@@ -682,18 +682,41 @@ export function buildAgoraRelayFilters(
   since?: number,
   limit = 80
 ): AgoraRelayFilter[] {
-  if (listingDiscoveryScope === 'all-nip99') return [buildAgoraRelayFilter(since, limit)];
+  const base = since ? { since } : {};
+  const listingLimit = Math.max(limit, 300);
+
+  if (listingDiscoveryScope === 'all-nip99') {
+    return [
+      {
+        kinds: [AGORAMESH_EVENT_KINDS.listing],
+        limit: listingLimit,
+        ...base
+      },
+      {
+        kinds: agorameshNonListingKinds(),
+        limit,
+        ...base
+      }
+    ];
+  }
+
   return [
-    {
-      kinds: agorameshNonListingKinds(),
-      limit,
-      ...(since ? { since } : {})
-    },
     {
       kinds: [AGORAMESH_EVENT_KINDS.listing],
       '#t': ['agoramesh'],
+      limit: listingLimit,
+      ...base
+    },
+    {
+      kinds: [AGORAMESH_EVENT_KINDS.listing],
+      '#client': ['agoramesh'],
+      limit: listingLimit,
+      ...base
+    },
+    {
+      kinds: agorameshNonListingKinds(),
       limit,
-      ...(since ? { since } : {})
+      ...base
     }
   ];
 }

@@ -255,11 +255,11 @@ async function recomputeTableTrust<T>(table: Table<SyncedPublicRecord<T>, string
   await table.bulkPut(records.map((record) => ({ ...record, trusted: trustedKeys.has(record.authorPublicKey) })));
 }
 
-function syncedCoordinate<T extends { id: string }>(record: SyncedPublicRecord<T>): string {
+function syncedCoordinate<T extends CacheablePayload>(record: SyncedPublicRecord<T>): string {
   return `${record.kind}:${record.authorPublicKey.toLowerCase()}:${record.payload.id}`;
 }
 
-function reviewItemCoordinate(item: NostrReviewItem, payload: { id: string }): string {
+function reviewItemCoordinate(item: NostrReviewItem, payload: CacheablePayload): string {
   return `${item.kind}:${item.authorPublicKey.toLowerCase()}:${payload.id}`;
 }
 
@@ -276,13 +276,13 @@ function mergeRelayUrls(current: string[], relay: string): string[] {
   return [...new Set([...current, relay])];
 }
 
-async function upsertSyncedRecord<T extends { id: string }>(
+async function upsertSyncedRecord<T extends CacheablePayload>(
   table: Table<SyncedPublicRecord<T>, string>,
   item: NostrReviewItem,
   allowlist: CommunityAllowlistEntry[],
   payload: T
 ): Promise<PublicCacheWriteResult> {
-  const incoming = syncedRecordFromReviewItem(item, allowlist, payload) as SyncedPublicRecord<T>;
+  const incoming = syncedRecordFromReviewItem(item, allowlist, payload);
   const coordinate = reviewItemCoordinate(item, payload);
   const existing = (await table.toArray()).find((record) => syncedCoordinate(record) === coordinate);
   if (!existing) {
@@ -3942,7 +3942,11 @@ function TradePage({
     const agreement: Agreement = agreementSchema.parse({ ...draft, hash: generateAgreementHash({ ...draft, hash: '' }) });
     await db.agreements.put(agreement);
     setSelectedAgreementHash(agreement.hash);
-    setDisputeForm((current) => ({ ...current, agreementHash: agreement.hash, mediator: agreement.mediator }));
+    setDisputeForm((current) => ({
+      ...current,
+      agreementHash: agreement.hash,
+      mediator: agreement.mediator ?? ''
+    }));
     onAgreementSaved();
   };
 
@@ -4236,7 +4240,11 @@ function TradePage({
                           <button
                             onClick={() => {
                               setSelectedAgreementHash(agreement.hash);
-                              setDisputeForm({ ...disputeForm, agreementHash: agreement.hash, mediator: agreement.mediator });
+                              setDisputeForm({
+                                ...disputeForm,
+                                agreementHash: agreement.hash,
+                                mediator: agreement.mediator ?? ''
+                              });
                               setActiveTab('dispute');
                             }}
                             type="button"

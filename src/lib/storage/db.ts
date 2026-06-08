@@ -300,31 +300,34 @@ export async function exportAllData(): Promise<AppBackup> {
 export async function importAllData(raw: unknown): Promise<void> {
   const backup = validateBackup(raw);
   const verifiedSynced = await verifiedSyncedCacheFromBackup(backup);
+
   await db.transaction(
     'rw',
-    db.identity,
-    db.profile,
-    db.listings,
-    db.agreements,
-    db.agreementReceipts,
-    db.mediators,
-    db.disputes,
-    db.attestations,
-    db.relays,
-    db.nostrReview,
-    db.publicProfiles,
-    db.syncedProfiles,
-    db.syncedListings,
-    db.syncedMediators,
-    db.syncedAttestations,
-    db.syncedDisputeOutcomes,
-    db.communityLists,
-    db.syncedCommunityLists,
-    db.relayHealth,
-    db.publishReceipts,
-    db.allowlist,
-    db.syncSettings,
-    db.blossomServers,
+    [
+      db.identity,
+      db.profile,
+      db.listings,
+      db.agreements,
+      db.agreementReceipts,
+      db.mediators,
+      db.disputes,
+      db.attestations,
+      db.relays,
+      db.nostrReview,
+      db.publicProfiles,
+      db.syncedProfiles,
+      db.syncedListings,
+      db.syncedMediators,
+      db.syncedAttestations,
+      db.syncedDisputeOutcomes,
+      db.communityLists,
+      db.syncedCommunityLists,
+      db.relayHealth,
+      db.publishReceipts,
+      db.allowlist,
+      db.syncSettings,
+      db.blossomServers
+    ],
     async () => {
       await Promise.all([
         db.identity.clear(),
@@ -354,6 +357,7 @@ export async function importAllData(raw: unknown): Promise<void> {
 
       if (backup.identity) await db.identity.put(backup.identity);
       if (backup.profile) await db.profile.put(backup.profile);
+
       await Promise.all([
         db.listings.bulkPut(backup.listings.map((listing) => listingSchema.parse(listing))),
         db.agreements.bulkPut(backup.agreements),
@@ -383,6 +387,7 @@ export async function importAllData(raw: unknown): Promise<void> {
       ]);
     }
   );
+
   await ensureDefaults();
 }
 

@@ -190,7 +190,7 @@ type MarketplaceActionState = { title: string; body: string; actionLabel: string
 type PublishReceiptSummary = { accepted: number; failed: number; pending: number; latest?: PublishReceipt };
 type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?: string; onAction?: () => void };
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
-type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged';
+type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged' | 'skipped';
 type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList;
 
 const categories = listingCategorySchema.options;
@@ -313,7 +313,15 @@ async function cachePublicReviewItem(
 ): Promise<PublicCacheWriteResult> {
   const payload = (await importablePayloadFromReviewItem(item, passphrase)) as CacheablePayload;
   if (item.kind === AGORAMESH_EVENT_KINDS.profile) return upsertSyncedRecord(db.syncedProfiles, item, allowlist, payload as PublicProfile);
-  if (item.kind === AGORAMESH_EVENT_KINDS.listing) return upsertSyncedRecord(db.syncedListings, item, allowlist, payload as Listing);
+  if (item.kind === AGORAMESH_EVENT_KINDS.listing) {
+    const listing = listingSchema.parse(payload);
+
+    if (!isActiveMarketplaceListing(listing)) {
+      return 'skipped';
+    }
+
+    return upsertSyncedRecord(db.syncedListings, item, allowlist, listing);
+  }
   if (item.kind === AGORAMESH_EVENT_KINDS.mediator) return upsertSyncedRecord(db.syncedMediators, item, allowlist, payload as MediatorProfile);
   if (item.kind === AGORAMESH_EVENT_KINDS.reputation) return upsertSyncedRecord(db.syncedAttestations, item, allowlist, payload as ReputationAttestation);
   if (item.kind === AGORAMESH_EVENT_KINDS.disputeOutcome) return upsertSyncedRecord(db.syncedDisputeOutcomes, item, allowlist, payload as PublicDisputeOutcome);
@@ -384,6 +392,10 @@ function hasAcceptedListingReceipt(listing: Listing, publishReceipts: PublishRec
 
 function isListingExpired(listing: Listing): boolean {
   return new Date(listing.expiresAt).getTime() < Date.now();
+}
+
+function isActiveMarketplaceListing(listing: Listing): boolean {
+  return listing.status === 'active' && !isListingExpired(listing);
 }
 
 function publicKeysMatch(left?: string, right?: string): boolean {
@@ -661,7 +673,15 @@ export function App(): ReactNode {
 
   const fetchMarketplacePublicData = async (listingDiscoveryScope: ListingDiscoveryScope): Promise<MarketplaceFetchSummary> => {
     const startedAt = Date.now();
-    const sinceByRelay = Object.fromEntries(relayHealth.map((entry) => [entry.url, isoToNostrTimestamp(entry.lastConnectedAt)]));
+    const marketplaceLookbackDays = 180;
+    const marketplaceSince = Math.floor((Date.now() - marketplaceLookbackDays * 86_400_000) / 1000);
+
+    const sinceByRelay = Object.fromEntries(
+      relays
+        .filter((relay) => relay.enabled)
+        .map((relay) => [relay.url, marketplaceSince])
+    );
+
     const rawFetched = await fetchAgoraEventsFromRelays(relays, sinceByRelay, listingDiscoveryScope);
     const fetched = dedupeReviewItems(rawFetched);
     const summary: MarketplaceFetchSummary = {

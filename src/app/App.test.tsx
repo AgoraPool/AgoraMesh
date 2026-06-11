@@ -3,7 +3,7 @@ import { vi } from 'vitest';
 import { I18nProvider } from '../i18n/I18nProvider';
 import { db, deleteLocalData } from '../lib/storage/db';
 import { App } from './App';
-import type { Agreement, DisputeCase, IdentityRecord, Listing, NostrReviewItem, RelayHealth, SyncedPublicRecord } from '../types/domain';
+import type { Agreement, DisputeCase, IdentityRecord, Listing, MediatorProfile, NostrReviewItem, PublicProfile, RelayHealth, SyncedPublicRecord } from '../types/domain';
 
 function renderAppAt(hash: string): void {
   window.location.hash = hash;
@@ -307,7 +307,9 @@ describe('production readiness UI', () => {
     expect(await screen.findByLabelText('Search')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Type' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create listing' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Listing fetch scope')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Listing fetch scope' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AgoraMesh only' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'All NIP-99' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Fetch listings' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Category')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Quick fulfillment filters')).not.toBeInTheDocument();
@@ -321,6 +323,50 @@ describe('production readiness UI', () => {
     expect(screen.getByLabelText('Data source')).toBeInTheDocument();
     expect(screen.getByLabelText('Visibility')).toBeInTheDocument();
     expect(screen.getByLabelText('Show expired listings')).toBeInTheDocument();
+  });
+
+  it('uses the Marketplace scope switch for displayed synced listings', async () => {
+    const nativeListing = listingFixture({ id: 'native_scope_listing', title: 'Native AgoraMesh listing', authorPublicKey: 'd'.repeat(64) });
+    const broadListing = listingFixture({ id: 'broad_scope_listing', title: 'Broad NIP-99 listing', authorPublicKey: 'e'.repeat(64), tags: ['shopstr'] });
+    await db.syncedListings.bulkPut([
+      {
+        id: 'synced_native_scope',
+        eventId: 'event_native_scope',
+        kind: 30402,
+        authorPublicKey: nativeListing.authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        importedAt: '2026-05-31T00:00:00.000Z',
+        payload: nativeListing,
+        trusted: false,
+        hidden: false,
+        discoveryScope: 'agoramesh-native'
+      },
+      {
+        id: 'synced_broad_scope',
+        eventId: 'event_broad_scope',
+        kind: 30402,
+        authorPublicKey: broadListing.authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-05-31T00:00:00.000Z',
+        importedAt: '2026-05-31T00:00:00.000Z',
+        payload: broadListing,
+        trusted: false,
+        hidden: false,
+        discoveryScope: 'all-nip99'
+      }
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Native AgoraMesh listing')).toBeInTheDocument();
+    expect(screen.queryByText('Broad NIP-99 listing')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'All NIP-99' }));
+
+    expect(await screen.findByText('Broad NIP-99 listing')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'All NIP-99' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(async () => expect((await db.syncSettings.get('default'))?.listingDiscoveryScope).toBe('all-nip99'));
   });
 
   it('hides expired listings by default and can show them on demand', async () => {
@@ -485,6 +531,43 @@ describe('production readiness UI', () => {
 
   it('connects an existing Nostr account without storing private key material', async () => {
     const publicKey = 'b'.repeat(64);
+    const syncedProfile: PublicProfile = {
+      id: 'profile_existing',
+      displayName: 'Published Alice',
+      publicKey,
+      avatarUrl: 'https://example.com/alice.png',
+      bio: 'Existing public profile',
+      region: 'Prague',
+      languages: ['en', 'cs'],
+      contactMethods: [{ id: 'contact_existing', kind: 'matrix', value: '@alice:matrix.org' }],
+      skills: ['repairs'],
+      mediatorAvailable: false,
+      publicVisibility: true,
+      createdAt: '2026-05-30T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    const syncedListing = listingFixture({
+      id: 'owned_synced_listing',
+      authorPublicKey: publicKey,
+      title: 'Owned published listing',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    });
+    const syncedMediator: MediatorProfile = {
+      id: 'mediator_existing',
+      displayName: 'Published Alice',
+      publicKey,
+      region: 'Prague',
+      languages: ['en', 'cs'],
+      specialties: ['repairs'],
+      feeModel: 'Sliding fee',
+      mediationStyle: 'Written process',
+      responseTime: '24 hours',
+      caseCount: 0,
+      contactMethods: [{ id: 'contact_existing', kind: 'matrix', value: '@alice:matrix.org' }],
+      procedure: 'Collect statements and signed receipts.',
+      createdAt: '2026-05-30T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
     await db.syncedProfiles.put({
       id: 'synced_profile_existing',
       eventId: 'event_profile_existing',
@@ -495,21 +578,32 @@ describe('production readiness UI', () => {
       importedAt: '2026-05-31T00:00:00.000Z',
       trusted: true,
       hidden: false,
-      payload: {
-        id: 'profile_existing',
-        displayName: 'Published Alice',
-        publicKey,
-        avatarUrl: 'https://example.com/alice.png',
-        bio: 'Existing public profile',
-        region: 'Prague',
-        languages: ['en', 'cs'],
-        contactMethods: [{ id: 'contact_existing', kind: 'matrix', value: '@alice:matrix.org' }],
-        skills: ['repairs'],
-        mediatorAvailable: false,
-        publicVisibility: true,
-        createdAt: '2026-05-30T00:00:00.000Z',
-        updatedAt: '2026-05-31T00:00:00.000Z'
-      }
+      payload: syncedProfile
+    });
+    await db.syncedListings.put({
+      id: 'synced_owned_listing',
+      eventId: 'event_owned_listing',
+      kind: 30402,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      trusted: true,
+      hidden: false,
+      payload: syncedListing,
+      discoveryScope: 'agoramesh-native'
+    });
+    await db.syncedMediators.put({
+      id: 'synced_owned_mediator',
+      eventId: 'event_owned_mediator',
+      kind: 39003,
+      authorPublicKey: publicKey,
+      relayUrls: ['wss://relay.example'],
+      receivedAt: '2026-05-31T00:00:00.000Z',
+      importedAt: '2026-05-31T00:00:00.000Z',
+      trusted: true,
+      hidden: false,
+      payload: syncedMediator
     });
     Object.defineProperty(window, 'nostr', {
       configurable: true,
@@ -524,7 +618,7 @@ describe('production readiness UI', () => {
     fireEvent.change((await screen.findAllByLabelText('Display name'))[0], { target: { value: 'Existing Nostr' } });
     fireEvent.click(screen.getByRole('button', { name: 'Use existing Nostr account' }));
 
-    expect(await screen.findByText('Existing Nostr account connected and matching public profile restored locally.')).toBeInTheDocument();
+    expect(await screen.findByText('Existing Nostr account connected and 3 authored public record(s) restored locally for editing.')).toBeInTheDocument();
     await waitFor(async () => {
       const identity = await db.identity.toCollection().first();
       expect(identity).toMatchObject({ publicKey, keySource: 'nostr-extension', displayName: 'Published Alice' });
@@ -535,10 +629,18 @@ describe('production readiness UI', () => {
       publicKey,
       bio: 'Existing public profile'
     });
+    await expect(db.listings.get('owned_synced_listing')).resolves.toMatchObject({ id: 'owned_synced_listing', authorPublicKey: publicKey });
+    await expect(db.mediators.get('mediator_existing')).resolves.toMatchObject({ id: 'mediator_existing', publicKey });
+    await expect(db.publishReceipts.count()).resolves.toBe(0);
     expect(await screen.findByDisplayValue('Published Alice')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Public profile' }));
     expect(screen.getByDisplayValue('Existing public profile')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Unlock for signing' })).not.toBeInTheDocument();
+
+    cleanup();
+    renderAppAt('#listing/local/owned_synced_listing');
+    expect(await screen.findByRole('heading', { name: 'Owned published listing' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit listing' })).toBeInTheDocument();
   });
 
   it('does not create a mediator profile when mediator availability is unchecked', async () => {

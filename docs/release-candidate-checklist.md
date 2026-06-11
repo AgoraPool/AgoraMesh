@@ -29,8 +29,8 @@ Use this checklist before publishing a v1 release candidate. A release candidate
 - Create a signed annotated tag only after automated and manual gates pass:
 
 ```bash
-git tag -s v0.27.0-rc.1 -m "AgoraMesh v0.27.0 RC 1"
-git push origin v0.27.0-rc.1
+git tag -s v0.28.0-rc.1 -m "AgoraMesh v0.28.0 RC 1"
+git push origin v0.28.0-rc.1
 ```
 
 - Attach verified artifacts manually if creating a GitHub Release.

@@ -90,14 +90,14 @@ npm run release:rc-check
 - No custody: AgoraMesh does not hold funds, keys, or escrow balances.
 - No KYC or analytics: there is no tracking pixel, telemetry, or account database.
 - Explicit publish: saving a profile, listing, mediator profile, attestation, or curation list does not contact relays.
-- Explicit import: fetched Nostr events land in review first and never enter the public cache automatically.
+- Explicit fetch: public Nostr records are cached only after the user presses Marketplace Fetch, with the selected NIP-99 scope.
 - Private trade stays local: agreements, acceptance receipts, full disputes, evidence metadata, payment secrets, and settlement text are local or export-only.
 - Memory-only decrypted keys: local private keys are decrypted only for the current browser session and can be locked again.
-- Public cache separation: reviewed synced public records stay separate from user-owned local records.
+- Public cache separation: synced public records stay separate from user-owned local records.
 
 ## Release Artifacts
 
-Current app version: `0.27.0`.
+Current app version: `0.28.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.27.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.28.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -125,7 +125,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 ## Limitations
 
 - This MVP does not include escrow, wallets, internal chat, payment processing, moderation AI, ActivityPub, or a backend database.
-- Relay sync is public-data-only and review-before-cache.
+- Relay sync is public-data-only and explicit fetch-before-cache.
 - Public-first means public discovery and explicit public publishing, not automatic publishing or automatic trust.
 - Optional browser signer support can act as the active AgoraMesh identity and sign public events without storing extension private keys in AgoraMesh.
 - Listing payment intents, including Cashu instructions, are public instructions only; AgoraMesh does not execute payments, connect wallets, confirm settlement, or provide escrow.
@@ -142,6 +142,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.25.0 QA pass adds stronger automated coverage for navigation/disclosure semantics and responsive overflow, but manual assistive-technology and real-device visual testing are still required before a v1 release.
 - The v0.26.0 release-candidate pass adds release gates and QA templates. It does not publish releases automatically and does not make this build final v1.0.
 - The v0.27.0 Czech copy pass improves localization tone and consistency while preserving the existing security and privacy promises.
+- The v0.28.0 polish pass improves collapsed sidebar alignment, Marketplace NIP-99 scope filtering, and signer-backed restoration of authored cached public records for local editing.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

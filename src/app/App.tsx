@@ -192,6 +192,12 @@ type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
 type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged' | 'skipped';
 type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList;
+type SignerRestoreSummary = {
+  profile: number;
+  listings: number;
+  mediators: number;
+  kept: number;
+};
 
 const categories = listingCategorySchema.options;
 const payments: PaymentPreference[] = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'];
@@ -257,6 +263,20 @@ async function recomputeTableTrust<T>(table: Table<SyncedPublicRecord<T>, string
 
 function syncedCoordinate<T extends CacheablePayload>(record: SyncedPublicRecord<T>): string {
   return `${record.kind}:${record.authorPublicKey.toLowerCase()}:${record.payload.id}`;
+}
+
+function payloadIsNewer(incoming: { updatedAt: string }, existing: { updatedAt: string }): boolean {
+  return incoming.updatedAt.localeCompare(existing.updatedAt) > 0;
+}
+
+function signerRestoreCount(summary: SignerRestoreSummary): number {
+  return summary.profile + summary.listings + summary.mediators;
+}
+
+function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
+  if (scope === 'all-nip99') return true;
+  if (!record.discoveryScope || record.discoveryScope === 'agoramesh-native') return true;
+  return record.payload.tags.some((tag) => tag.toLowerCase() === 'agoramesh');
 }
 
 function reviewItemCoordinate(item: NostrReviewItem, payload: CacheablePayload): string {
@@ -775,6 +795,79 @@ export function App(): ReactNode {
     return matching[0]?.payload;
   };
 
+  const restoreOwnedSyncedRecordsForSigner = async (publicKey: string): Promise<SignerRestoreSummary> => {
+    const normalized = publicKey.toLowerCase();
+    const summary: SignerRestoreSummary = { profile: 0, listings: 0, mediators: 0, kept: 0 };
+    const matchingProfile = await localProfileForSigner(publicKey);
+    if (matchingProfile) {
+      const localProfile = await db.profile.toCollection().first();
+      if (!localProfile || localProfile.publicKey.toLowerCase() !== normalized || payloadIsNewer(matchingProfile, localProfile)) {
+        await db.profile.clear();
+        await db.profile.put(matchingProfile);
+        summary.profile += 1;
+      } else {
+        summary.kept += 1;
+      }
+    }
+
+    const authoredListings = (await db.syncedListings.toArray()).filter(
+      (record) =>
+        !record.hidden &&
+        record.authorPublicKey.toLowerCase() === normalized &&
+        String(record.payload.authorPublicKey ?? '').toLowerCase() === normalized
+    );
+    for (const record of authoredListings) {
+      const parsed = listingSchema.safeParse(record.payload);
+      if (!parsed.success) {
+        summary.kept += 1;
+        continue;
+      }
+      const listing = parsed.data;
+      const existing = await db.listings.get(listing.id);
+      if (!existing) {
+        await db.listings.put(listing);
+        summary.listings += 1;
+      } else if (payloadIsNewer(listing, existing)) {
+        await db.listings.put(listing);
+        summary.listings += 1;
+      } else {
+        summary.kept += 1;
+      }
+    }
+
+    const authoredMediators = (await db.syncedMediators.toArray()).filter(
+      (record) =>
+        !record.hidden &&
+        record.authorPublicKey.toLowerCase() === normalized &&
+        String(record.payload.publicKey ?? '').toLowerCase() === normalized
+    );
+    for (const record of authoredMediators) {
+      const parsed = mediatorProfileSchema.safeParse(record.payload);
+      if (!parsed.success) {
+        summary.kept += 1;
+        continue;
+      }
+      const mediator = parsed.data;
+      const existingById = await db.mediators.get(mediator.id);
+      const existingByPublicKey = existingById
+        ? undefined
+        : (await db.mediators.toArray()).find((entry) => entry.publicKey.toLowerCase() === normalized);
+      const existing = existingById ?? existingByPublicKey;
+      if (!existing) {
+        await db.mediators.put(mediator);
+        summary.mediators += 1;
+      } else if (payloadIsNewer(mediator, existing)) {
+        if (existing.id !== mediator.id) await db.mediators.delete(existing.id);
+        await db.mediators.put(mediator);
+        summary.mediators += 1;
+      } else {
+        summary.kept += 1;
+      }
+    }
+
+    return summary;
+  };
+
   const useConnectedSignerAsIdentity = async (displayName?: string): Promise<void> => {
     const next = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
     if (!next.connected || !next.publicKey) return;
@@ -784,12 +877,22 @@ export function App(): ReactNode {
     await db.identity.put(
       createExtensionIdentity(next.publicKey, matchingProfile?.displayName || displayName || profile?.displayName || identity?.displayName || t('identity.extensionDisplayName'))
     );
-    if (matchingProfile) {
-      await db.profile.clear();
-      await db.profile.put(matchingProfile);
-    }
+    const restored = await restoreOwnedSyncedRecordsForSigner(next.publicKey);
+    const restoredCount = signerRestoreCount(restored);
     setPrivateKeyHex('');
-    showNotice(matchingProfile ? t('notice.extensionIdentityProfileSaved') : t('notice.extensionIdentitySaved'));
+    showNotice(
+      restoredCount > 0
+        ? t('notice.extensionIdentityRecordsRestored').replace('{count}', String(restoredCount))
+        : matchingProfile
+          ? t('notice.extensionIdentityProfileSaved')
+          : t('notice.extensionIdentitySaved'),
+      restoredCount === 0
+        ? {
+            body: t('next.fetchOwnRecords'),
+            actions: [{ label: t('next.openBrowse'), page: 'browse' }]
+          }
+        : undefined
+    );
     await reload();
   };
 
@@ -1770,7 +1873,11 @@ function BrowsePage({
   const [marketplaceFetchSummary, setMarketplaceFetchSummary] = useState<MarketplaceFetchSummary | undefined>();
   const [marketplaceFetchError, setMarketplaceFetchError] = useState('');
   const enabledRelays = relays.filter((relay) => relay.enabled);
-  const syncedVisibleListings = syncedListings.filter((record) => !record.hidden);
+  const scopedSyncedListings = useMemo(
+    () => syncedListings.filter((record) => syncedListingInDisplayScope(record, syncSettings.listingDiscoveryScope)),
+    [syncedListings, syncSettings.listingDiscoveryScope]
+  );
+  const syncedVisibleListings = scopedSyncedListings.filter((record) => !record.hidden);
   const visibleCommunityLists = syncedCommunityLists.filter((record) => !record.hidden);
   const curationCoordinateMap = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -1798,7 +1905,7 @@ function BrowsePage({
 
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
-  }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, trust, type]);
+  }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, syncSettings.listingDiscoveryScope, trust, type]);
 
   const filtered = useMemo(() => {
     const normalized = query.toLowerCase();
@@ -1809,7 +1916,7 @@ function BrowsePage({
     const syncedRows: MarketplaceListingRow[] =
       source === 'local'
         ? []
-        : applyHiddenFilter(syncedListings, hidden)
+        : applyHiddenFilter(scopedSyncedListings, hidden)
             .filter((record) => (trust === 'all' ? true : trust === 'trusted' ? record.trusted : !record.trusted))
             .map((record) => ({ listing: record.payload, source: 'synced' as const, trusted: record.trusted, record }));
 
@@ -1827,7 +1934,7 @@ function BrowsePage({
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
     return sort === 'expiring' ? ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt)) : ranked;
-  }, [category, curationCoordinateMap, fulfillment, hidden, listings, payment, query, region, selectedCurationCoordinates, showExpired, sort, source, syncedListings, trust, type]);
+  }, [category, curationCoordinateMap, fulfillment, hidden, listings, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, trust, type]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -1837,7 +1944,7 @@ function BrowsePage({
     const syncedRows: MarketplaceListingRow[] =
       source === 'local'
         ? []
-        : applyHiddenFilter(syncedListings, hidden)
+        : applyHiddenFilter(scopedSyncedListings, hidden)
             .filter((record) => (trust === 'all' ? true : trust === 'trusted' ? record.trusted : !record.trusted))
             .map((record) => ({ listing: record.payload, source: 'synced' as const, trusted: record.trusted, record }));
     const curated = selectedCurationCoordinates ? new Set(selectedCurationCoordinates.map((coordinate) => coordinate.split(':').slice(1).join(':'))) : undefined;
@@ -1852,7 +1959,7 @@ function BrowsePage({
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     return dedupeMarketplaceListings(filteredRows).duplicates.length;
-  }, [category, fulfillment, hidden, listings, payment, query, region, selectedCurationCoordinates, showExpired, source, syncedListings, trust, type]);
+  }, [category, fulfillment, hidden, listings, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, trust, type]);
   const visibleFiltered = filtered.slice(0, visibleLimit);
   const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => ({
     label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}`,
@@ -2137,22 +2244,38 @@ function BrowsePage({
               {t('listing.create')}
             </button>
           </div>
+          <div className="marketplace-scope-switch">
+            <div className="scope-switch-heading">
+              <strong>{t('marketplace.fetchScope')}</strong>
+              <span className="muted">{t('marketplace.fetchScopeHelp')}</span>
+            </div>
+            <div className="segmented-control" role="group" aria-label={t('marketplace.fetchScope')}>
+              {[
+                ['agoramesh-native', t('marketplace.scopeAgoraMeshOnly')],
+                ['all-nip99', t('sync.scopeAllNip99')]
+              ].map(([value, label]) => (
+                <button
+                  aria-pressed={syncSettings.listingDiscoveryScope === value}
+                  className={syncSettings.listingDiscoveryScope === value ? 'filter-chip active' : 'filter-chip'}
+                  key={value}
+                  onClick={() => onListingDiscoveryScopeChange(value as ListingDiscoveryScope)}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="marketplace-fetch-panel" aria-live="polite">
-            <label>
-              {t('marketplace.fetchScope')}
-              <select
-                aria-label={t('marketplace.fetchScope')}
-                value={syncSettings.listingDiscoveryScope}
-                onChange={(event) => onListingDiscoveryScopeChange(event.target.value as ListingDiscoveryScope)}
-              >
-                <option value="agoramesh-native">{t('sync.scopeAgoraMeshNative')}</option>
-                <option value="all-nip99">{t('sync.scopeAllNip99')}</option>
-              </select>
-            </label>
             <button disabled={fetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
               <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
             </button>
-            <p className="muted marketplace-fetch-help">{t('marketplace.fetchScopeHelp')}</p>
+            <p className="muted marketplace-fetch-help">
+              {t('marketplace.fetchActiveScope').replace(
+                '{scope}',
+                syncSettings.listingDiscoveryScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('marketplace.scopeAgoraMeshOnly')
+              )}
+            </p>
             {marketplaceFetchSummary ? (
               <p className="muted marketplace-fetch-summary">
                 {t('marketplace.fetchSummary')

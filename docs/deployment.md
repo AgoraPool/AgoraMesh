@@ -23,8 +23,8 @@ Release verification is part of the security model. Keep the lockfile with the r
 Before publishing a release candidate, complete `docs/release-candidate-checklist.md` and fill `docs/qa-report-template.md`. Maintainers should create a signed annotated tag only after the checklist passes:
 
 ```bash
-git tag -s v0.27.0-rc.1 -m "AgoraMesh v0.27.0 RC 1"
-git push origin v0.27.0-rc.1
+git tag -s v0.28.0-rc.1 -m "AgoraMesh v0.28.0 RC 1"
+git push origin v0.28.0-rc.1
 ```
 
 Attach verified artifacts manually if creating a GitHub Release. AgoraMesh does not automatically publish GitHub Releases from CI.

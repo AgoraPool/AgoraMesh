@@ -64,6 +64,10 @@
 - v0.25.0 v1 QA hardening with labeled tablists/disclosures, keyboard tab switching, responsive overflow fixes for dense cards/forms/action rows, a production accessibility checklist, and updated v1 readiness docs.
 - v0.26.0 v1 release-candidate readiness with `release:rc-check`, release checklist, QA report template, release notes template, signed-tag guidance, dependency review expectations, and artifact verification docs.
 - v0.27.0 Czech localization polish with more natural UI copy, consistent marketplace/trust terminology, and updated release version references.
+- NIP-99 marketplace cutover with direct public fetch/cache, external NIP-99 image support, newest-wins synced listing updates, and no runtime support for the removed custom listing kind.
+- Marketplace profile/media and sync UX improvements with circular avatars, Blossom avatar upload, mediator profile linkage, marketplace profile summaries, and clearer fetch scope controls.
+- App navigation and Create Listing cleanup with desktop sidebar/mobile bottom navigation, collapsible rail, NIP-99-focused listing fields, and removal of payment/fulfillment controls from Create/Edit.
+- v0.28.0 sidebar, scope, and signer-restore polish with aligned collapsed desktop navigation, Marketplace display/fetch scope switching, extension sign-in restoration of authored cached profile/listing/mediator records, and updated release version references.
 
 ## Not Planned For MVP
 

@@ -42,7 +42,7 @@ Community curation lists live under Marketplace Sync and discovery. They point t
 
 ## Trade Workspace
 
-Use Trade for the private side of a marketplace exchange. Start from a local listing or a reviewed synced public listing, define participant labels and public keys, payment method, fulfillment terms, deadline, refund terms, optional mediator, and evidence expectations.
+Use Trade for the private side of a marketplace exchange. Start from a local listing or a synced public listing, define participant labels and public keys, payment method, fulfillment terms, deadline, refund terms, optional mediator, and evidence expectations.
 
 Starting a trade from a synced listing only pre-fills the local agreement form. It does not import the synced listing into your local listings and does not publish agreement terms.
 
@@ -64,15 +64,15 @@ Browse shows scan-friendly attestation cards with source, role, tags, signature 
 
 Nostr relays are optional. They can see public events you publish. The app works without relay connectivity.
 
-Safety notices in the relay and review queue screens explain metadata exposure and review-before-cache behavior. A valid signature proves event authorship, not truth or safety. Review filters and bulk actions operate only on visible eligible items; they do not create automatic trust or bypass review. Expired listing review items and synced listing cache rows are hidden by default; enable expired listings when you need older records.
+Safety notices in the relay and sync screens explain metadata exposure and explicit fetch-before-cache behavior. A valid signature proves event authorship, not truth or safety. Marketplace fetch scope controls whether discovery stays with AgoraMesh-native NIP-99 listings or includes all valid NIP-99 classifieds. Expired synced listing cache rows are hidden by default; enable expired listings when you need older records.
 
-Settings includes a Public Sync Wizard that summarizes the public path: enable a relay, fetch public events for review, import only selected records, then return to Marketplace or publish your own listing. The wizard does not auto-import or auto-publish.
+Settings includes sync controls that summarize the public path: enable a relay, choose the Marketplace fetch scope, fetch public records explicitly, then return to Marketplace or publish your own listing. The app does not auto-fetch or auto-publish.
 
 Settings is split into Account & signer, Relays & sync, Review queue, Public cache, Trust lists, Media servers, Backup & danger, and Diagnostics. Operational actions stay in their own sections, while relay health, fetch summaries, and publish receipts live in Diagnostics.
 
 Profile offers two identity paths: connect an existing NIP-07 Nostr account or generate a new encrypted local identity. Extension-backed identities store only the signer public key and display name in AgoraMesh; reconnect the same signer before publishing or signing receipts. Local identities keep the existing passphrase unlock, lock, and private-key backup flow.
 
-When you connect an existing signer, AgoraMesh checks the reviewed public cache for a visible public profile from the same key and restores that profile locally. Pending review items are not auto-imported; review and import them first if you want sign-in to reuse that public profile.
+When you connect an existing signer, AgoraMesh checks the synced public cache for visible authored public records from the same key and restores matching profile, listing, and mediator records locally for editing. It does not query relays during sign-in; use Marketplace Fetch first if those public records are not cached yet.
 
 After connecting an existing Nostr account, you can explicitly fetch standard Nostr profile metadata from enabled relays to prefill local profile fields. This is a relay query for your public key, not a publish action, and it does not import public cache records.
 

@@ -186,7 +186,7 @@ pre {
 }
 
 .app-shell {
-  --sidebar-rail-size: 2.75rem;
+  --sidebar-rail-size: 2.65rem;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 17rem minmax(0, 1fr);
@@ -321,35 +321,45 @@ pre {
 .app-sidebar.collapsed {
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4) 0.7rem;
+  padding: var(--space-4) 0;
 }
 
 .app-sidebar.collapsed .sidebar-header {
   display: grid;
   gap: var(--space-2);
   justify-items: center;
-  width: 100%;
+  width: var(--sidebar-rail-size);
 }
 
 .app-sidebar.collapsed .primary-nav,
 .app-sidebar.collapsed .secondary-nav,
 .app-sidebar.collapsed .sidebar-footer {
   align-items: center;
-  width: 100%;
+  width: var(--sidebar-rail-size);
 }
 
 .app-sidebar.collapsed .brand,
 .app-sidebar.collapsed .nav button,
-.app-sidebar.collapsed .sidebar-collapse-button {
+.app-sidebar.collapsed .sidebar-collapse-button,
+.app-sidebar.collapsed .language-switch button {
   display: inline-grid;
   place-items: center;
   justify-content: center;
+  box-sizing: border-box;
   width: var(--sidebar-rail-size);
   min-width: var(--sidebar-rail-size);
   height: var(--sidebar-rail-size);
   min-height: var(--sidebar-rail-size);
   max-height: var(--sidebar-rail-size);
   padding: 0;
+  line-height: 0;
+}
+
+.app-sidebar.collapsed .nav button svg,
+.app-sidebar.collapsed .sidebar-collapse-button svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 auto;
 }
 
 .app-sidebar.collapsed .brand {
@@ -357,8 +367,8 @@ pre {
 }
 
 .app-sidebar.collapsed .brand-mark {
-  width: 2.05rem;
-  height: 2.05rem;
+  width: 1.85rem;
+  height: 1.85rem;
 }
 
 .app-sidebar.collapsed .brand-name,
@@ -376,7 +386,7 @@ pre {
   display: grid;
   justify-items: center;
   gap: var(--space-2);
-  width: 100%;
+  width: var(--sidebar-rail-size);
 }
 
 .app-sidebar.collapsed .language-switch svg {
@@ -384,11 +394,7 @@ pre {
 }
 
 .app-sidebar.collapsed .language-switch button {
-  width: var(--sidebar-rail-size);
-  min-width: var(--sidebar-rail-size);
-  height: var(--sidebar-rail-size);
-  min-height: var(--sidebar-rail-size);
-  padding: 0;
+  line-height: 1;
 }
 
 main {
@@ -936,6 +942,20 @@ dd {
   margin-block: var(--space-4) var(--space-5);
 }
 
+.filter-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.filter-summary p {
+  margin: var(--space-1) 0 0;
+  font-size: 0.88rem;
+}
+
 .compact-filters,
 .stack-form {
   display: grid;
@@ -1099,7 +1119,8 @@ dd {
 }
 
 .listing-gallery,
-.image-preview-grid {
+.image-preview-grid,
+.image-manager-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
   gap: var(--space-3);
@@ -1135,6 +1156,44 @@ dd {
   padding: 0 var(--space-3) var(--space-3);
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.image-manager-grid {
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.image-manager-item {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: #11100c;
+}
+
+.image-manager-item .listing-image {
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.image-manager-copy {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.image-manager-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-actions {
+  justify-content: stretch;
+}
+
+.gallery-actions button {
+  flex: 1 1 auto;
 }
 
 .empty-gallery {
@@ -2201,6 +2260,10 @@ dd {
 
   .listing-card-body > button {
     margin-top: auto;
+  }
+
+  .filter-summary {
+    grid-template-columns: 1fr;
   }
 
   .actions,

@@ -115,7 +115,7 @@ describe('production readiness UI', () => {
     expect(screen.getByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
 
     fireEvent.click(screen.getByRole('tab', { name: 'Discover' }));
-    const filters = screen.getByRole('button', { name: 'Filters' });
+    const filters = screen.getByRole('button', { name: 'More filters' });
     expect(filters).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(filters);
     expect(filters).toHaveAttribute('aria-expanded', 'true');
@@ -311,7 +311,7 @@ describe('production readiness UI', () => {
 
     expect(await screen.findByRole('tab', { name: 'Discover' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByText('Create a public-ready listing')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sync and discovery' })).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 0 of 0/i)).toBeInTheDocument();
     expect(await screen.findByLabelText('Search')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Type' })).toBeInTheDocument();
@@ -324,14 +324,20 @@ describe('production readiness UI', () => {
     expect(screen.queryByLabelText('Quick fulfillment filters')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Quick payment filters')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
 
+    expect(screen.getByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    expect(screen.getByText('No advanced filters active')).toBeInTheDocument();
     expect(screen.getByLabelText('Category')).toBeInTheDocument();
     expect(screen.getByLabelText('Quick fulfillment filters')).toBeInTheDocument();
     expect(screen.getByLabelText('Quick payment filters')).toBeInTheDocument();
     expect(screen.getByLabelText('Data source')).toBeInTheDocument();
     expect(screen.getByLabelText('Visibility')).toBeInTheDocument();
     expect(screen.getByLabelText('Show expired listings')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'repairs' } });
+    expect(screen.getByText('1 active advanced filters')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset advanced filters' }));
+    expect(screen.getByText('No advanced filters active')).toBeInTheDocument();
   });
 
   it('uses the Marketplace scope switch for displayed synced listings', async () => {
@@ -390,7 +396,7 @@ describe('production readiness UI', () => {
     expect(screen.queryByText('Expired listing')).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 1 of 1/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
     fireEvent.click(screen.getByLabelText('Show expired listings'));
 
     expect(await screen.findByText('Expired listing')).toBeInTheDocument();
@@ -432,6 +438,7 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
     expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
     expect(await screen.findByText('Add a relay when you want public reach')).toBeInTheDocument();
@@ -455,6 +462,7 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
     expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
     expect(await screen.findByText('Fetch public marketplace records')).toBeInTheDocument();
@@ -480,6 +488,7 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
     expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
     expect(await screen.findByText('Publish your listing when ready')).toBeInTheDocument();
@@ -508,6 +517,7 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Sync and discovery' }));
     fireEvent.click(screen.getByRole('button', { name: 'Community curation lists' }));
     fireEvent.change(screen.getByLabelText('List title'), { target: { value: 'Repair picks' } });
@@ -935,6 +945,37 @@ describe('production readiness UI', () => {
     await expect(db.publishReceipts.count()).resolves.toBe(0);
   });
 
+  it('edits existing listing image order, removal, and per-image alt text locally', async () => {
+    const identity = identityFixture();
+    const listing = listingFixture({
+      id: 'listing_edit_images',
+      authorPublicKey: identity.publicKey,
+      title: 'Gallery listing',
+      images: [
+        { id: 'image_first', url: 'https://media.example/first.webp', altText: 'First image' },
+        { id: 'image_second', url: 'https://media.example/second.webp', altText: 'Second image' }
+      ]
+    });
+    await db.identity.put(identity);
+    await db.listings.put(listing);
+
+    renderAppAt('#listing/local/listing_edit_images');
+
+    expect(await screen.findByRole('heading', { name: 'Gallery listing' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit listing' }));
+    expect(await screen.findByRole('heading', { name: 'Edit listing' })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Earlier' })[1]);
+    fireEvent.change(screen.getByLabelText('Alt text for image 1'), { target: { value: 'Primary gallery image' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(async () => {
+      const updated = await db.listings.get('listing_edit_images');
+      expect(updated?.images).toEqual([{ id: 'image_second', url: 'https://media.example/second.webp', altText: 'Primary gallery image' }]);
+    });
+    await expect(db.publishReceipts.count()).resolves.toBe(0);
+  });
+
   it('does not offer editing for non-author local or synced listings', async () => {
     await db.identity.put(identityFixture());
     await db.listings.put(listingFixture({ id: 'listing_not_author', authorPublicKey: 'b'.repeat(64), title: 'Other local listing' }));
@@ -1317,6 +1358,7 @@ describe('production readiness UI', () => {
     expect(screen.getByText('quiet-detail')).toBeInTheDocument();
     expect(screen.queryByText(/Marketplace shows local listings/i)).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
     fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
     expect(screen.getByText(/Marketplace shows local listings/i)).toBeInTheDocument();
 
@@ -1621,7 +1663,7 @@ describe('production readiness UI', () => {
     await expect(db.listings.count()).resolves.toBe(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to Marketplace' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Filters' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
     fireEvent.change(screen.getByLabelText('Visibility'), { target: { value: 'hidden' } });
     expect(await screen.findByText('Synced repair')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'View item' }));

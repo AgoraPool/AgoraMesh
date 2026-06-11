@@ -24,7 +24,7 @@ import {
   UserRound
 } from 'lucide-react';
 import type { Table } from 'dexie';
-import { useEffect, useId, useMemo, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { attestationFromSignedEvent, createSignedAttestation, prepareAttestationEvent, verifyAttestation, type AttestationSignedEvent } from '../lib/crypto/attestations';
 import { decryptDisputeBundle, encryptDisputeBundle } from '../lib/crypto/encryptedExport';
@@ -192,6 +192,9 @@ type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
 type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged' | 'skipped';
 type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList;
+type ListingImageDraft =
+  | { id: string; kind: 'existing'; image: ListingImage; previewUrl: string; name: string; altText: string }
+  | { id: string; kind: 'new'; file: File; previewUrl: string; name: string; altText: string };
 type SignerRestoreSummary = {
   profile: number;
   listings: number;
@@ -1965,10 +1968,20 @@ function BrowsePage({
     label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}`,
     coordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
   }));
-  const resetFilters = (): void => {
-    setQuery('');
+  const advancedFilterLabels = [
+    category !== 'all' ? `${t('common.category')}: ${categoryLabel(category, t)}` : undefined,
+    region ? `${t('common.region')}: ${region}` : undefined,
+    fulfillment !== 'all' ? `${t('listing.fulfillment')}: ${t(`fulfillment.${fulfillment}`)}` : undefined,
+    payment !== 'all' ? `${t('listing.paymentIntentMethod')}: ${paymentBadgeLabel(payment as PaymentPreference, t)}` : undefined,
+    sort !== 'newest' ? `${t('common.sort')}: ${t('common.expiring')}` : undefined,
+    source !== syncSettings.defaultBrowseSource ? `${t('sync.source')}: ${source}` : undefined,
+    trust !== 'all' ? `${t('sync.trust')}: ${trust}` : undefined,
+    hidden !== 'visible' ? `${t('sync.hiddenFilter')}: ${hidden}` : undefined,
+    curationFilter !== 'all' ? `${t('curation.filter')}: ${visibleCommunityLists.find((record) => record.id === curationFilter)?.payload.title ?? curationFilter}` : undefined,
+    showExpired ? t('marketplace.showExpired') : undefined
+  ].filter((label): label is string => Boolean(label));
+  const resetAdvancedFilters = (): void => {
     setCategory('all');
-    setType('all');
     setPayment('all');
     setFulfillment('all');
     setRegion('');
@@ -1978,6 +1991,11 @@ function BrowsePage({
     setHidden('visible');
     setCurationFilter('all');
     setShowExpired(false);
+  };
+  const resetFilters = (): void => {
+    setQuery('');
+    setType('all');
+    resetAdvancedFilters();
   };
 
   const saveCommunityList = async (event: FormEvent): Promise<void> => {
@@ -2106,11 +2124,10 @@ function BrowsePage({
   };
 
   const renderListingThumb = (listing: Listing): ReactNode => {
-    const firstImage = listing.images?.[0];
-    const imageFailed = firstImage ? failedListingImages.includes(firstImage.url) : false;
+    const firstImage = listing.images?.find((image) => !failedListingImages.includes(image.url));
     return (
-      <div className={firstImage && !imageFailed ? 'listing-card-thumb' : 'listing-card-thumb empty'} aria-hidden="true">
-        {firstImage && !imageFailed ? (
+      <div className={firstImage ? 'listing-card-thumb' : 'listing-card-thumb empty'} aria-hidden="true">
+        {firstImage ? (
           <img
             src={firstImage.url}
             alt=""
@@ -2293,7 +2310,22 @@ function BrowsePage({
               </p>
             ) : null}
           </div>
-          <DisclosurePanel title={t('marketplace.filters')}>
+          <DisclosurePanel title={t('marketplace.moreFilters')}>
+            <div className="filter-summary">
+              <div>
+                <strong>
+                  {advancedFilterLabels.length > 0
+                    ? t('marketplace.activeFilters').replace('{count}', String(advancedFilterLabels.length))
+                    : t('marketplace.activeFiltersNone')}
+                </strong>
+                {advancedFilterLabels.length > 0 ? <p className="muted">{advancedFilterLabels.join(' · ')}</p> : null}
+              </div>
+              {advancedFilterLabels.length > 0 ? (
+                <button className="subtle" onClick={resetAdvancedFilters} type="button">
+                  {t('marketplace.resetAdvancedFilters')}
+                </button>
+              ) : null}
+            </div>
             <div className="filters compact-filters">
               <select aria-label={t('common.category')} value={category} onChange={(event) => setCategory(event.target.value)}>
                 <option value="all">{t('common.all')}</option>
@@ -2363,6 +2395,89 @@ function BrowsePage({
                 {t('sync.unhideVisibleSynced')}
               </button>
             </div>
+            <DisclosurePanel title={t('marketplace.syncDiscovery')}>
+              <MarketplaceGuidance action={marketplaceAction} onAction={runMarketplaceAction} />
+              <StatusChipRow items={marketplaceStatusItems} />
+              <InlineHelp>{t('help.browse')}</InlineHelp>
+              <DisclosurePanel title={t('curation.title')}>
+                <InlineHelp>{t('curation.body')}</InlineHelp>
+                <form className="stack-form" onSubmit={(event) => void saveCommunityList(event)}>
+                  <label>
+                    {t('curation.listTitle')}
+                    <input
+                      disabled={!identity}
+                      required
+                      value={curationForm.title}
+                      onChange={(event) => setCurationForm({ ...curationForm, title: event.target.value })}
+                      placeholder={t('placeholder.curationTitle')}
+                    />
+                  </label>
+                  <label>
+                    {t('curation.description')}
+                    <textarea
+                      disabled={!identity}
+                      value={curationForm.description}
+                      onChange={(event) => setCurationForm({ ...curationForm, description: event.target.value })}
+                      placeholder={t('placeholder.curationDescription')}
+                    />
+                  </label>
+                  <fieldset className="fieldset-list">
+                    <legend>{t('curation.references')}</legend>
+                    {curationCandidates.map((candidate) => (
+                      <label className="checkbox" key={candidate.coordinate}>
+                        <input
+                          checked={curationForm.selectedCoordinates.includes(candidate.coordinate)}
+                          disabled={!identity}
+                          type="checkbox"
+                          onChange={(event) => toggleCurationCoordinate(candidate.coordinate, event.target.checked)}
+                        />
+                        {candidate.label}
+                      </label>
+                    ))}
+                    {curationCandidates.length === 0 ? <p className="muted">{t('curation.noCandidates')}</p> : null}
+                  </fieldset>
+                  <button
+                    disabled={!identity || curationForm.selectedCoordinates.length === 0}
+                    title={!identity ? t('a11y.identityRequired') : curationForm.selectedCoordinates.length === 0 ? t('curation.selectAtLeastOne') : undefined}
+                    type="submit"
+                  >
+                    {t('curation.save')}
+                  </button>
+                </form>
+                <div className="card-grid single">
+                  {communityLists.map((list) => (
+                    <article className="card compact" key={list.id}>
+                      <div className="row between">
+                        <h3>{list.title}</h3>
+                        <span className="pill">{t('marketplace.sourceLocal')}</span>
+                      </div>
+                      <p>{list.description}</p>
+                      <p className="muted">
+                        {t('curation.references')}: {list.referencedCoordinates.length}
+                      </p>
+                      <button disabled={enabledRelays.length === 0} onClick={() => onPublishCommunityList(list)} type="button">
+                        <Radio size={16} /> {t('curation.publish')}
+                      </button>
+                    </article>
+                  ))}
+                  {visibleCommunityLists.map((record) => (
+                    <article className="card compact" key={record.id}>
+                      <div className="row between">
+                        <h3>{record.payload.title}</h3>
+                        <span className="pill">{record.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
+                      </div>
+                      <p>{record.payload.description}</p>
+                      <p className="muted">
+                        {t('curation.references')}: {record.payload.referencedCoordinates.length}
+                      </p>
+                    </article>
+                  ))}
+                  {communityLists.length === 0 && visibleCommunityLists.length === 0 ? (
+                    <EmptyState title={t('empty.curationTitle')} body={t('empty.curationBody')} />
+                  ) : null}
+                </div>
+              </DisclosurePanel>
+            </DisclosurePanel>
           </DisclosurePanel>
           <div className="card-grid">
             {visibleFiltered.map((row) => renderListingCard(row))}
@@ -2384,89 +2499,6 @@ function BrowsePage({
               </button>
             </div>
           </div>
-          <DisclosurePanel title={t('marketplace.syncDiscovery')}>
-            <MarketplaceGuidance action={marketplaceAction} onAction={runMarketplaceAction} />
-            <StatusChipRow items={marketplaceStatusItems} />
-            <InlineHelp>{t('help.browse')}</InlineHelp>
-            <DisclosurePanel title={t('curation.title')}>
-              <InlineHelp>{t('curation.body')}</InlineHelp>
-              <form className="stack-form" onSubmit={(event) => void saveCommunityList(event)}>
-                <label>
-                  {t('curation.listTitle')}
-                  <input
-                    disabled={!identity}
-                    required
-                    value={curationForm.title}
-                    onChange={(event) => setCurationForm({ ...curationForm, title: event.target.value })}
-                    placeholder={t('placeholder.curationTitle')}
-                  />
-                </label>
-                <label>
-                  {t('curation.description')}
-                  <textarea
-                    disabled={!identity}
-                    value={curationForm.description}
-                    onChange={(event) => setCurationForm({ ...curationForm, description: event.target.value })}
-                    placeholder={t('placeholder.curationDescription')}
-                  />
-                </label>
-                <fieldset className="fieldset-list">
-                  <legend>{t('curation.references')}</legend>
-                  {curationCandidates.map((candidate) => (
-                    <label className="checkbox" key={candidate.coordinate}>
-                      <input
-                        checked={curationForm.selectedCoordinates.includes(candidate.coordinate)}
-                        disabled={!identity}
-                        type="checkbox"
-                        onChange={(event) => toggleCurationCoordinate(candidate.coordinate, event.target.checked)}
-                      />
-                      {candidate.label}
-                    </label>
-                  ))}
-                  {curationCandidates.length === 0 ? <p className="muted">{t('curation.noCandidates')}</p> : null}
-                </fieldset>
-                <button
-                  disabled={!identity || curationForm.selectedCoordinates.length === 0}
-                  title={!identity ? t('a11y.identityRequired') : curationForm.selectedCoordinates.length === 0 ? t('curation.selectAtLeastOne') : undefined}
-                  type="submit"
-                >
-                  {t('curation.save')}
-                </button>
-              </form>
-              <div className="card-grid single">
-                {communityLists.map((list) => (
-                  <article className="card compact" key={list.id}>
-                    <div className="row between">
-                      <h3>{list.title}</h3>
-                      <span className="pill">{t('marketplace.sourceLocal')}</span>
-                    </div>
-                    <p>{list.description}</p>
-                    <p className="muted">
-                      {t('curation.references')}: {list.referencedCoordinates.length}
-                    </p>
-                    <button disabled={enabledRelays.length === 0} onClick={() => onPublishCommunityList(list)} type="button">
-                      <Radio size={16} /> {t('curation.publish')}
-                    </button>
-                  </article>
-                ))}
-                {visibleCommunityLists.map((record) => (
-                  <article className="card compact" key={record.id}>
-                    <div className="row between">
-                      <h3>{record.payload.title}</h3>
-                      <span className="pill">{record.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
-                    </div>
-                    <p>{record.payload.description}</p>
-                    <p className="muted">
-                      {t('curation.references')}: {record.payload.referencedCoordinates.length}
-                    </p>
-                  </article>
-                ))}
-                {communityLists.length === 0 && visibleCommunityLists.length === 0 ? (
-                  <EmptyState title={t('empty.curationTitle')} body={t('empty.curationBody')} />
-                ) : null}
-              </div>
-            </DisclosurePanel>
-          </DisclosurePanel>
         </>
       ) : null}
       {activeBrowseTab === 'create' ? (
@@ -2542,12 +2574,20 @@ function ListingCreatePanel({
     visibility: initialListing?.visibility ?? ('public' as ListingVisibility),
     mediatorPreference: initialListing?.mediatorPreference ?? ''
   }));
-  const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [imageAltText, setImageAltText] = useState('');
-  const [imagePreviews, setImagePreviews] = useState<{ name: string; url: string }[]>([]);
+  const [imageDrafts, setImageDrafts] = useState<ListingImageDraft[]>(() =>
+    (initialListing?.images ?? []).map((image, index) => ({
+      id: `existing-${image.id}-${index}`,
+      kind: 'existing' as const,
+      image,
+      previewUrl: image.url,
+      name: image.altText || image.url,
+      altText: image.altText ?? ''
+    }))
+  );
   const [imageNotice, setImageNotice] = useState('');
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const imageDraftsRef = useRef(imageDrafts);
   const enabledBlossomServer = blossomServers.find((server) => server.enabled);
   const mode = initialListing ? 'edit' : 'create';
   const authorPublicKey = initialListing?.authorPublicKey ?? identity?.publicKey;
@@ -2564,10 +2604,11 @@ function ListingCreatePanel({
   const hasImageSigner =
     Boolean(authorPublicKey) &&
     (connectedSignerMatchesIdentity || (identityCanUseLocalUnlock(identity) && Boolean(privateKeyHex) && publicKeysMatch(identity?.publicKey, authorPublicKey)));
-  const needsImageSignerAction = imageFiles.length > 0 && Boolean(enabledBlossomServer) && !hasImageSigner;
+  const newImageDrafts = imageDrafts.filter((draft): draft is Extract<ListingImageDraft, { kind: 'new' }> => draft.kind === 'new');
+  const needsImageSignerAction = newImageDrafts.length > 0 && Boolean(enabledBlossomServer) && !hasImageSigner;
   const essentialsReady = Boolean(form.title.trim() && form.description.trim() && form.region.trim() && form.contactValue.trim());
   const mediaStatus =
-    imageFiles.length === 0
+    newImageDrafts.length === 0
       ? t('listing.readiness.mediaOptional')
       : !enabledBlossomServer
         ? t('listing.readiness.mediaNoServer')
@@ -2577,39 +2618,73 @@ function ListingCreatePanel({
   const visibilityStatus =
     form.visibility === 'public' ? t('listing.readiness.visibilityPublic') : t('listing.readiness.visibilityLocal');
 
+  useEffect(() => {
+    imageDraftsRef.current = imageDrafts;
+  }, [imageDrafts]);
+
   useEffect(
     () => () => {
       if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
-        imagePreviews.forEach((preview) => URL.revokeObjectURL(preview.url));
+        imageDraftsRef.current.forEach((draft) => {
+          if (draft.kind === 'new' && draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+        });
       }
     },
-    [imagePreviews]
+    []
   );
 
   const selectImages = (event: ChangeEvent<HTMLInputElement>): void => {
     const selected = Array.from(event.target.files ?? []);
-    const files = selected.slice(0, maxListingImages);
-    if (typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
-      imagePreviews.forEach((preview) => URL.revokeObjectURL(preview.url));
-    }
-    setImageFiles(files);
-    setImagePreviews(
-      typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function'
-        ? files.map((file) => ({ name: file.name, url: URL.createObjectURL(file) }))
-        : []
-    );
-    setImageNotice(selected.length > maxListingImages ? t('listing.imageLimit') : '');
+    const remainingSlots = Math.max(0, maxListingImages - imageDrafts.length);
+    const files = selected.slice(0, remainingSlots);
+    const newDrafts: ListingImageDraft[] = files.map((file, index) => ({
+      id: newId(`image_draft_${index}`),
+      kind: 'new',
+      file,
+      previewUrl: typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : '',
+      name: file.name,
+      altText: ''
+    }));
+    setImageDrafts((current) => [...current, ...newDrafts]);
+    setImageNotice(selected.length > remainingSlots ? t('listing.imageLimit') : '');
+    event.target.value = '';
   };
 
-  const uploadListingImages = async (): Promise<ListingImage[]> => {
-    if (!authorPublicKey || imageFiles.length === 0) return [];
+  const removeImageDraft = (id: string): void => {
+    setImageDrafts((current) => {
+      const draft = current.find((entry) => entry.id === id);
+      if (draft?.kind === 'new' && draft.previewUrl && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+        URL.revokeObjectURL(draft.previewUrl);
+      }
+      return current.filter((entry) => entry.id !== id);
+    });
+  };
+
+  const moveImageDraft = (id: string, direction: -1 | 1): void => {
+    setImageDrafts((current) => {
+      const index = current.findIndex((entry) => entry.id === id);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  };
+
+  const updateImageDraftAltText = (id: string, altText: string): void => {
+    setImageDrafts((current) => current.map((draft) => (draft.id === id ? { ...draft, altText } : draft)));
+  };
+
+  const uploadListingImages = async (): Promise<Map<string, ListingImage>> => {
+    if (!authorPublicKey || newImageDrafts.length === 0) return new Map();
     if (!enabledBlossomServer) {
       setImageNotice(t('listing.noBlossomServer'));
-      return [];
+      return new Map();
     }
-    const uploaded: ListingImage[] = [];
-    for (const file of imageFiles.slice(0, maxListingImages)) {
+    const uploaded = new Map<string, ListingImage>();
+    for (const draft of newImageDrafts.slice(0, maxListingImages)) {
       try {
+        const file = draft.file;
         validateListingImageFile(file);
         const hash = await sha256File(file);
         const signedAuth =
@@ -2622,7 +2697,7 @@ function ListingCreatePanel({
           throw new Error(t('listing.imageSignerRequired'));
         }
         const response = await uploadToBlossom(enabledBlossomServer.url, file, signedAuth);
-        uploaded.push(listingImageFromBlossomResponse(response, file, hash, enabledBlossomServer.url, imageAltText));
+        uploaded.set(draft.id, listingImageFromBlossomResponse(response, file, hash, enabledBlossomServer.url, draft.altText));
         await db.blossomServers.put({ ...enabledBlossomServer, lastUploadAt: nowIso(), lastError: undefined });
       } catch (error) {
         const message = error instanceof Error ? error.message : t('listing.imageUploadFailed');
@@ -2642,7 +2717,15 @@ function ListingCreatePanel({
     try {
       assertPeacefulListingText(form.title, form.description);
       const at = nowIso();
-      const images = await uploadListingImages();
+      const uploadedImages = await uploadListingImages();
+      const images = imageDrafts
+        .map((draft): ListingImage | undefined => {
+          if (draft.kind === 'existing') {
+            return { ...draft.image, altText: sanitizePlainText(draft.altText) || undefined };
+          }
+          return uploadedImages.get(draft.id);
+        })
+        .filter((image): image is ListingImage => Boolean(image));
       const listing: Listing = listingSchema.parse({
         id: initialListing?.id ?? newId('listing'),
         authorPublicKey,
@@ -2660,7 +2743,7 @@ function ListingCreatePanel({
         },
         paymentPreferences: initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]),
         paymentIntents: initialListing?.paymentIntents ?? [],
-        images: [...(initialListing?.images ?? []), ...images],
+        images,
         ...(initialListing?.fulfillmentType !== undefined ? { fulfillmentType: initialListing.fulfillmentType } : {}),
         ...(initialListing?.fulfillmentNotes !== undefined ? { fulfillmentNotes: initialListing.fulfillmentNotes } : {}),
         barterAccepted: form.barterAccepted,
@@ -2711,7 +2794,7 @@ function ListingCreatePanel({
               <strong>{t('listing.visibility')}</strong>
               <p>{visibilityStatus}</p>
             </div>
-            <div className={imageFiles.length === 0 || (enabledBlossomServer && hasImageSigner) ? 'readiness-item done' : 'readiness-item'}>
+            <div className={newImageDrafts.length === 0 || (enabledBlossomServer && hasImageSigner) ? 'readiness-item done' : 'readiness-item'}>
               <span className="pill">{t('listing.sectionImages')}</span>
               <strong>{t('listing.readiness.media')}</strong>
               <p>{mediaStatus}</p>
@@ -2763,6 +2846,13 @@ function ListingCreatePanel({
             />
             <FieldHint>{t('hint.listingDescription')}</FieldHint>
           </label>
+          <label>
+            {t('listing.tags')}
+            <input placeholder={t('placeholder.tags')} value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} />
+          </label>
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionContact')}</legend>
           <div className="listing-form-row contact-row">
             <label>
               {t('listing.location')}
@@ -2789,6 +2879,9 @@ function ListingCreatePanel({
               <FieldHint>{t('hint.contactPublic')}</FieldHint>
             </label>
           </div>
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionPublishReadiness')}</legend>
           <div className="listing-form-row publish-row">
             <label>
               {t('listing.status')}
@@ -2813,6 +2906,9 @@ function ListingCreatePanel({
               <input type="date" value={form.expiresAt} onChange={(event) => setForm({ ...form, expiresAt: event.target.value })} />
             </label>
           </div>
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionPrice')}</legend>
           <div className="listing-form-row publish-row">
             <label>
               {t('listing.priceAmount')}
@@ -2832,60 +2928,78 @@ function ListingCreatePanel({
             <input placeholder={t('placeholder.priceNote')} value={form.priceNote} onChange={(event) => setForm({ ...form, priceNote: event.target.value })} />
             <FieldHint>{t('hint.pricePublic')}</FieldHint>
           </label>
-          <fieldset className="fieldset-list">
-            <legend>{t('listing.sectionImages')}</legend>
-            <SafetyNotice>{t('safety.blossomImages')}</SafetyNotice>
-            {enabledBlossomServer ? (
-              <p className="muted">
-                {t('listing.blossomServer')}: {enabledBlossomServer.url}
-              </p>
-            ) : (
-              <ActionHint>{t('listing.noBlossomServer')}</ActionHint>
-            )}
-            <label>
-              {t('listing.images')}
-              <input accept="image/jpeg,image/png,image/webp" multiple type="file" onChange={selectImages} />
-              <FieldHint>{t('hint.listingImages')}</FieldHint>
-            </label>
-            {needsImageSignerAction ? (
-              <div className="action-hint media-signer-actions">
-                <p>{t(connectedSignerCanBecomeIdentity ? 'listing.imageSignerLink' : 'listing.imageSignerRequired')}</p>
-                <div className="actions small">
-                  {connectedSignerCanBecomeIdentity ? (
-                    <button onClick={onUseConnectedSignerAsIdentity} type="button">
-                      {t('signer.useAsIdentity')}
-                    </button>
-                  ) : null}
-                  <button onClick={onConnectSigner} type="button">
-                    {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
-                  </button>
-                  {identityCanUseLocalUnlock(identity) && !privateKeyHex ? (
-                    <button className="subtle" onClick={onCreateIdentity} type="button">
-                      {t('nav.profile')}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            <label>
-              {t('listing.imageAltText')}
-              <input maxLength={160} placeholder={t('placeholder.imageAltText')} value={imageAltText} onChange={(event) => setImageAltText(event.target.value)} />
-            </label>
-            {imageNotice ? <p className="warning">{imageNotice}</p> : null}
-            {imagePreviews.length > 0 ? (
-              <div className="image-preview-grid">
-                {imagePreviews.map((preview) => (
-                  <figure className="listing-image" key={preview.url}>
-                    <img src={preview.url} alt="" />
-                  </figure>
-                ))}
-              </div>
-            ) : null}
-          </fieldset>
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionImages')}</legend>
+          <SafetyNotice>{t('safety.blossomImages')}</SafetyNotice>
+          {enabledBlossomServer ? (
+            <p className="muted">
+              {t('listing.blossomServer')}: {enabledBlossomServer.url}
+            </p>
+          ) : (
+            <ActionHint>{t('listing.noBlossomServer')}</ActionHint>
+          )}
           <label>
-            {t('listing.tags')}
-            <input placeholder={t('placeholder.tags')} value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} />
+            {t('listing.images')}
+            <input accept="image/jpeg,image/png,image/webp" multiple type="file" onChange={selectImages} />
+            <FieldHint>{t('hint.listingImages')}</FieldHint>
           </label>
+          {needsImageSignerAction ? (
+            <div className="action-hint media-signer-actions">
+              <p>{t(connectedSignerCanBecomeIdentity ? 'listing.imageSignerLink' : 'listing.imageSignerRequired')}</p>
+              <div className="actions small">
+                {connectedSignerCanBecomeIdentity ? (
+                  <button onClick={onUseConnectedSignerAsIdentity} type="button">
+                    {t('signer.useAsIdentity')}
+                  </button>
+                ) : null}
+                <button onClick={onConnectSigner} type="button">
+                  {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+                </button>
+                {identityCanUseLocalUnlock(identity) && !privateKeyHex ? (
+                  <button className="subtle" onClick={onCreateIdentity} type="button">
+                    {t('nav.profile')}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {imageNotice ? <p className="warning">{imageNotice}</p> : null}
+          {imageDrafts.length > 0 ? (
+            <div className="image-manager-grid" aria-label={t('listing.imageGallery')}>
+              {imageDrafts.map((draft, index) => (
+                <article className="image-manager-item" key={draft.id}>
+                  <figure className="listing-image">
+                    {draft.previewUrl ? <img src={draft.previewUrl} alt="" /> : <span>{draft.name}</span>}
+                  </figure>
+                  <div className="image-manager-copy">
+                    <strong>{draft.name}</strong>
+                    <span className="muted">{draft.kind === 'existing' ? t('listing.imageExisting') : t('listing.imageSelected')}</span>
+                  </div>
+                  <label>
+                    {t('listing.imageAltFor').replace('{index}', String(index + 1))}
+                    <input
+                      maxLength={160}
+                      placeholder={t('placeholder.imageAltText')}
+                      value={draft.altText}
+                      onChange={(event) => updateImageDraftAltText(draft.id, event.target.value)}
+                    />
+                  </label>
+                  <div className="actions small gallery-actions">
+                    <button className="subtle" disabled={index === 0} onClick={() => moveImageDraft(draft.id, -1)} type="button">
+                      {t('listing.imageMoveEarlier')}
+                    </button>
+                    <button className="subtle" disabled={index === imageDrafts.length - 1} onClick={() => moveImageDraft(draft.id, 1)} type="button">
+                      {t('listing.imageMoveLater')}
+                    </button>
+                    <button className="danger" onClick={() => removeImageDraft(draft.id)} type="button">
+                      {t('listing.imageRemove')}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
         </fieldset>
         <DisclosurePanel title={t('marketplace.advancedListingFields')}>
           <fieldset className="fieldset-list">

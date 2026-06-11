@@ -97,7 +97,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.28.0`.
+Current app version: `0.29.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.28.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.29.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -143,6 +143,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.26.0 release-candidate pass adds release gates and QA templates. It does not publish releases automatically and does not make this build final v1.0.
 - The v0.27.0 Czech copy pass improves localization tone and consistency while preserving the existing security and privacy promises.
 - The v0.28.0 polish pass improves collapsed sidebar alignment, Marketplace NIP-99 scope filtering, and signer-backed restoration of authored cached public records for local editing.
+- The v0.29.0 UI pass fixes app icon loading, aligns the collapsed sidebar brand rail, and starts a restrained minimal agorist visual redesign for the main marketplace flows.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

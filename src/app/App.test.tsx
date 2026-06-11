@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { existsSync, readFileSync } from 'node:fs';
 import { vi } from 'vitest';
 import { I18nProvider } from '../i18n/I18nProvider';
 import { db, deleteLocalData } from '../lib/storage/db';
@@ -69,6 +70,13 @@ describe('production readiness UI', () => {
     vi.restoreAllMocks();
   });
 
+  it('references the shipped app icon for browser chrome', () => {
+    const html = readFileSync('index.html', 'utf8');
+
+    expect(html).toContain('href="/icons/icon.svg"');
+    expect(existsSync('public/icons/icon.svg')).toBe(true);
+  });
+
   it('exposes skip navigation, page landmarks, and active navigation state', async () => {
     renderAppAt('#browse');
 
@@ -78,6 +86,7 @@ describe('production readiness UI', () => {
     expect(screen.getByRole('navigation', { name: 'Secondary navigation' })).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Mobile navigation' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
+    expect(document.querySelector('.app-sidebar .brand-mark')).toHaveAttribute('src', '/icons/icon.svg');
     expect(screen.getByRole('button', { name: 'Marketplace' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('button', { name: 'Post' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Marketplace mobile tab' })).toHaveAttribute('aria-current', 'page');

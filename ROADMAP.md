@@ -68,6 +68,7 @@
 - Marketplace profile/media and sync UX improvements with circular avatars, Blossom avatar upload, mediator profile linkage, marketplace profile summaries, and clearer fetch scope controls.
 - App navigation and Create Listing cleanup with desktop sidebar/mobile bottom navigation, collapsible rail, NIP-99-focused listing fields, and removal of payment/fulfillment controls from Create/Edit.
 - v0.28.0 sidebar, scope, and signer-restore polish with aligned collapsed desktop navigation, Marketplace display/fetch scope switching, extension sign-in restoration of authored cached profile/listing/mediator records, and updated release version references.
+- v0.29.0 minimal agorist UI foundation with corrected app icon loading, SVG sidebar brand mark alignment, flatter brutalist surfaces, reduced card/pill styling, and calmer Home/Marketplace/Create/Profile presentation.
 
 ## Not Planned For MVP
 

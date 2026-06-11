@@ -904,7 +904,7 @@ export function App(): ReactNode {
       <aside className={sidebarCollapsed ? 'app-sidebar collapsed' : 'app-sidebar'} aria-label={t('app.name')}>
         <div className="sidebar-header">
           <button className="brand" onClick={() => go('home')} type="button" aria-label={t('app.name')}>
-            <span className="brand-mark">△</span>
+            <img className="brand-mark" src="/icons/icon.svg" alt="" aria-hidden="true" />
             <span className="brand-name">{t('app.name')}</span>
           </button>
           <button
@@ -948,7 +948,7 @@ export function App(): ReactNode {
       </aside>
       <header className="mobile-topbar" role="banner">
         <button className="brand" onClick={() => go('home')} type="button" aria-label={t('app.name')}>
-          <span className="brand-mark">△</span>
+          <img className="brand-mark" src="/icons/icon.svg" alt="" aria-hidden="true" />
           <span className="brand-name">{t('app.name')}</span>
         </button>
         <div className="language-switch compact" aria-label={t('language.mobileSwitcher')} role="group">

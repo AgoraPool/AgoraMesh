@@ -155,9 +155,10 @@ describe('production readiness UI', () => {
   it('renders guided empty states for blank production workflows', async () => {
     renderAppAt('#settings');
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Review' }));
-    expect(await screen.findByText('Review queue is empty')).toBeInTheDocument();
-    expect(screen.getByText('Review queue is empty').closest('.empty-state')).not.toBeNull();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Diagnostics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Advanced review diagnostics' }));
+    expect(await screen.findByText('Advanced review diagnostics are empty')).toBeInTheDocument();
+    expect(screen.getByText('Advanced review diagnostics are empty').closest('.empty-state')).not.toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Trust lists' }));
     expect(screen.getByText('No trusted keys saved')).toBeInTheDocument();
@@ -226,7 +227,7 @@ describe('production readiness UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(await screen.findByRole('tab', { name: 'Account & signer' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Relays & sync' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Review' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Review' })).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Public cache' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Trust lists' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Media servers' })).toBeInTheDocument();
@@ -284,7 +285,7 @@ describe('production readiness UI', () => {
     expect(screen.getByRole('button', { name: 'Sign as seller' })).toHaveAttribute('title', 'Connect a browser signer or create a local identity before signing.');
   });
 
-  it('shows safety copy for publishing, identity backup, and review import', async () => {
+  it('shows safety copy for publishing, identity backup, and advanced review diagnostics', async () => {
     renderAppAt('#listing');
 
     expect(await screen.findByRole('main', { name: 'Marketplace' })).toBeInTheDocument();
@@ -300,10 +301,11 @@ describe('production readiness UI', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Why this matters' }));
     expect(screen.getByText(/Live sync and manual fetch contact relays directly/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Diagnostics' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced review diagnostics' }));
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     fireEvent.click(screen.getByRole('button', { name: 'Why this matters' }));
-    expect(screen.getByText(/Fetched Nostr events land here first/i)).toBeInTheDocument();
+    expect(screen.getByText(/This advanced queue is for diagnostics/i)).toBeInTheDocument();
   });
 
   it('hides advanced browse filters until requested', async () => {
@@ -311,7 +313,7 @@ describe('production readiness UI', () => {
 
     expect(await screen.findByRole('tab', { name: 'Discover' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByText('Create a public-ready listing')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Sync and discovery' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Filter presets')).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 0 of 0/i)).toBeInTheDocument();
     expect(await screen.findByLabelText('Search')).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Type' })).toBeInTheDocument();
@@ -326,16 +328,32 @@ describe('production readiness UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
 
-    expect(screen.getByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
+    expect(screen.getByText('Filter presets')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fresh market' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Trusted synced' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Local only' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Moderation view' })).toBeInTheDocument();
     expect(screen.getByText('No advanced filters active')).toBeInTheDocument();
+    expect(screen.getByText('Listing fields')).toBeInTheDocument();
+    expect(screen.getByText('Source and visibility')).toBeInTheDocument();
+    expect(screen.getByText('Curation')).toBeInTheDocument();
+    expect(screen.getByText('Maintenance and help')).toBeInTheDocument();
     expect(screen.getByLabelText('Category')).toBeInTheDocument();
-    expect(screen.getByLabelText('Quick fulfillment filters')).toBeInTheDocument();
-    expect(screen.getByLabelText('Quick payment filters')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Quick fulfillment filters')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Quick payment filters')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Data source')).toBeInTheDocument();
     expect(screen.getByLabelText('Visibility')).toBeInTheDocument();
     expect(screen.getByLabelText('Show expired listings')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'repairs' } });
     expect(screen.getByText('1 active advanced filters')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Local only' }));
+    expect(screen.getByLabelText('Data source')).toHaveValue('local');
+    expect(screen.getByText('1 active advanced filters')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Moderation view' }));
+    expect(screen.getByLabelText('Data source')).toHaveValue('synced');
+    expect(screen.getByLabelText('Visibility')).toHaveValue('all');
+    expect(screen.getByLabelText('Show expired listings')).toBeChecked();
+    expect(screen.getByText(/3 active advanced filters/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reset advanced filters' }));
     expect(screen.getByText('No advanced filters active')).toBeInTheDocument();
   });
@@ -431,21 +449,23 @@ describe('production readiness UI', () => {
     expect(await screen.findByText(/Showing 24 of 30/i)).toBeInTheDocument();
   });
 
-  it('guides marketplace users toward relay setup, direct fetch, publish, and trade', async () => {
+  it('keeps public listing loading in one discovery panel', async () => {
     await db.listings.put(listingFixture());
     await db.relays.clear();
     await db.relays.bulkPut([{ url: 'wss://disabled.example', enabled: false }]);
 
     renderAppAt('#browse');
 
+    expect(await screen.findByText('Load public listings')).toBeInTheDocument();
+    expect(screen.getByText('0 relays enabled')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fetch listings' })).toBeDisabled();
     fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
-    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
-    expect(await screen.findByText('Add a relay when you want public reach')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Configure relays' })).toBeInTheDocument();
+    expect(await screen.findByText('Maintenance and help')).toBeInTheDocument();
+    expect(screen.getByLabelText('Marketplace status')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Fetch listings' })).toHaveLength(1);
   });
 
-  it('guides marketplace users to fetch public records directly', async () => {
+  it('keeps the direct fetch summary in the discovery panel', async () => {
     await db.listings.put(listingFixture());
     await db.nostrReview.put({
       id: 'review_pending',
@@ -462,14 +482,12 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
-    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
-    expect(await screen.findByText('Fetch public marketplace records')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Fetch listings/i }).length).toBeGreaterThan(0);
+    expect(await screen.findByText('Load public listings')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Listing fetch scope' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fetch listings' })).toBeInTheDocument();
   });
 
-  it('guides from fetched public data toward publishing and then private trade', async () => {
+  it('keeps published listing guidance out of the normal Browse surface', async () => {
     const listing = listingFixture();
     const syncedListing = listingFixture({ id: 'listing_synced_ready', authorPublicKey: 'd'.repeat(64), title: 'Synced ready listing' });
     await db.listings.put(listing);
@@ -488,11 +506,9 @@ describe('production readiness UI', () => {
 
     renderAppAt('#browse');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
-    expect(await screen.findByRole('button', { name: 'Sync and discovery' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
-    expect(await screen.findByText('Publish your listing when ready')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Publish from My listings' }));
+    expect(await screen.findByText('Synced ready listing')).toBeInTheDocument();
+    expect(screen.queryByText('Publish your listing when ready')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'My listings' }));
     expect(await screen.findByRole('tab', { name: 'My listings' })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -518,7 +534,6 @@ describe('production readiness UI', () => {
     renderAppAt('#browse');
 
     fireEvent.click(await screen.findByRole('button', { name: 'More filters' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Sync and discovery' }));
     fireEvent.click(screen.getByRole('button', { name: 'Community curation lists' }));
     fireEvent.change(screen.getByLabelText('List title'), { target: { value: 'Repair picks' } });
     fireEvent.change(screen.getByLabelText('List description'), { target: { value: 'Useful repair listings.' } });
@@ -833,7 +848,7 @@ describe('production readiness UI', () => {
     expect(screen.queryByLabelText('Payment')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Listing images')).toBeInTheDocument();
     expect(screen.getByLabelText('Tags')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Optional listing details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More details' }));
     expect(screen.getByRole('group', { name: 'Trade context' })).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Payment' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Fulfillment')).not.toBeInTheDocument();
@@ -888,6 +903,34 @@ describe('production readiness UI', () => {
     expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('repair');
     expect(card.querySelector('.listing-card-settlement')).toHaveTextContent('Cashu');
     expect(card.querySelector('img')).toHaveAttribute('src', 'https://shop.example/listing.webp');
+  });
+
+  it('shows a simple listing image flipper and image count marker', async () => {
+    await db.listings.put(
+      listingFixture({
+        id: 'listing_flipper',
+        title: 'Image flipper listing',
+        images: [
+          { id: 'image_one', url: 'https://media.example/one.webp', altText: 'Front view' },
+          { id: 'image_two', url: 'https://media.example/two.webp', altText: 'Side view' },
+          { id: 'image_three', url: 'https://media.example/three.webp', altText: 'Detail view' }
+        ]
+      })
+    );
+
+    renderAppAt('#browse');
+
+    const card = (await screen.findByText('Image flipper listing')).closest('article') as HTMLElement;
+    expect(card.querySelector('.listing-card-image-count')).toHaveTextContent('3');
+    fireEvent.click(within(card).getByRole('button', { name: 'View item' }));
+
+    expect(await screen.findByRole('img', { name: 'Front view' })).toHaveAttribute('src', 'https://media.example/one.webp');
+    expect(screen.getByText('1 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(await screen.findByRole('img', { name: 'Side view' })).toHaveAttribute('src', 'https://media.example/two.webp');
+    expect(screen.getByText('2 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous image' }));
+    expect(await screen.findByRole('img', { name: 'Front view' })).toBeInTheDocument();
   });
 
   it('hides deleted NIP-99 listings from Discover by default', async () => {
@@ -1225,9 +1268,10 @@ describe('production readiness UI', () => {
     };
     await db.nostrReview.put(item);
 
-    renderAppAt('#settings');
+    renderAppAt('#settings:review');
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'Review' }));
+    expect(await screen.findByRole('tab', { name: 'Diagnostics' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'Review' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Invalid and unsupported (1)' })).toBeInTheDocument();
     expect(screen.queryByText('event_1')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Invalid and unsupported (1)' }));
@@ -1359,7 +1403,6 @@ describe('production readiness UI', () => {
     expect(screen.queryByText(/Marketplace shows local listings/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Sync and discovery' }));
     expect(screen.getByText(/Marketplace shows local listings/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'View item' }));

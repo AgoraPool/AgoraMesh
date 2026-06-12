@@ -16,17 +16,17 @@ Scroll below the first Home viewport for the detailed product and security narra
 
 Use Marketplace as the main public workspace. Discover shows local and approved synced listings, Create listing saves a public-ready local record, and My listings is where you review your own records, publish readiness, and relay receipts before publishing.
 
-Marketplace keeps the first view records-first: search, offer/request, stable listing cards, and a quiet result footer are visible by default. Open More filters for category, fulfillment, payment, region, source, trust, hidden, expired, curation, and sorting controls.
+Marketplace keeps the first view records-first: search, offer/request, the public listing discovery panel, stable listing cards, and a quiet result footer are visible by default. Open More filters for category, fulfillment, payment, region, source, trust, hidden, expired, curation, and sorting controls.
 
-Create peaceful offers or requests with the essential NIP-99 fields first: title, type, category, description, tags, contact, location, publish readiness, price, and an ordered image gallery. Barter and mediator preference stay under More listing details. New listings are public-ready by default, but saving never publishes automatically.
+Create peaceful offers or requests in one calmer page: what you are posting, price and location, contact, images, publish readiness, and More details. Barter and mediator preference stay under More details. New listings are public-ready by default, but saving never publishes automatically.
 
-Discover hides expired listings by default, ranks visible and active records first, deduplicates repeated public records, shows a result count, and loads large result sets in chunks. Use the More filters disclosure to keep busy relays manageable without crowding the default view.
+Discover hides expired listings by default, ranks visible and active records first, deduplicates repeated public records, shows a result count, and loads large result sets in chunks. Use the More filters drawer for presets, listing fields, source and visibility controls, curation, and maintenance actions without crowding the default view.
 
-Marketplace hides longer explanatory copy under More filters, then Sync and discovery. Cards use the same scan-friendly layout in Discover and My listings; open an item page for descriptions, contact, older payment instructions when present, receipts, trade actions, and owner publish options. Public relay publishing options are collapsed on local item pages. Public listing publishing uses NIP-99 classified listing events and makes the title, description, location, price, status, images, tags, and contact metadata readable by relays.
+Marketplace keeps public discovery in one compact panel near search: choose the AgoraMesh-only or all NIP-99 scope, then press Fetch to cache valid public records directly. Cards use the same scan-friendly layout in Discover and My listings; open an item page for the image flipper, descriptions, contact, older payment instructions when present, receipts, trade actions, and owner publish options. Public relay publishing options are collapsed on local item pages. Public listing publishing uses NIP-99 classified listing events and makes the title, description, location, price, status, images, tags, and contact metadata readable by relays.
 
 Empty-state panels explain what to do when a view has no matching local or synced records. They are suggestions only; no data is published until you choose a publish action.
 
-After saving a profile, listing, relay, or reviewed sync item, AgoraMesh shows action-specific feedback and a small next-step prompt. These prompts are navigation aids; they do not automate publishing, importing, or trust decisions.
+After saving a profile, listing, relay, or cache/diagnostic item, AgoraMesh shows action-specific feedback and a small next-step prompt. These prompts are navigation aids; they do not automate publishing, importing, or trust decisions.
 
 Create Listing no longer asks for payment preferences or fulfillment details. Existing or imported payment intents may still appear on item pages as public instructions: a payment URI, address, public handle, Cashu instruction, or note. AgoraMesh does not connect wallets, execute payment, confirm settlement, hold funds, or provide escrow.
 
@@ -38,7 +38,7 @@ Listing images are optional public media. Configure a Blossom media server in Se
 
 Payment intents should never contain wallet seeds, private keys, private invoice memos, refund secrets, private settlement details, custody wording, or escrow wording. They are public marketplace metadata once published.
 
-Community curation lists live under Marketplace More filters, then Sync and discovery. They point to visible public marketplace records with Nostr coordinates. Publishing a list is explicit, and reviewed public lists enter the synced public cache before appearing in discovery.
+Community curation lists live under Marketplace More filters in the Curation group. They point to visible public marketplace records with Nostr coordinates. Publishing a list is explicit, and valid fetched public lists enter the synced public cache before appearing in discovery.
 
 ## Trade Workspace
 
@@ -68,7 +68,7 @@ Safety notices in the relay and sync screens explain metadata exposure and expli
 
 Settings includes sync controls that summarize the public path: enable a relay, choose the Marketplace fetch scope, fetch public records explicitly, then return to Marketplace or publish your own listing. The app does not auto-fetch or auto-publish.
 
-Settings is split into Account & signer, Relays & sync, Review queue, Public cache, Trust lists, Media servers, Backup & danger, and Diagnostics. Operational actions stay in their own sections, while relay health, fetch summaries, and publish receipts live in Diagnostics.
+Settings is split into Account & signer, Relays & sync, Public cache, Trust lists, Media servers, Backup & danger, and Diagnostics. Operational actions stay in their own sections, while relay health, fetch summaries, publish receipts, and the advanced review diagnostics queue live in Diagnostics.
 
 Profile offers two identity paths: connect an existing NIP-07 Nostr account or generate a new encrypted local identity. Extension-backed identities store only the signer public key and display name in AgoraMesh; reconnect the same signer before publishing or signing receipts. Local identities keep the existing passphrase unlock, lock, and private-key backup flow.
 

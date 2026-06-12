@@ -70,6 +70,8 @@
 - v0.28.0 sidebar, scope, and signer-restore polish with aligned collapsed desktop navigation, Marketplace display/fetch scope switching, extension sign-in restoration of authored cached profile/listing/mediator records, and updated release version references.
 - v0.29.0 minimal agorist UI foundation with corrected app icon loading, SVG sidebar brand mark alignment, flatter brutalist surfaces, reduced card/pill styling, and calmer Home/Marketplace/Create/Profile presentation.
 - v0.30.0 marketplace UX polish with a linked-delta decentralization icon, centered collapsed sidebar rail, quieter Browse filter hierarchy, ordered listing image gallery editing, and clearer handling of external NIP-99 listing images.
+- v0.31.0 marketplace flow polish with one public listing discovery panel, simple listing image flipper, mesh monogram app icon, and calmer single-page Create/Edit Listing flow.
+- v0.32.0 Browse and Settings cleanup with preset-based Marketplace filters, grouped curation/maintenance controls, and review queue diagnostics hidden from primary Settings navigation.
 
 ## Not Planned For MVP
 

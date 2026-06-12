@@ -1,5 +1,7 @@
 import {
   BadgeCheck,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Eye,
   EyeOff,
@@ -49,7 +51,6 @@ import {
   categoryLabel,
   fulfillmentBadgeForListing,
   fulfillmentMatchesListing,
-  fulfillmentTypes,
   paymentBadgeLabel,
   paymentMatchesListing,
   sellerSummaryForListing,
@@ -177,7 +178,7 @@ type Page = 'home' | 'browse' | 'listing' | 'profile' | 'mediators' | 'trade' | 
 type ListingRoute = `listing/local/${string}` | `listing/synced/${string}`;
 type RouteTarget = Page | ListingRoute | 'browse:create' | 'browse:mine' | 'profile:public' | 'settings:relays' | 'settings:review' | 'settings:backup';
 type BrowseTab = 'discover' | 'create' | 'mine';
-type SettingsTab = 'account' | 'relays' | 'review' | 'cache' | 'trust' | 'media' | 'backup' | 'diagnostics';
+type SettingsTab = 'account' | 'relays' | 'cache' | 'trust' | 'media' | 'backup' | 'diagnostics';
 type ProfileTab = 'identity' | 'publicProfile' | 'backup';
 type TradeTab = 'agreement' | 'mediator' | 'dispute' | 'outcome';
 type ReputationTab = 'create' | 'browse' | 'context';
@@ -185,8 +186,6 @@ type NextStep = { body: string; actions: { label: string; page: RouteTarget }[] 
 type ProfileSaveResult = { mediatorAvailable: boolean; mediatorProfileId?: string };
 type ReadinessItem = { label: string; done: boolean; detail?: string };
 type ListingSourceRef = { source: 'local' | 'synced'; id: string; recordId?: string; listing: Listing };
-type MarketplaceAction = 'create' | 'relays' | 'fetch' | 'publish' | 'trade';
-type MarketplaceActionState = { title: string; body: string; actionLabel: string; action: MarketplaceAction };
 type PublishReceiptSummary = { accepted: number; failed: number; pending: number; latest?: PublishReceipt };
 type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?: string; onAction?: () => void };
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
@@ -195,6 +194,7 @@ type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAt
 type ListingImageDraft =
   | { id: string; kind: 'existing'; image: ListingImage; previewUrl: string; name: string; altText: string }
   | { id: string; kind: 'new'; file: File; previewUrl: string; name: string; altText: string };
+type MarketplaceFilterPreset = 'fresh' | 'trusted-synced' | 'local-only' | 'moderation';
 type SignerRestoreSummary = {
   profile: number;
   listings: number;
@@ -203,7 +203,6 @@ type SignerRestoreSummary = {
 };
 
 const categories = listingCategorySchema.options;
-const payments: PaymentPreference[] = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'];
 const attestationTags: AttestationTag[] = [
   'fulfilled-agreement',
   'clear-communication',
@@ -379,7 +378,7 @@ function browseTabFromHash(): BrowseTab {
 
 function settingsTabFromHash(): SettingsTab {
   const value = window.location.hash.replace('#', '');
-  if (value === 'settings:review') return 'review';
+  if (value === 'settings:review') return 'diagnostics';
   if (value === 'settings:relays') return 'relays';
   if (value === 'settings:backup') return 'backup';
   return 'account';
@@ -407,10 +406,6 @@ function summarizeListingReceipts(listing: Listing, publishReceipts: PublishRece
     pending: receipts.filter((receipt) => receipt.status === 'pending').length,
     latest: receipts[0]
   };
-}
-
-function hasAcceptedListingReceipt(listing: Listing, publishReceipts: PublishReceipt[]): boolean {
-  return publishReceipts.some((receipt) => receipt.objectType === 'listing' && receipt.objectId === listing.id && receipt.status === 'accepted');
 }
 
 function isListingExpired(listing: Listing): boolean {
@@ -1001,7 +996,6 @@ export function App(): ReactNode {
             syncedCommunityLists={syncedCommunityLists}
             blossomServers={blossomServers}
             relays={relays}
-            publishReceipts={publishReceipts}
             syncSettings={syncSettings}
             privateKeyHex={privateKeyHex}
             nostrSigner={nostrSigner}
@@ -1046,10 +1040,6 @@ export function App(): ReactNode {
             onCommunityListSaved={() => {
               showNotice(t('notice.communityListSaved'));
               void reload();
-            }}
-            onStartTrade={(listingRef) => {
-              setTradeListingRef(listingRef);
-              go('trade');
             }}
             onNavigateListing={(listingRef) => go(listingRouteForRef(listingRef))}
           />
@@ -1329,8 +1319,8 @@ function HomePage({
         <ProductSection title={t('home.securityPromises')} body={t('home.securityPromisesBody')} />
         <ProductSection title={t('home.staysLocal')} body={t('home.staysLocalBody')} actions={[{ label: t('nav.trade'), page: 'trade' }]} />
         <ProductSection title={t('home.canBePublic')} body={t('home.canBePublicBody')} actions={[{ label: t('home.post'), page: 'browse:create' }]} />
-        <ProductSection title={t('home.publicPath')} body={t('home.publicPathBody')} actions={[{ label: t('next.reviewQueue'), page: 'settings:review' }]} />
-        <ProductSection title={t('home.nostrSync')} body={t('home.nostrSyncBody')} actions={[{ label: t('sync.wizard.title'), page: 'settings:review' }]} />
+        <ProductSection title={t('home.publicPath')} body={t('home.publicPathBody')} actions={[{ label: t('next.openBrowse'), page: 'browse' }]} />
+        <ProductSection title={t('home.nostrSync')} body={t('home.nostrSyncBody')} actions={[{ label: t('settings.tab.relaysSync'), page: 'settings:relays' }]} />
         <ProductSection title={t('home.signerKeys')} body={t('home.signerKeysBody')} actions={[{ label: t('settings.tab.relaysSync'), page: 'settings:relays' }]} />
         <ProductSection title={t('home.paymentsNoCustody')} body={t('home.paymentsNoCustodyBody')} />
         <ProductSection title={t('home.tradeDisputes')} body={t('home.tradeDisputesBody')} actions={[{ label: t('nav.trade'), page: 'trade' }]} />
@@ -1578,7 +1568,11 @@ function ListingDetails({ listing, sellerSummary, hideSeller = false }: { listin
 function ListingImageGallery({ images = [], title }: { images?: ListingImage[]; title: string }): ReactNode {
   const { t } = useI18n();
   const [failedImages, setFailedImages] = useState<string[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
   const visibleImages = images.filter((image) => !failedImages.includes(image.url));
+  useEffect(() => {
+    if (activeIndex >= visibleImages.length) setActiveIndex(Math.max(0, visibleImages.length - 1));
+  }, [activeIndex, visibleImages.length]);
   if (visibleImages.length === 0) {
     return (
       <div className="listing-gallery empty-gallery">
@@ -1586,19 +1580,50 @@ function ListingImageGallery({ images = [], title }: { images?: ListingImage[]; 
       </div>
     );
   }
+  const displayIndex = Math.min(activeIndex, visibleImages.length - 1);
+  const activeImage = visibleImages[displayIndex] ?? visibleImages[0];
+  const move = (direction: -1 | 1): void => {
+    setActiveIndex((current) => (current + direction + visibleImages.length) % visibleImages.length);
+  };
   return (
-    <div className="listing-gallery" aria-label={t('listing.images')}>
-      {visibleImages.map((image, index) => (
-        <figure className={index === 0 ? 'listing-image featured' : 'listing-image'} key={image.id}>
-          <img
-            src={image.url}
-            alt={image.altText || title}
-            loading={index === 0 ? 'eager' : 'lazy'}
-            onError={() => setFailedImages((current) => [...new Set([...current, image.url])])}
-          />
-          {image.altText ? <figcaption>{image.altText}</figcaption> : null}
-        </figure>
-      ))}
+    <div className="listing-gallery listing-image-flipper" aria-label={t('listing.images')}>
+      <figure className="listing-image-viewer">
+        <img
+          src={activeImage.url}
+          alt={activeImage.altText || title}
+          loading="eager"
+          onError={() => setFailedImages((current) => [...new Set([...current, activeImage.url])])}
+        />
+        <figcaption>
+          <span>{activeImage.altText || title}</span>
+          <span>{t('listing.imageCount').replace('{current}', String(displayIndex + 1)).replace('{total}', String(visibleImages.length))}</span>
+        </figcaption>
+      </figure>
+      {visibleImages.length > 1 ? (
+        <>
+          <div className="image-flipper-controls">
+            <button className="subtle" onClick={() => move(-1)} type="button">
+              <ChevronLeft size={16} /> {t('listing.imagePrevious')}
+            </button>
+            <button className="subtle" onClick={() => move(1)} type="button">
+              {t('listing.imageNext')} <ChevronRight size={16} />
+            </button>
+          </div>
+          <div className="image-flipper-thumbs" aria-label={t('listing.imageThumbnails')}>
+            {visibleImages.map((image, index) => (
+              <button
+                aria-label={t('listing.imageSelect').replace('{index}', String(index + 1))}
+                className={index === displayIndex ? 'active' : undefined}
+                key={image.id}
+                onClick={() => setActiveIndex(index)}
+                type="button"
+              >
+                <img src={image.url} alt="" loading="lazy" onError={() => setFailedImages((current) => [...new Set([...current, image.url])])} />
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -1814,7 +1839,6 @@ function BrowsePage({
   syncedCommunityLists,
   blossomServers,
   relays,
-  publishReceipts,
   syncSettings,
   privateKeyHex,
   nostrSigner,
@@ -1827,7 +1851,6 @@ function BrowsePage({
   onListingSaved,
   onPublishCommunityList,
   onCommunityListSaved,
-  onStartTrade,
   onNavigateListing
 }: {
   identity?: IdentityRecord;
@@ -1839,7 +1862,6 @@ function BrowsePage({
   syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   blossomServers: BlossomServerConfig[];
   relays: RelayConfig[];
-  publishReceipts: PublishReceipt[];
   syncSettings: SyncSettings;
   privateKeyHex: string;
   nostrSigner: NostrSignerState;
@@ -1852,7 +1874,6 @@ function BrowsePage({
   onListingSaved: (listing: Listing) => void;
   onPublishCommunityList: (list: CommunityCurationList) => void;
   onCommunityListSaved: () => void;
-  onStartTrade: (listingRef: ListingSourceRef) => void;
   onNavigateListing: (listingRef: ListingSourceRef) => void;
 }): ReactNode {
   const { t } = useI18n();
@@ -1992,6 +2013,21 @@ function BrowsePage({
     setCurationFilter('all');
     setShowExpired(false);
   };
+  const applyMarketplacePreset = (preset: MarketplaceFilterPreset): void => {
+    resetAdvancedFilters();
+    if (preset === 'trusted-synced') {
+      setSource('synced');
+      setTrust('trusted');
+    }
+    if (preset === 'local-only') {
+      setSource('local');
+    }
+    if (preset === 'moderation') {
+      setSource('synced');
+      setHidden('all');
+      setShowExpired(true);
+    }
+  };
   const resetFilters = (): void => {
     setQuery('');
     setType('all');
@@ -2048,19 +2084,6 @@ function BrowsePage({
     () => listings.map((listing) => ({ listing, source: 'local' as const, trusted: true, record: undefined })),
     [listings]
   );
-  const firstTradeRef: ListingSourceRef | undefined = listings[0]
-    ? { source: 'local', id: listings[0].id, listing: listings[0] }
-    : syncedVisibleListings[0]
-      ? {
-          source: 'synced',
-          id: syncedVisibleListings[0].payload.id,
-          recordId: syncedVisibleListings[0].id,
-          listing: syncedVisibleListings[0].payload
-        }
-      : undefined;
-  const firstUnpublishedPublicListing = listings.find(
-    (listing) => listing.visibility === 'public' && !hasAcceptedListingReceipt(listing, publishReceipts)
-  );
   const marketplaceStatusItems: [string, string][] = [
     [t('marketplace.status.local'), String(listings.length)],
     [t('marketplace.status.synced'), String(syncedVisibleListings.length)],
@@ -2073,67 +2096,22 @@ function BrowsePage({
       : syncedVisibleListings.length === 0 && listings.length === 0
         ? t('empty.browseNoRecords')
         : t('empty.browseNoMatches');
-  const marketplaceAction: MarketplaceActionState =
-    listings.length === 0
-      ? {
-          title: t('marketplace.guidance.createTitle'),
-          body: t('marketplace.guidance.createBody'),
-          actionLabel: t('marketplace.tab.create'),
-          action: 'create'
-        }
-      : enabledRelays.length === 0
-        ? {
-            title: t('marketplace.guidance.relayTitle'),
-            body: t('marketplace.guidance.relayBody'),
-            actionLabel: t('next.configureRelays'),
-            action: 'relays'
-          }
-        : syncedVisibleListings.length === 0
-            ? {
-                title: t('marketplace.guidance.fetchTitle'),
-                body: t('marketplace.guidance.fetchBody'),
-                actionLabel: t('marketplace.fetch'),
-                action: 'fetch'
-              }
-            : firstUnpublishedPublicListing
-              ? {
-                  title: t('marketplace.guidance.publishTitle'),
-                  body: t('marketplace.guidance.publishBody'),
-                  actionLabel: t('next.publishFromBrowse'),
-                  action: 'publish'
-                }
-              : {
-                  title: t('marketplace.guidance.tradeTitle'),
-                  body: t('marketplace.guidance.tradeBody'),
-                  actionLabel: t('marketplace.startTrade'),
-                  action: 'trade'
-                };
-
-  const runMarketplaceAction = (): void => {
-    if (marketplaceAction.action === 'create') {
-      setActiveBrowseTab('create');
-      window.location.hash = 'browse:create';
-    }
-    if (marketplaceAction.action === 'publish') {
-      setActiveBrowseTab('mine');
-      window.location.hash = 'browse:mine';
-    }
-    if (marketplaceAction.action === 'relays') go('settings:relays');
-    if (marketplaceAction.action === 'fetch') void fetchMarketplace();
-    if (marketplaceAction.action === 'trade' && firstTradeRef) onStartTrade(firstTradeRef);
-  };
 
   const renderListingThumb = (listing: Listing): ReactNode => {
     const firstImage = listing.images?.find((image) => !failedListingImages.includes(image.url));
+    const visibleImageCount = listing.images?.filter((image) => !failedListingImages.includes(image.url)).length ?? 0;
     return (
       <div className={firstImage ? 'listing-card-thumb' : 'listing-card-thumb empty'} aria-hidden="true">
         {firstImage ? (
-          <img
-            src={firstImage.url}
-            alt=""
-            loading="lazy"
-            onError={() => setFailedListingImages((current) => [...new Set([...current, firstImage.url])])}
-          />
+          <>
+            <img
+              src={firstImage.url}
+              alt=""
+              loading="lazy"
+              onError={() => setFailedListingImages((current) => [...new Set([...current, firstImage.url])])}
+            />
+            {visibleImageCount > 1 ? <span className="listing-card-image-count">{visibleImageCount}</span> : null}
+          </>
         ) : (
           <span>{categoryLabel(listing.category, t)}</span>
         )}
@@ -2261,10 +2239,15 @@ function BrowsePage({
               {t('listing.create')}
             </button>
           </div>
-          <div className="marketplace-scope-switch">
+          <div className="marketplace-discovery-panel" aria-live="polite">
             <div className="scope-switch-heading">
-              <strong>{t('marketplace.fetchScope')}</strong>
-              <span className="muted">{t('marketplace.fetchScopeHelp')}</span>
+              <strong>{t('marketplace.discoveryTitle')}</strong>
+              <span className="muted">
+                {t('marketplace.fetchActiveScope').replace(
+                  '{scope}',
+                  syncSettings.listingDiscoveryScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('marketplace.scopeAgoraMeshOnly')
+                )}
+              </span>
             </div>
             <div className="segmented-control" role="group" aria-label={t('marketplace.fetchScope')}>
               {[
@@ -2282,17 +2265,12 @@ function BrowsePage({
                 </button>
               ))}
             </div>
-          </div>
-          <div className="marketplace-fetch-panel" aria-live="polite">
+            <span className="muted discovery-relay-count">
+              {t('marketplace.enabledRelays').replace('{count}', String(enabledRelays.length))}
+            </span>
             <button disabled={fetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
               <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
             </button>
-            <p className="muted marketplace-fetch-help">
-              {t('marketplace.fetchActiveScope').replace(
-                '{scope}',
-                syncSettings.listingDiscoveryScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('marketplace.scopeAgoraMeshOnly')
-              )}
-            </p>
             {marketplaceFetchSummary ? (
               <p className="muted marketplace-fetch-summary">
                 {t('marketplace.fetchSummary')
@@ -2311,173 +2289,187 @@ function BrowsePage({
             ) : null}
           </div>
           <DisclosurePanel title={t('marketplace.moreFilters')}>
-            <div className="filter-summary">
-              <div>
-                <strong>
-                  {advancedFilterLabels.length > 0
-                    ? t('marketplace.activeFilters').replace('{count}', String(advancedFilterLabels.length))
-                    : t('marketplace.activeFiltersNone')}
-                </strong>
-                {advancedFilterLabels.length > 0 ? <p className="muted">{advancedFilterLabels.join(' · ')}</p> : null}
-              </div>
-              {advancedFilterLabels.length > 0 ? (
-                <button className="subtle" onClick={resetAdvancedFilters} type="button">
-                  {t('marketplace.resetAdvancedFilters')}
-                </button>
-              ) : null}
-            </div>
-            <div className="filters compact-filters">
-              <select aria-label={t('common.category')} value={category} onChange={(event) => setCategory(event.target.value)}>
-                <option value="all">{t('common.all')}</option>
-                {categories.map((entry) => (
-                  <option value={entry} key={entry}>
-                    {categoryLabel(entry, t)}
-                  </option>
-                ))}
-              </select>
-              <input aria-label={t('common.region')} placeholder={t('common.region')} value={region} onChange={(event) => setRegion(event.target.value)} />
-              <select aria-label={t('marketplace.quickFulfillment')} value={fulfillment} onChange={(event) => setFulfillment(event.target.value)}>
-                <option value="all">{t('common.all')}</option>
-                {fulfillmentTypes.map((entry) => (
-                  <option value={entry} key={entry}>
-                    {t(`fulfillment.${entry}`)}
-                  </option>
-                ))}
-              </select>
-              <select aria-label={t('marketplace.quickPayments')} value={payment} onChange={(event) => setPayment(event.target.value)}>
-                <option value="all">{t('common.all')}</option>
-                {payments.map((entry) => (
-                  <option value={entry} key={entry}>
-                    {paymentBadgeLabel(entry, t)}
-                  </option>
-                ))}
-              </select>
-              <select aria-label={t('common.sort')} value={sort} onChange={(event) => setSort(event.target.value as 'newest' | 'expiring')}>
-                <option value="newest">{t('common.newest')}</option>
-                <option value="expiring">{t('common.expiring')}</option>
-              </select>
-              <select aria-label={t('sync.source')} value={source} onChange={(event) => setSource(event.target.value as DataSourceFilter)}>
-                <option value="combined">{t('sync.combined')}</option>
-                <option value="local">{t('sync.localOnly')}</option>
-                <option value="synced">{t('sync.syncedOnly')}</option>
-              </select>
-              <select aria-label={t('sync.trust')} value={trust} onChange={(event) => setTrust(event.target.value as TrustFilter)}>
-                <option value="all">{t('common.all')}</option>
-                <option value="trusted">{t('sync.trusted')}</option>
-                <option value="untrusted">{t('sync.untrusted')}</option>
-              </select>
-              <select aria-label={t('sync.hiddenFilter')} value={hidden} onChange={(event) => setHidden(event.target.value as HiddenFilter)}>
-                <option value="visible">{t('sync.visibleOnly')}</option>
-                <option value="hidden">{t('sync.hiddenOnly')}</option>
-                <option value="all">{t('sync.visibleAndHidden')}</option>
-              </select>
-              <select aria-label={t('curation.filter')} value={curationFilter} onChange={(event) => setCurationFilter(event.target.value)}>
-                <option value="all">{t('curation.allLists')}</option>
-                {visibleCommunityLists.map((record) => (
-                  <option value={record.id} key={record.id}>
-                    {record.payload.title}
-                  </option>
-                ))}
-              </select>
-              <label className="checkbox">
-                <input type="checkbox" checked={showExpired} onChange={(event) => setShowExpired(event.target.checked)} />
-                {t('marketplace.showExpired')}
-              </label>
-            </div>
-            <DisclosurePanel title={t('marketplace.whySorted')}>
-              <p className="muted">{t('marketplace.whySortedBody')}</p>
-            </DisclosurePanel>
-            <div className="actions small">
-              <button onClick={() => void setVisibleSyncedListingsHidden(true)} type="button">
-                {t('sync.hideVisibleSynced')}
-              </button>
-              <button onClick={() => void setVisibleSyncedListingsHidden(false)} type="button">
-                {t('sync.unhideVisibleSynced')}
-              </button>
-            </div>
-            <DisclosurePanel title={t('marketplace.syncDiscovery')}>
-              <MarketplaceGuidance action={marketplaceAction} onAction={runMarketplaceAction} />
-              <StatusChipRow items={marketplaceStatusItems} />
-              <InlineHelp>{t('help.browse')}</InlineHelp>
-              <DisclosurePanel title={t('curation.title')}>
-                <InlineHelp>{t('curation.body')}</InlineHelp>
-                <form className="stack-form" onSubmit={(event) => void saveCommunityList(event)}>
-                  <label>
-                    {t('curation.listTitle')}
-                    <input
-                      disabled={!identity}
-                      required
-                      value={curationForm.title}
-                      onChange={(event) => setCurationForm({ ...curationForm, title: event.target.value })}
-                      placeholder={t('placeholder.curationTitle')}
-                    />
-                  </label>
-                  <label>
-                    {t('curation.description')}
-                    <textarea
-                      disabled={!identity}
-                      value={curationForm.description}
-                      onChange={(event) => setCurationForm({ ...curationForm, description: event.target.value })}
-                      placeholder={t('placeholder.curationDescription')}
-                    />
-                  </label>
-                  <fieldset className="fieldset-list">
-                    <legend>{t('curation.references')}</legend>
-                    {curationCandidates.map((candidate) => (
-                      <label className="checkbox" key={candidate.coordinate}>
-                        <input
-                          checked={curationForm.selectedCoordinates.includes(candidate.coordinate)}
-                          disabled={!identity}
-                          type="checkbox"
-                          onChange={(event) => toggleCurationCoordinate(candidate.coordinate, event.target.checked)}
-                        />
-                        {candidate.label}
-                      </label>
-                    ))}
-                    {curationCandidates.length === 0 ? <p className="muted">{t('curation.noCandidates')}</p> : null}
-                  </fieldset>
-                  <button
-                    disabled={!identity || curationForm.selectedCoordinates.length === 0}
-                    title={!identity ? t('a11y.identityRequired') : curationForm.selectedCoordinates.length === 0 ? t('curation.selectAtLeastOne') : undefined}
-                    type="submit"
-                  >
-                    {t('curation.save')}
-                  </button>
-                </form>
-                <div className="card-grid single">
-                  {communityLists.map((list) => (
-                    <article className="card compact" key={list.id}>
-                      <div className="row between">
-                        <h3>{list.title}</h3>
-                        <span className="pill">{t('marketplace.sourceLocal')}</span>
-                      </div>
-                      <p>{list.description}</p>
-                      <p className="muted">
-                        {t('curation.references')}: {list.referencedCoordinates.length}
-                      </p>
-                      <button disabled={enabledRelays.length === 0} onClick={() => onPublishCommunityList(list)} type="button">
-                        <Radio size={16} /> {t('curation.publish')}
-                      </button>
-                    </article>
+            <div className="filter-drawer">
+              <section className="filter-drawer-group filter-presets" aria-labelledby="marketplace-filter-presets">
+                <h2 id="marketplace-filter-presets">{t('marketplace.filterPresets')}</h2>
+                <div className="actions small">
+                  {[
+                    ['fresh', t('marketplace.presetFresh')],
+                    ['trusted-synced', t('marketplace.presetTrustedSynced')],
+                    ['local-only', t('marketplace.presetLocalOnly')],
+                    ['moderation', t('marketplace.presetModeration')]
+                  ].map(([preset, label]) => (
+                    <button className="subtle" key={preset} onClick={() => applyMarketplacePreset(preset as MarketplaceFilterPreset)} type="button">
+                      {label}
+                    </button>
                   ))}
-                  {visibleCommunityLists.map((record) => (
-                    <article className="card compact" key={record.id}>
-                      <div className="row between">
-                        <h3>{record.payload.title}</h3>
-                        <span className="pill">{record.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
-                      </div>
-                      <p>{record.payload.description}</p>
-                      <p className="muted">
-                        {t('curation.references')}: {record.payload.referencedCoordinates.length}
-                      </p>
-                    </article>
-                  ))}
-                  {communityLists.length === 0 && visibleCommunityLists.length === 0 ? (
-                    <EmptyState title={t('empty.curationTitle')} body={t('empty.curationBody')} />
-                  ) : null}
                 </div>
-              </DisclosurePanel>
-            </DisclosurePanel>
+              </section>
+              <div className="filter-summary">
+                <div>
+                  <strong>
+                    {advancedFilterLabels.length > 0
+                      ? t('marketplace.activeFilters').replace('{count}', String(advancedFilterLabels.length))
+                      : t('marketplace.activeFiltersNone')}
+                  </strong>
+                  {advancedFilterLabels.length > 0 ? <p className="muted">{advancedFilterLabels.join(' · ')}</p> : null}
+                </div>
+                {advancedFilterLabels.length > 0 ? (
+                  <button className="subtle" onClick={resetAdvancedFilters} type="button">
+                    {t('marketplace.resetAdvancedFilters')}
+                  </button>
+                ) : null}
+              </div>
+              <section className="filter-drawer-group" aria-labelledby="marketplace-listing-filters">
+                <h2 id="marketplace-listing-filters">{t('marketplace.filtersListing')}</h2>
+                <div className="filters compact-filters">
+                  <select aria-label={t('common.category')} value={category} onChange={(event) => setCategory(event.target.value)}>
+                    <option value="all">{t('common.all')}</option>
+                    {categories.map((entry) => (
+                      <option value={entry} key={entry}>
+                        {categoryLabel(entry, t)}
+                      </option>
+                    ))}
+                  </select>
+                  <input aria-label={t('common.region')} placeholder={t('common.region')} value={region} onChange={(event) => setRegion(event.target.value)} />
+                  <select aria-label={t('common.sort')} value={sort} onChange={(event) => setSort(event.target.value as 'newest' | 'expiring')}>
+                    <option value="newest">{t('common.newest')}</option>
+                    <option value="expiring">{t('common.expiring')}</option>
+                  </select>
+                </div>
+              </section>
+              <section className="filter-drawer-group" aria-labelledby="marketplace-source-filters">
+                <h2 id="marketplace-source-filters">{t('marketplace.filtersSource')}</h2>
+                <div className="filters compact-filters">
+                  <select aria-label={t('sync.source')} value={source} onChange={(event) => setSource(event.target.value as DataSourceFilter)}>
+                    <option value="combined">{t('sync.combined')}</option>
+                    <option value="local">{t('sync.localOnly')}</option>
+                    <option value="synced">{t('sync.syncedOnly')}</option>
+                  </select>
+                  <select aria-label={t('sync.trust')} value={trust} onChange={(event) => setTrust(event.target.value as TrustFilter)}>
+                    <option value="all">{t('common.all')}</option>
+                    <option value="trusted">{t('sync.trusted')}</option>
+                    <option value="untrusted">{t('sync.untrusted')}</option>
+                  </select>
+                  <select aria-label={t('sync.hiddenFilter')} value={hidden} onChange={(event) => setHidden(event.target.value as HiddenFilter)}>
+                    <option value="visible">{t('sync.visibleOnly')}</option>
+                    <option value="hidden">{t('sync.hiddenOnly')}</option>
+                    <option value="all">{t('sync.visibleAndHidden')}</option>
+                  </select>
+                  <label className="checkbox">
+                    <input type="checkbox" checked={showExpired} onChange={(event) => setShowExpired(event.target.checked)} />
+                    {t('marketplace.showExpired')}
+                  </label>
+                </div>
+              </section>
+              <section className="filter-drawer-group" aria-labelledby="marketplace-curation-filters">
+                <h2 id="marketplace-curation-filters">{t('marketplace.filtersCuration')}</h2>
+                <div className="filters compact-filters">
+                  <select aria-label={t('curation.filter')} value={curationFilter} onChange={(event) => setCurationFilter(event.target.value)}>
+                    <option value="all">{t('curation.allLists')}</option>
+                    {visibleCommunityLists.map((record) => (
+                      <option value={record.id} key={record.id}>
+                        {record.payload.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <DisclosurePanel title={t('curation.title')}>
+                  <InlineHelp>{t('curation.body')}</InlineHelp>
+                  <form className="stack-form" onSubmit={(event) => void saveCommunityList(event)}>
+                    <label>
+                      {t('curation.listTitle')}
+                      <input
+                        disabled={!identity}
+                        required
+                        value={curationForm.title}
+                        onChange={(event) => setCurationForm({ ...curationForm, title: event.target.value })}
+                        placeholder={t('placeholder.curationTitle')}
+                      />
+                    </label>
+                    <label>
+                      {t('curation.description')}
+                      <textarea
+                        disabled={!identity}
+                        value={curationForm.description}
+                        onChange={(event) => setCurationForm({ ...curationForm, description: event.target.value })}
+                        placeholder={t('placeholder.curationDescription')}
+                      />
+                    </label>
+                    <fieldset className="fieldset-list">
+                      <legend>{t('curation.references')}</legend>
+                      {curationCandidates.map((candidate) => (
+                        <label className="checkbox" key={candidate.coordinate}>
+                          <input
+                            checked={curationForm.selectedCoordinates.includes(candidate.coordinate)}
+                            disabled={!identity}
+                            type="checkbox"
+                            onChange={(event) => toggleCurationCoordinate(candidate.coordinate, event.target.checked)}
+                          />
+                          {candidate.label}
+                        </label>
+                      ))}
+                      {curationCandidates.length === 0 ? <p className="muted">{t('curation.noCandidates')}</p> : null}
+                    </fieldset>
+                    <button
+                      disabled={!identity || curationForm.selectedCoordinates.length === 0}
+                      title={!identity ? t('a11y.identityRequired') : curationForm.selectedCoordinates.length === 0 ? t('curation.selectAtLeastOne') : undefined}
+                      type="submit"
+                    >
+                      {t('curation.save')}
+                    </button>
+                  </form>
+                  <div className="card-grid single">
+                    {communityLists.map((list) => (
+                      <article className="card compact" key={list.id}>
+                        <div className="row between">
+                          <h3>{list.title}</h3>
+                          <span className="pill">{t('marketplace.sourceLocal')}</span>
+                        </div>
+                        <p>{list.description}</p>
+                        <p className="muted">
+                          {t('curation.references')}: {list.referencedCoordinates.length}
+                        </p>
+                        <button disabled={enabledRelays.length === 0} onClick={() => onPublishCommunityList(list)} type="button">
+                          <Radio size={16} /> {t('curation.publish')}
+                        </button>
+                      </article>
+                    ))}
+                    {visibleCommunityLists.map((record) => (
+                      <article className="card compact" key={record.id}>
+                        <div className="row between">
+                          <h3>{record.payload.title}</h3>
+                          <span className="pill">{record.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
+                        </div>
+                        <p>{record.payload.description}</p>
+                        <p className="muted">
+                          {t('curation.references')}: {record.payload.referencedCoordinates.length}
+                        </p>
+                      </article>
+                    ))}
+                    {communityLists.length === 0 && visibleCommunityLists.length === 0 ? (
+                      <EmptyState title={t('empty.curationTitle')} body={t('empty.curationBody')} />
+                    ) : null}
+                  </div>
+                </DisclosurePanel>
+              </section>
+              <section className="filter-drawer-group" aria-labelledby="marketplace-maintenance-filters">
+                <h2 id="marketplace-maintenance-filters">{t('marketplace.filtersMaintenance')}</h2>
+                <StatusChipRow items={marketplaceStatusItems} />
+                <InlineHelp>{t('help.browse')}</InlineHelp>
+                <DisclosurePanel title={t('marketplace.whySorted')}>
+                  <p className="muted">{t('marketplace.whySortedBody')}</p>
+                </DisclosurePanel>
+                <div className="actions small">
+                  <button onClick={() => void setVisibleSyncedListingsHidden(true)} type="button">
+                    {t('sync.hideVisibleSynced')}
+                  </button>
+                  <button onClick={() => void setVisibleSyncedListingsHidden(false)} type="button">
+                    {t('sync.unhideVisibleSynced')}
+                  </button>
+                </div>
+              </section>
+            </div>
           </DisclosurePanel>
           <div className="card-grid">
             {visibleFiltered.map((row) => renderListingCard(row))}
@@ -2769,38 +2761,6 @@ function ListingCreatePanel({
     <section className="create-listing-page">
       <form className="panel" onSubmit={(event) => void save(event)}>
         <SectionHeader icon={<Megaphone />} title={mode === 'edit' ? t('listing.edit') : t('listing.create')} />
-        <div className="listing-readiness-panel" aria-label={t('listing.readiness.title')} role="region">
-          <div className="row between">
-            <h2>{t('listing.readiness.title')}</h2>
-            {!authorPublicKey ? (
-              <button className="subtle" onClick={onCreateIdentity} type="button">
-                {t('next.createIdentity')}
-              </button>
-            ) : null}
-          </div>
-          <div className="readiness-grid compact">
-            <div className={authorPublicKey ? 'readiness-item done' : 'readiness-item'}>
-              <span className="pill">{authorPublicKey ? t('listing.readiness.ready') : t('listing.readiness.missing')}</span>
-              <strong>{t('listing.readiness.identity')}</strong>
-              <p>{authorPublicKey ? t('listing.readiness.identityReady') : t('listing.readiness.identityMissing')}</p>
-            </div>
-            <div className={essentialsReady ? 'readiness-item done' : 'readiness-item'}>
-              <span className="pill">{essentialsReady ? t('listing.readiness.ready') : t('listing.readiness.missing')}</span>
-              <strong>{t('listing.readiness.essentials')}</strong>
-              <p>{essentialsReady ? t('listing.readiness.essentialsReady') : t('listing.readiness.essentialsMissing')}</p>
-            </div>
-            <div className="readiness-item done">
-              <span className="pill">{form.visibility === 'public' ? t('common.public') : t('common.local')}</span>
-              <strong>{t('listing.visibility')}</strong>
-              <p>{visibilityStatus}</p>
-            </div>
-            <div className={newImageDrafts.length === 0 || (enabledBlossomServer && hasImageSigner) ? 'readiness-item done' : 'readiness-item'}>
-              <span className="pill">{t('listing.sectionImages')}</span>
-              <strong>{t('listing.readiness.media')}</strong>
-              <p>{mediaStatus}</p>
-            </div>
-          </div>
-        </div>
         {formError ? (
           <p className="warning" role="alert">
             {formError}
@@ -2852,12 +2812,36 @@ function ListingCreatePanel({
           </label>
         </fieldset>
         <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionContact')}</legend>
-          <div className="listing-form-row contact-row">
+          <legend>{t('listing.sectionPrice')}</legend>
+          <div className="listing-form-row publish-row">
+            <label>
+              {t('listing.priceAmount')}
+              <input required placeholder={t('placeholder.priceAmount')} value={form.priceAmount} onChange={(event) => setForm({ ...form, priceAmount: event.target.value })} />
+            </label>
+            <label>
+              {t('listing.priceCurrency')}
+              <input required maxLength={16} placeholder={t('placeholder.priceCurrency')} value={form.priceCurrency} onChange={(event) => setForm({ ...form, priceCurrency: event.target.value })} />
+            </label>
             <label>
               {t('listing.location')}
               <input placeholder={t('placeholder.region')} value={form.region} onChange={(event) => setForm({ ...form, region: event.target.value })} />
             </label>
+          </div>
+          <div className="listing-form-row two-up">
+            <label>
+              {t('listing.priceFrequency')}
+              <input placeholder={t('placeholder.priceFrequency')} value={form.priceFrequency} onChange={(event) => setForm({ ...form, priceFrequency: event.target.value })} />
+            </label>
+            <label>
+              {t('listing.priceNote')}
+              <input placeholder={t('placeholder.priceNote')} value={form.priceNote} onChange={(event) => setForm({ ...form, priceNote: event.target.value })} />
+            </label>
+          </div>
+          <FieldHint>{t('hint.pricePublic')}</FieldHint>
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionContact')}</legend>
+          <div className="listing-form-row two-up">
             <label>
               {t('profile.contacts')}
               <select value={form.contactKind} onChange={(event) => setForm({ ...form, contactKind: event.target.value as ContactKind })}>
@@ -2876,58 +2860,9 @@ function ListingCreatePanel({
                 value={form.contactValue}
                 onChange={(event) => setForm({ ...form, contactValue: event.target.value })}
               />
-              <FieldHint>{t('hint.contactPublic')}</FieldHint>
             </label>
           </div>
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionPublishReadiness')}</legend>
-          <div className="listing-form-row publish-row">
-            <label>
-              {t('listing.status')}
-              <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ListingStatus })}>
-                <option value="active">{t('listing.status.active')}</option>
-                <option value="sold">{t('listing.status.sold')}</option>
-                <option value="deleted">{t('listing.status.deleted')}</option>
-              </select>
-              <FieldHint>{t('hint.listingStatus')}</FieldHint>
-            </label>
-            <label>
-              {t('listing.visibility')}
-              <select value={form.visibility} onChange={(event) => setForm({ ...form, visibility: event.target.value as ListingVisibility })}>
-                <option value="local">{t('common.local')}</option>
-                <option value="public">{t('common.public')}</option>
-                <option value="draft">{t('common.draft')}</option>
-              </select>
-              <FieldHint>{t('safety.listingVisibility')}</FieldHint>
-            </label>
-            <label className="date-field">
-              {t('listing.expires')}
-              <input type="date" value={form.expiresAt} onChange={(event) => setForm({ ...form, expiresAt: event.target.value })} />
-            </label>
-          </div>
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionPrice')}</legend>
-          <div className="listing-form-row publish-row">
-            <label>
-              {t('listing.priceAmount')}
-              <input required placeholder={t('placeholder.priceAmount')} value={form.priceAmount} onChange={(event) => setForm({ ...form, priceAmount: event.target.value })} />
-            </label>
-            <label>
-              {t('listing.priceCurrency')}
-              <input required maxLength={16} placeholder={t('placeholder.priceCurrency')} value={form.priceCurrency} onChange={(event) => setForm({ ...form, priceCurrency: event.target.value })} />
-            </label>
-            <label>
-              {t('listing.priceFrequency')}
-              <input placeholder={t('placeholder.priceFrequency')} value={form.priceFrequency} onChange={(event) => setForm({ ...form, priceFrequency: event.target.value })} />
-            </label>
-          </div>
-          <label>
-            {t('listing.priceNote')}
-            <input placeholder={t('placeholder.priceNote')} value={form.priceNote} onChange={(event) => setForm({ ...form, priceNote: event.target.value })} />
-            <FieldHint>{t('hint.pricePublic')}</FieldHint>
-          </label>
+          <FieldHint>{t('hint.contactPublic')}</FieldHint>
         </fieldset>
         <fieldset className="fieldset-list">
           <legend>{t('listing.sectionImages')}</legend>
@@ -3000,6 +2935,65 @@ function ListingCreatePanel({
               ))}
             </div>
           ) : null}
+        </fieldset>
+        <fieldset className="fieldset-list">
+          <legend>{t('listing.sectionPublishReadiness')}</legend>
+          <div className="listing-form-row publish-row">
+            <label>
+              {t('listing.status')}
+              <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ListingStatus })}>
+                <option value="active">{t('listing.status.active')}</option>
+                <option value="sold">{t('listing.status.sold')}</option>
+                <option value="deleted">{t('listing.status.deleted')}</option>
+              </select>
+              <FieldHint>{t('hint.listingStatus')}</FieldHint>
+            </label>
+            <label>
+              {t('listing.visibility')}
+              <select value={form.visibility} onChange={(event) => setForm({ ...form, visibility: event.target.value as ListingVisibility })}>
+                <option value="local">{t('common.local')}</option>
+                <option value="public">{t('common.public')}</option>
+                <option value="draft">{t('common.draft')}</option>
+              </select>
+              <FieldHint>{t('safety.listingVisibility')}</FieldHint>
+            </label>
+            <label className="date-field">
+              {t('listing.expires')}
+              <input type="date" value={form.expiresAt} onChange={(event) => setForm({ ...form, expiresAt: event.target.value })} />
+            </label>
+          </div>
+          <div className="listing-readiness-panel quiet" aria-label={t('listing.readiness.title')} role="region">
+            <div className="row between">
+              <h2>{t('listing.readiness.title')}</h2>
+              {!authorPublicKey ? (
+                <button className="subtle" onClick={onCreateIdentity} type="button">
+                  {t('next.createIdentity')}
+                </button>
+              ) : null}
+            </div>
+            <div className="readiness-grid compact">
+              <div className={authorPublicKey ? 'readiness-item done' : 'readiness-item'}>
+                <span className="pill">{authorPublicKey ? t('listing.readiness.ready') : t('listing.readiness.missing')}</span>
+                <strong>{t('listing.readiness.identity')}</strong>
+                <p>{authorPublicKey ? t('listing.readiness.identityReady') : t('listing.readiness.identityMissing')}</p>
+              </div>
+              <div className={essentialsReady ? 'readiness-item done' : 'readiness-item'}>
+                <span className="pill">{essentialsReady ? t('listing.readiness.ready') : t('listing.readiness.missing')}</span>
+                <strong>{t('listing.readiness.essentials')}</strong>
+                <p>{essentialsReady ? t('listing.readiness.essentialsReady') : t('listing.readiness.essentialsMissing')}</p>
+              </div>
+              <div className="readiness-item done">
+                <span className="pill">{form.visibility === 'public' ? t('common.public') : t('common.local')}</span>
+                <strong>{t('listing.visibility')}</strong>
+                <p>{visibilityStatus}</p>
+              </div>
+              <div className={newImageDrafts.length === 0 || (enabledBlossomServer && hasImageSigner) ? 'readiness-item done' : 'readiness-item'}>
+                <span className="pill">{t('listing.sectionImages')}</span>
+                <strong>{t('listing.readiness.media')}</strong>
+                <p>{mediaStatus}</p>
+              </div>
+            </div>
+          </div>
         </fieldset>
         <DisclosurePanel title={t('marketplace.advancedListingFields')}>
           <fieldset className="fieldset-list">
@@ -5249,6 +5243,7 @@ function SettingsPage({
   const [bulkReviewMessage, setBulkReviewMessage] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>(settingsTabFromHash);
+  const shouldOpenAdvancedReview = window.location.hash === '#settings:review';
   const signerStatus = signerIdentityStatus(identity, nostrSigner);
   const relayScores = useMemo(() => relayScoresFromHealth(relayHealth), [relayHealth]);
   const profileConflicts = useMemo(() => findSyncedConflictGroups(syncedProfiles), [syncedProfiles]);
@@ -5263,7 +5258,6 @@ function SettingsPage({
   const filteredDisputeOutcomes = useMemo(() => applyHiddenFilter(syncedDisputeOutcomes, hidden), [hidden, syncedDisputeOutcomes]);
   const filteredCommunityLists = useMemo(() => applyHiddenFilter(syncedCommunityLists, hidden), [hidden, syncedCommunityLists]);
   const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
-  const pendingReviewCount = reviewItems.filter((item) => item.importStatus === 'pending').length;
   const filteredReviewItems = useMemo(
     () =>
       filterReviewItems(reviewItems, reviewFilter, allowlist.map((entry) => entry.publicKey)).filter((item) =>
@@ -5295,17 +5289,17 @@ function SettingsPage({
     },
     {
       title: t('sync.wizard.stepFetch'),
-      body: pendingReviewCount > 0 || syncedRecordCount > 0 ? t('sync.wizard.fetchReady') : t('sync.wizard.fetchNeeded'),
-      done: pendingReviewCount > 0 || syncedRecordCount > 0,
-      actionLabel: t('nostr.fetchReview'),
-      onAction: () => setActiveTab('review')
+      body: syncedRecordCount > 0 ? t('sync.wizard.fetchReady') : t('sync.wizard.fetchNeeded'),
+      done: syncedRecordCount > 0,
+      actionLabel: t('next.openBrowse'),
+      onAction: () => go('browse')
     },
     {
       title: t('sync.wizard.stepImport'),
       body: syncedRecordCount > 0 ? t('sync.wizard.importReady') : t('sync.wizard.importNeeded'),
       done: syncedRecordCount > 0,
-      actionLabel: t('next.reviewQueue'),
-      onAction: () => setActiveTab('review')
+      actionLabel: t('next.publicCache'),
+      onAction: () => setActiveTab('cache')
     },
     {
       title: t('sync.wizard.stepMarketplace'),
@@ -5336,10 +5330,10 @@ function SettingsPage({
       consecutiveFailures: 0
     });
     setRelayUrl('');
-    setActiveTab('review');
+    setActiveTab('relays');
     onChanged(t('notice.relayAdded'), {
       body: t('next.relayAdded'),
-      actions: [{ label: t('next.reviewQueue'), page: 'settings:review' }]
+      actions: [{ label: t('next.openBrowse'), page: 'browse' }]
     });
   };
 
@@ -5588,6 +5582,172 @@ function SettingsPage({
     ]);
   };
 
+  const reviewQueuePanel = (
+    <div className="advanced-review-panel">
+      <div className="row between">
+        <div>
+          <h3>{t('nostr.reviewQueue')}</h3>
+          <p className="muted">{t('settings.reviewDiagnosticsBody')}</p>
+        </div>
+        <button disabled={syncing} onClick={() => void syncReviewQueue()} type="button">
+          <Radio size={16} /> {syncing ? t('nostr.syncing') : t('nostr.fetchReview')}
+        </button>
+      </div>
+      <div className="filters compact-filters">
+        <select
+          aria-label={t('review.filter.status')}
+          value={reviewFilter.status}
+          onChange={(event) => setReviewFilter({ ...reviewFilter, status: event.target.value as ReviewQueueFilter['status'] })}
+        >
+          <option value="all">{t('common.all')}</option>
+          <option value="pending">{t('review.filter.pending')}</option>
+          <option value="invalid">{t('review.filter.invalid')}</option>
+          <option value="imported">{t('review.filter.imported')}</option>
+          <option value="rejected">{t('review.filter.rejected')}</option>
+        </select>
+        <select
+          aria-label={t('review.filter.encryption')}
+          value={reviewFilter.encryption}
+          onChange={(event) => setReviewFilter({ ...reviewFilter, encryption: event.target.value as ReviewQueueFilter['encryption'] })}
+        >
+          <option value="all">{t('common.all')}</option>
+          <option value="plain">{t('review.filter.plain')}</option>
+          <option value="encrypted">{t('review.filter.encrypted')}</option>
+        </select>
+        <select
+          aria-label={t('review.filter.trust')}
+          value={reviewFilter.trust}
+          onChange={(event) => setReviewFilter({ ...reviewFilter, trust: event.target.value as TrustFilter })}
+        >
+          <option value="all">{t('common.all')}</option>
+          <option value="trusted">{t('sync.trusted')}</option>
+          <option value="untrusted">{t('sync.untrusted')}</option>
+        </select>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={showExpiredReviewListings}
+            onChange={(event) => setShowExpiredReviewListings(event.target.checked)}
+          />
+          {t('review.showExpiredListings')}
+        </label>
+      </div>
+      <div className="actions small">
+        <button onClick={selectVisibleSafeReviewItems} type="button">
+          {t('review.selectVisibleSafe')}
+        </button>
+        <button disabled={selectedReviewItems.length === 0} onClick={() => void bulkImportSelectedReviewItems()} type="button">
+          {t('review.importSelected')}
+        </button>
+        <button disabled={selectedReviewItems.length === 0} onClick={() => void bulkRejectSelectedReviewItems()} type="button">
+          {t('review.rejectSelected')}
+        </button>
+        <button onClick={() => void bulkRejectVisibleInvalidItems()} type="button">
+          {t('review.bulkRejectInvalid')}
+        </button>
+        <button onClick={() => void clearRejectedReviewItems()} type="button">
+          {t('review.clearRejected')}
+        </button>
+        <button disabled={selectedReviewItemIds.length === 0} onClick={() => setSelectedReviewItemIds([])} type="button">
+          {t('review.clearSelection')}
+        </button>
+      </div>
+      <p className="muted">{t('review.selectedCount').replace('{count}', String(selectedReviewItems.length))}</p>
+      {bulkReviewMessage ? <StatusMessage className="notice inline">{bulkReviewMessage}</StatusMessage> : null}
+      <DisclosurePanel title={t('ui.advanced')}>
+        <DisclosurePanel title={t('ui.whyMatters')}>
+          <InlineHelp>{t('help.reviewQueue')}</InlineHelp>
+        </DisclosurePanel>
+        <p className="muted">{t('sync.outgoingNote')}</p>
+        <label>
+          {t('nostr.encryptedReviewPassphrase')}
+          <input minLength={10} type="password" value={reviewPassphrase} onChange={(event) => setReviewPassphrase(event.target.value)} />
+          <FieldHint>{t('hint.reviewPassphrase')}</FieldHint>
+        </label>
+        <button onClick={() => void clearInvalidReviewItems()} type="button">
+          {t('nostr.clearInvalid')}
+        </button>
+      </DisclosurePanel>
+      <div aria-live="polite" aria-relevant="additions text" className="card-grid single">
+        {regularReviewItems.map((item) => (
+          <article className="card compact" key={item.id}>
+            <div className="row between">
+              <label className="checkbox compact-checkbox">
+                <input
+                  checked={selectedReviewItemIds.includes(item.id)}
+                  type="checkbox"
+                  onChange={(event) => toggleReviewItemSelection(item, event.target.checked)}
+                />
+                <span className="pill">{item.importStatus}</span>
+              </label>
+              <span className={item.signatureValid ? 'ok mini' : 'warning mini'}>
+                {item.signatureValid ? t('nostr.signatureValid') : t('nostr.signatureInvalid')}
+              </span>
+            </div>
+            <p className="key">{item.eventId}</p>
+            <p className="muted">
+              {item.relay} · kind {item.kind} · {item.authorPublicKey}
+            </p>
+            {reviewScopeLabel(item.discoveryScope) ? <span className="pill subtle-pill">{reviewScopeLabel(item.discoveryScope)}</span> : null}
+            <pre>{item.payloadPreview}</pre>
+            <div className="actions small">
+              <button
+                disabled={item.importStatus !== 'pending' || !item.signatureValid || (reviewItemHasEncryptedContent(item) && reviewPassphrase.length < 10)}
+                onClick={() => void importReviewItem(item)}
+                title={
+                  item.importStatus !== 'pending' || !item.signatureValid
+                    ? t('a11y.reviewImportDisabled')
+                    : reviewItemHasEncryptedContent(item) && reviewPassphrase.length < 10
+                      ? t('a11y.passphraseMin')
+                      : undefined
+                }
+                type="button"
+              >
+                {t('nostr.importReviewed')}
+              </button>
+              <button
+                disabled={item.importStatus !== 'pending'}
+                onClick={() => void rejectReviewItem(item)}
+                title={item.importStatus !== 'pending' ? t('a11y.reviewActionDone') : undefined}
+                type="button"
+              >
+                {t('nostr.reject')}
+              </button>
+            </div>
+          </article>
+        ))}
+        {regularReviewItems.length === 0 && invalidReviewItems.length === 0 ? <EmptyState title={t('empty.reviewTitle')} body={t('empty.reviewBody')} /> : null}
+      </div>
+      {invalidReviewItems.length > 0 ? (
+        <DisclosurePanel title={`${t('review.invalidUnsupported')} (${invalidReviewItems.length})`}>
+          <div className="card-grid single">
+            {invalidReviewItems.map((item) => (
+              <article className="card compact" key={item.id}>
+                <div className="row between">
+                  <label className="checkbox compact-checkbox">
+                    <input
+                      checked={selectedReviewItemIds.includes(item.id)}
+                      type="checkbox"
+                      onChange={(event) => toggleReviewItemSelection(item, event.target.checked)}
+                    />
+                    <span className="pill">{item.importStatus}</span>
+                  </label>
+                  <span className="warning mini">{t('nostr.signatureInvalid')}</span>
+                </div>
+                <p className="key">{item.eventId}</p>
+                <p className="muted">
+                  {item.relay} · kind {item.kind} · {item.authorPublicKey}
+                </p>
+                {reviewScopeLabel(item.discoveryScope) ? <span className="pill subtle-pill">{reviewScopeLabel(item.discoveryScope)}</span> : null}
+                <pre>{item.payloadPreview}</pre>
+              </article>
+            ))}
+          </div>
+        </DisclosurePanel>
+      ) : null}
+    </div>
+  );
+
   return (
     <section className="page">
       <div className="panel">
@@ -5599,7 +5759,6 @@ function SettingsPage({
           tabs={[
             ['account', t('settings.tab.account')],
             ['relays', t('settings.tab.relaysSync')],
-            ['review', t('settings.tab.review')],
             ['cache', t('settings.tab.cache')],
             ['trust', t('settings.tab.trustLists')],
             ['media', t('settings.tab.media')],
@@ -5691,178 +5850,6 @@ function SettingsPage({
                 <FieldHint>{t('sync.listingDiscoveryScopeHelp')}</FieldHint>
               </label>
             </DisclosurePanel>
-          </section>
-        ) : null}
-
-        {activeTab === 'review' ? (
-          <section className="settings-section" aria-labelledby="settings-review">
-            <h2 id="settings-review">{t('nostr.reviewQueue')}</h2>
-            <button disabled={syncing} onClick={() => void syncReviewQueue()} type="button">
-              <Radio size={16} /> {syncing ? t('nostr.syncing') : t('nostr.fetchReview')}
-            </button>
-            <div className="filters compact-filters">
-              <select
-                aria-label={t('review.filter.status')}
-                value={reviewFilter.status}
-                onChange={(event) => setReviewFilter({ ...reviewFilter, status: event.target.value as ReviewQueueFilter['status'] })}
-              >
-                <option value="all">{t('common.all')}</option>
-                <option value="pending">{t('review.filter.pending')}</option>
-                <option value="invalid">{t('review.filter.invalid')}</option>
-                <option value="imported">{t('review.filter.imported')}</option>
-                <option value="rejected">{t('review.filter.rejected')}</option>
-              </select>
-              <select
-                aria-label={t('review.filter.encryption')}
-                value={reviewFilter.encryption}
-                onChange={(event) => setReviewFilter({ ...reviewFilter, encryption: event.target.value as ReviewQueueFilter['encryption'] })}
-              >
-                <option value="all">{t('common.all')}</option>
-                <option value="plain">{t('review.filter.plain')}</option>
-                <option value="encrypted">{t('review.filter.encrypted')}</option>
-              </select>
-              <select
-                aria-label={t('review.filter.trust')}
-                value={reviewFilter.trust}
-                onChange={(event) => setReviewFilter({ ...reviewFilter, trust: event.target.value as TrustFilter })}
-              >
-                <option value="all">{t('common.all')}</option>
-                <option value="trusted">{t('sync.trusted')}</option>
-                <option value="untrusted">{t('sync.untrusted')}</option>
-              </select>
-              <label className="checkbox">
-                <input
-                  type="checkbox"
-                  checked={showExpiredReviewListings}
-                  onChange={(event) => setShowExpiredReviewListings(event.target.checked)}
-                />
-                {t('review.showExpiredListings')}
-              </label>
-            </div>
-            <div className="actions small">
-              <button onClick={selectVisibleSafeReviewItems} type="button">
-                {t('review.selectVisibleSafe')}
-              </button>
-              <button disabled={selectedReviewItems.length === 0} onClick={() => void bulkImportSelectedReviewItems()} type="button">
-                {t('review.importSelected')}
-              </button>
-              <button disabled={selectedReviewItems.length === 0} onClick={() => void bulkRejectSelectedReviewItems()} type="button">
-                {t('review.rejectSelected')}
-              </button>
-              <button onClick={() => void bulkRejectVisibleInvalidItems()} type="button">
-                {t('review.bulkRejectInvalid')}
-              </button>
-              <button onClick={() => void clearRejectedReviewItems()} type="button">
-                {t('review.clearRejected')}
-              </button>
-              <button disabled={selectedReviewItemIds.length === 0} onClick={() => setSelectedReviewItemIds([])} type="button">
-                {t('review.clearSelection')}
-              </button>
-            </div>
-            <p className="muted">
-              {t('review.selectedCount').replace('{count}', String(selectedReviewItems.length))}
-            </p>
-            {bulkReviewMessage ? <StatusMessage className="notice inline">{bulkReviewMessage}</StatusMessage> : null}
-            <DisclosurePanel title={t('ui.advanced')}>
-              <DisclosurePanel title={t('ui.whyMatters')}>
-                <InlineHelp>{t('help.reviewQueue')}</InlineHelp>
-              </DisclosurePanel>
-              <p className="muted">{t('sync.outgoingNote')}</p>
-              <label>
-                {t('nostr.encryptedReviewPassphrase')}
-                <input
-                  minLength={10}
-                  type="password"
-                  value={reviewPassphrase}
-                  onChange={(event) => setReviewPassphrase(event.target.value)}
-                />
-                <FieldHint>{t('hint.reviewPassphrase')}</FieldHint>
-              </label>
-              <button onClick={() => void clearInvalidReviewItems()} type="button">
-                {t('nostr.clearInvalid')}
-              </button>
-            </DisclosurePanel>
-            <div aria-live="polite" aria-relevant="additions text" className="card-grid single">
-              {regularReviewItems.map((item) => (
-                <article className="card compact" key={item.id}>
-                  <div className="row between">
-                    <label className="checkbox compact-checkbox">
-                      <input
-                        checked={selectedReviewItemIds.includes(item.id)}
-                        type="checkbox"
-                        onChange={(event) => toggleReviewItemSelection(item, event.target.checked)}
-                      />
-                      <span className="pill">{item.importStatus}</span>
-                    </label>
-                    <span className={item.signatureValid ? 'ok mini' : 'warning mini'}>
-                      {item.signatureValid ? t('nostr.signatureValid') : t('nostr.signatureInvalid')}
-                    </span>
-                  </div>
-                  <p className="key">{item.eventId}</p>
-                  <p className="muted">
-                    {item.relay} · kind {item.kind} · {item.authorPublicKey}
-                  </p>
-                  {reviewScopeLabel(item.discoveryScope) ? <span className="pill subtle-pill">{reviewScopeLabel(item.discoveryScope)}</span> : null}
-                  <pre>{item.payloadPreview}</pre>
-                  <div className="actions small">
-                    <button
-                      disabled={
-                        item.importStatus !== 'pending' ||
-                        !item.signatureValid ||
-                        (reviewItemHasEncryptedContent(item) && reviewPassphrase.length < 10)
-                      }
-                      onClick={() => void importReviewItem(item)}
-                      title={
-                        item.importStatus !== 'pending' || !item.signatureValid
-                          ? t('a11y.reviewImportDisabled')
-                          : reviewItemHasEncryptedContent(item) && reviewPassphrase.length < 10
-                            ? t('a11y.passphraseMin')
-                            : undefined
-                      }
-                      type="button"
-                    >
-                      {t('nostr.importReviewed')}
-                    </button>
-                    <button
-                      disabled={item.importStatus !== 'pending'}
-                      onClick={() => void rejectReviewItem(item)}
-                      title={item.importStatus !== 'pending' ? t('a11y.reviewActionDone') : undefined}
-                      type="button"
-                    >
-                      {t('nostr.reject')}
-                    </button>
-                  </div>
-                </article>
-              ))}
-              {regularReviewItems.length === 0 && invalidReviewItems.length === 0 ? <EmptyState title={t('empty.reviewTitle')} body={t('empty.reviewBody')} /> : null}
-            </div>
-            {invalidReviewItems.length > 0 ? (
-              <DisclosurePanel title={`${t('review.invalidUnsupported')} (${invalidReviewItems.length})`}>
-                <div className="card-grid single">
-                  {invalidReviewItems.map((item) => (
-                    <article className="card compact" key={item.id}>
-                      <div className="row between">
-                        <label className="checkbox compact-checkbox">
-                          <input
-                            checked={selectedReviewItemIds.includes(item.id)}
-                            type="checkbox"
-                            onChange={(event) => toggleReviewItemSelection(item, event.target.checked)}
-                          />
-                          <span className="pill">{item.importStatus}</span>
-                        </label>
-                        <span className="warning mini">{t('nostr.signatureInvalid')}</span>
-                      </div>
-                      <p className="key">{item.eventId}</p>
-                      <p className="muted">
-                        {item.relay} · kind {item.kind} · {item.authorPublicKey}
-                      </p>
-                      {reviewScopeLabel(item.discoveryScope) ? <span className="pill subtle-pill">{reviewScopeLabel(item.discoveryScope)}</span> : null}
-                      <pre>{item.payloadPreview}</pre>
-                    </article>
-                  ))}
-                </div>
-              </DisclosurePanel>
-            ) : null}
           </section>
         ) : null}
 
@@ -6169,6 +6156,9 @@ function SettingsPage({
                 {publishReceipts.length === 0 ? <EmptyState title={t('empty.receiptsTitle')} body={t('empty.receiptsBody')} /> : null}
               </div>
             </DisclosurePanel>
+            <DisclosurePanel key={shouldOpenAdvancedReview ? 'review-route-open' : 'review-route-closed'} title={t('settings.advancedReviewQueue')} defaultOpen={shouldOpenAdvancedReview}>
+              {reviewQueuePanel}
+            </DisclosurePanel>
           </section>
         ) : null}
 
@@ -6254,20 +6244,6 @@ function SyncedRecordActions<T>({
     <button onClick={() => onToggleHidden(record, nextHidden)} type="button">
       {record.hidden || (conflict && preferred) ? <Eye size={16} /> : <EyeOff size={16} />} {label}
     </button>
-  );
-}
-
-function MarketplaceGuidance({ action, onAction }: { action: MarketplaceActionState; onAction: () => void }): ReactNode {
-  return (
-    <div className="action-hint marketplace-guidance">
-      <div>
-        <strong>{action.title}</strong>
-        <p>{action.body}</p>
-      </div>
-      <button onClick={onAction} type="button">
-        {action.actionLabel}
-      </button>
-    </div>
   );
 }
 

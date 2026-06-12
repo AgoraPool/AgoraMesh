@@ -851,17 +851,35 @@ h3 {
   align-items: center;
 }
 
+.marketplace-discovery-panel,
 .marketplace-fetch-panel {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-3);
-  align-items: end;
+  align-items: center;
   padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: transparent;
 }
 
+.marketplace-discovery-panel {
+  justify-content: space-between;
+}
+
+.marketplace-discovery-panel .scope-switch-heading {
+  flex: 1 1 18rem;
+}
+
+.marketplace-discovery-panel .segmented-control {
+  flex: 0 1 auto;
+}
+
+.discovery-relay-count {
+  white-space: nowrap;
+}
+
+.marketplace-discovery-panel > button,
 .marketplace-fetch-panel button {
   flex: 0 0 auto;
 }
@@ -871,6 +889,35 @@ h3 {
   flex: 1 0 100%;
   margin: 0;
   font-size: 0.86rem;
+}
+
+.filter-drawer {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.filter-drawer-group {
+  display: grid;
+  gap: var(--space-2);
+  border-block-start: 1px solid var(--line);
+  padding-block-start: var(--space-3);
+}
+
+.filter-drawer-group:first-child {
+  border-block-start: 0;
+  padding-block-start: 0;
+}
+
+.filter-drawer-group h2 {
+  margin: 0;
+  color: #d8cab0;
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.filter-presets .actions {
+  justify-content: flex-start;
 }
 
 .quick-filter-group,
@@ -1118,6 +1165,10 @@ dd {
   min-width: 0;
 }
 
+.listing-page > button:first-child {
+  margin-bottom: var(--space-5);
+}
+
 .listing-gallery,
 .image-preview-grid,
 .image-manager-grid {
@@ -1128,6 +1179,72 @@ dd {
 
 .listing-gallery {
   grid-column: 1 / -1;
+}
+
+.listing-image-flipper {
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+.listing-image-viewer {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #0e0d0a;
+}
+
+.listing-image-viewer img {
+  width: 100%;
+  max-height: min(68vh, 44rem);
+  aspect-ratio: 16 / 10;
+  object-fit: contain;
+  background: #080704;
+}
+
+.listing-image-viewer figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.image-flipper-controls,
+.image-flipper-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.image-flipper-controls {
+  justify-content: space-between;
+}
+
+.image-flipper-thumbs button {
+  width: 4.25rem;
+  height: 3.25rem;
+  padding: 0;
+  overflow: hidden;
+  border-color: var(--line);
+  border-radius: calc(var(--radius) - 2px);
+  background: #0e0d0a;
+}
+
+.image-flipper-thumbs button.active {
+  border-color: var(--accent);
+}
+
+.image-flipper-thumbs img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .listing-image {
@@ -1833,6 +1950,7 @@ dd {
 }
 
 .listing-card-thumb {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -1871,6 +1989,18 @@ dd {
   object-fit: cover;
 }
 
+.listing-card-image-count {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  min-width: 1.65rem;
+  border: 1px solid rgba(245, 231, 200, 0.24);
+  background: rgba(8, 7, 4, 0.82);
+  color: var(--text);
+  font-size: 0.75rem;
+  padding: 0.12rem 0.35rem;
+}
+
 .create-listing-page {
   display: grid;
   max-width: 860px;
@@ -1882,6 +2012,11 @@ dd {
   border-block: 1px solid var(--line);
   background: transparent;
   padding-block: 0.65rem;
+}
+
+.listing-readiness-panel.quiet {
+  margin-top: var(--space-2);
+  border-color: rgba(245, 231, 200, 0.12);
 }
 
 .listing-readiness-panel h2 {
@@ -2238,8 +2373,10 @@ dd {
   .marketplace-toolbar > button,
   .marketplace-toolbar .marketplace-searchbar,
   .marketplace-toolbar .quick-filter-group,
+  .marketplace-discovery-panel,
   .marketplace-scope-switch,
   .segmented-control,
+  .marketplace-discovery-panel > button,
   .marketplace-fetch-panel button {
     width: 100%;
     max-width: none;

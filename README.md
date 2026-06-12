@@ -10,7 +10,7 @@ The application avoids custodial funds, KYC, tracking, analytics, platform lock-
 - Private key encrypted at rest with a passphrase using WebCrypto PBKDF2 and AES-GCM.
 - English and Czech localization.
 - Unified Marketplace workspace for minimal records-first discovery, stabilized scan-friendly listing cards, dedicated listing pages, simplified listing creation, own listing publish readiness, relay receipts, and explicit relay publish approval.
-- Search, offer/request, localized category, region, fulfillment, payment, trust, source, and expiry filters with advanced controls collapsed by default.
+- Search, offer/request, category, region, source, trust, hidden, expiry, and curation filters with preset-based advanced controls collapsed by default.
 - Optional public listing images through user-configured Blossom media servers.
 - Seller context in listing details from matching public profiles, reputation attestations, allowlists, and short public keys, without claiming identity verification.
 - Trade workspace for local or reviewed public listing-backed agreements, private agreement packets, signed acceptance receipts, mediator selection, disputes, and local outcome/export handling.
@@ -18,10 +18,10 @@ The application avoids custodial funds, KYC, tracking, analytics, platform lock-
 - Local-first dispute cases with evidence metadata and JSON bundle export.
 - Passphrase-encrypted dispute bundle export/import for safer case sharing.
 - Trade-linked signed reputation attestations, subject summaries, and scan-friendly reputation browsing instead of global star ratings.
-- Configurable Nostr relays for public profiles, listings, mediators, and attestations, with a Public Sync Wizard for relay setup, review import, optional Nostr profile metadata fetch, and returning to Marketplace.
+- Configurable Nostr relays for public profiles, listings, mediators, and attestations, with a Public Sync Wizard for relay setup, direct Marketplace fetch, optional Nostr profile metadata fetch, and returning to Marketplace.
 - Public listings publish as NIP-99 classified listings. Private contact or order encryption is deferred to a later protocol sprint.
-- Full public Nostr sync review queue and separate synced public cache.
-- Relay fetch diagnostics, review filters, safe bulk review actions, Marketplace ranking, and duplicate triage for busy public feeds.
+- Direct public Nostr fetch into a separate synced public cache, with advanced review diagnostics retained for unusual events.
+- Relay fetch diagnostics, Marketplace ranking, and duplicate triage for busy public feeds.
 - Optional live sync while the app is open.
 - Relay health, per-relay publish receipts, and optional community allowlists.
 - Local moderation for synced public records, conflict labels, relay quality scores, and portable community allowlist import/export.
@@ -97,7 +97,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.30.0`.
+Current app version: `0.32.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.30.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.32.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -145,6 +145,8 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.28.0 polish pass improves collapsed sidebar alignment, Marketplace NIP-99 scope filtering, and signer-backed restoration of authored cached public records for local editing.
 - The v0.29.0 UI pass fixes app icon loading, aligns the collapsed sidebar brand rail, and starts a restrained minimal agorist visual redesign for the main marketplace flows.
 - The v0.30.0 marketplace UX pass adds the linked-delta icon, tightens collapsed sidebar alignment, simplifies Browse filters, and adds ordered multi-image listing gallery editing.
+- The v0.31.0 marketplace flow pass merges public listing discovery controls, adds a simple listing image flipper, introduces a mesh monogram icon, and calms the Create Listing form.
+- The v0.32.0 Browse and Settings cleanup moves advanced filtering into grouped presets and hides the old review queue under diagnostics.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

@@ -1,7 +1,7 @@
 import { hexToBytes } from '@noble/hashes/utils';
-import { unwrapEvent, wrapManyEvents } from 'nostr-tools/nip17';
+import { unwrapEvent, wrapEvent, wrapManyEvents } from 'nostr-tools/nip17';
 import { encrypt, getConversationKey } from 'nostr-tools/nip44';
-import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { NostrEvent, NostrUnsignedEvent } from './events';
 import type { RelayConfig } from '../../types/domain';
 
@@ -73,12 +73,16 @@ export function nostrIntroPlaintext(message: string, context?: NostrIntroContext
 export function createLocalNostrIntroEvents(args: CreateLocalNostrIntroEventsArgs): NostrEvent[] {
   const plaintext = nostrIntroPlaintext(args.message, args.context);
   const senderPrivateKey = hexToBytes(args.senderPrivateKeyHex);
+  const senderPublicKey = getPublicKey(senderPrivateKey);
+  if (senderPublicKey.toLowerCase() === args.recipientPublicKey.toLowerCase()) {
+    return [wrapEvent(senderPrivateKey, { publicKey: senderPublicKey }, plaintext, args.context?.title) as NostrEvent];
+  }
   return wrapManyEvents(senderPrivateKey, [{ publicKey: args.recipientPublicKey }], plaintext, args.context?.title) as NostrEvent[];
 }
 
 export async function createExtensionNostrIntroEvents(args: CreateExtensionNostrIntroEventsArgs): Promise<NostrEvent[]> {
   const plaintext = nostrIntroPlaintext(args.message, args.context);
-  const recipients = [args.senderPublicKey, args.recipientPublicKey];
+  const recipients = [...new Set([args.senderPublicKey.toLowerCase(), args.recipientPublicKey.toLowerCase()])];
   const events: NostrEvent[] = [];
   for (const recipientPublicKey of recipients) {
     const rumorTags = [['p', recipientPublicKey]];
@@ -200,10 +204,16 @@ export async function unwrapExtensionNostrGiftWrap(
   if (wrap.kind !== NOSTR_GIFT_WRAP_KIND) throw new Error('Expected NIP-17 gift wrap.');
   if (!verifyEvent(wrap)) throw new Error('Gift wrap signature is invalid.');
   if (!hasTagValue(wrap, 'p', recipientPublicKey)) throw new Error('Gift wrap is not addressed to this identity.');
+
   const seal = parseNostrEventObject(JSON.parse(await decryptWithSigner(wrap.pubkey, wrap.content)));
   if (seal.kind !== NOSTR_SEAL_KIND) throw new Error('Expected NIP-17 seal.');
   if (!verifyEvent(seal)) throw new Error('NIP-17 seal signature is invalid.');
+
   const rumor = parseRumor(JSON.parse(await decryptWithSigner(seal.pubkey, seal.content)));
+  if (seal.pubkey.toLowerCase() !== rumor.pubkey.toLowerCase()) {
+    throw new Error('NIP-17 seal author does not match rumor author.');
+  }
+
   return validateUnwrappedMessage(wrap, rumor, recipientPublicKey);
 }
 

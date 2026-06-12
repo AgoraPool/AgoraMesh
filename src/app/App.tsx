@@ -1074,7 +1074,6 @@ export function App(): ReactNode {
   ): Promise<'imported' | 'duplicate' | 'skipped'> => {
     if (!identity) return 'skipped';
     const ownerPublicKey = identity.publicKey.toLowerCase();
-    if (unwrapped.senderPublicKey.toLowerCase() === ownerPublicKey) return 'skipped';
     const existing = await db.nostrMessages.where('eventId').equals(unwrapped.wrap.id).first();
     if (existing) {
       const relayUrls = mergeRelayUrls(existing.relayUrls, relayUrl);
@@ -1082,8 +1081,17 @@ export function App(): ReactNode {
       return 'duplicate';
     }
     const parsedContext = messageContextFromPlaintext(unwrapped.rumor.content);
-    const subject = unwrapped.subject ?? parsedContext.contextTitle;
-    const threadKey = nostrThreadKey(ownerPublicKey, unwrapped.senderPublicKey, subject, parsedContext.contextId);
+    const direction: NostrMessageRecord['direction'] = unwrapped.senderPublicKey.toLowerCase() === ownerPublicKey ? 'outgoing' : 'incoming';
+    const sentReceipt =
+      direction === 'outgoing'
+        ? (await db.nostrContactReceipts.toArray()).find(
+            (receipt) => receipt.senderPublicKey.toLowerCase() === ownerPublicKey && receipt.eventIds.includes(unwrapped.wrap.id)
+          )
+        : undefined;
+    const counterpartPublicKey = direction === 'outgoing' ? sentReceipt?.recipientPublicKey.toLowerCase() ?? ownerPublicKey : unwrapped.senderPublicKey;
+    const subject = unwrapped.subject ?? parsedContext.contextTitle ?? sentReceipt?.contextTitle;
+    const contextId = parsedContext.contextId ?? sentReceipt?.contextId;
+    const threadKey = nostrThreadKey(ownerPublicKey, counterpartPublicKey, subject, contextId);
     const record: NostrMessageRecord = {
       id: `nostr_msg_${unwrapped.wrap.id}`,
       ownerPublicKey,
@@ -1091,18 +1099,19 @@ export function App(): ReactNode {
       wrapPublicKey: unwrapped.wrap.pubkey,
       senderPublicKey: unwrapped.senderPublicKey,
       recipientPublicKey: ownerPublicKey,
-      counterpartPublicKey: unwrapped.senderPublicKey,
-      direction: 'incoming',
+      counterpartPublicKey,
+      direction,
       threadKey,
       subject,
-      contextId: parsedContext.contextId,
+      contextType: sentReceipt?.contextType,
+      contextId,
       wrapCreatedAt: messageIso(unwrapped.wrap.created_at),
       messageCreatedAt: messageIso(unwrapped.rumor.created_at),
       receivedAt: nowIso(),
       relayUrls: [relayUrl],
       rawEvent: JSON.stringify(unwrapped.wrap),
       encryptedPlaintext: await encryptLocalSecret(unwrapped.rumor.content, inboxPassphrase),
-      read: false,
+      read: direction === 'outgoing',
       archived: false
     };
     await db.nostrMessages.put(record);
@@ -4461,6 +4470,7 @@ function NostrInboxPanel({
   const [summary, setSummary] = useState<InboxFetchSummary | undefined>();
   const [decrypted, setDecrypted] = useState<DecryptedNostrMessage[]>([]);
   const [activeThreadKey, setActiveThreadKey] = useState('');
+  const [boxFilter, setBoxFilter] = useState<'all' | 'inbox' | 'outbox'>('all');
   const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
   const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
   const canUseSigner = Boolean(
@@ -4471,7 +4481,22 @@ function NostrInboxPanel({
   );
   const ownerPublicKey = identity?.publicKey.toLowerCase() ?? '';
   const ownerMessages = useMemo(() => messages.filter((message) => message.ownerPublicKey === ownerPublicKey), [messages, ownerPublicKey]);
-  const visibleThreads = threads.filter((thread) => thread.ownerPublicKey === ownerPublicKey && !thread.archived);
+  const threadDirections = useMemo(() => {
+    const next = new Map<string, { incoming: number; outgoing: number }>();
+    for (const message of ownerMessages) {
+      const current = next.get(message.threadKey) ?? { incoming: 0, outgoing: 0 };
+      current[message.direction] += 1;
+      next.set(message.threadKey, current);
+    }
+    return next;
+  }, [ownerMessages]);
+  const visibleThreads = threads.filter((thread) => {
+    if (thread.ownerPublicKey !== ownerPublicKey || thread.archived) return false;
+    const directions = threadDirections.get(thread.threadKey);
+    if (boxFilter === 'inbox') return Boolean(directions?.incoming);
+    if (boxFilter === 'outbox') return Boolean(directions?.outgoing);
+    return true;
+  });
   const activeThread = visibleThreads.find((thread) => thread.threadKey === activeThreadKey) ?? visibleThreads[0];
   const activeMessages = activeThread ? decrypted.filter((message) => message.threadKey === activeThread.threadKey).sort((left, right) => left.messageCreatedAt.localeCompare(right.messageCreatedAt)) : [];
 
@@ -4563,15 +4588,29 @@ function NostrInboxPanel({
               .replace('{relays}', String(summary.relays))}
           </p>
         ) : null}
+        <div className="segmented-control compact" aria-label={t('nostrInbox.boxFilter')}>
+          {(['all', 'inbox', 'outbox'] as const).map((filter) => (
+            <button className={boxFilter === filter ? 'active' : ''} key={filter} onClick={() => setBoxFilter(filter)} type="button">
+              {t(`nostrInbox.${filter}`)}
+            </button>
+          ))}
+        </div>
         <div className="split compact-split">
           <div className="card-grid single">
-            {visibleThreads.map((thread) => (
-              <button className={thread.threadKey === activeThread?.threadKey ? 'card active' : 'card'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
-                <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
-                <span className="muted">{shortPublicKey(thread.counterpartPublicKey)} · {thread.lastMessageAt}</span>
-                {thread.unreadCount > 0 ? <span className="pill">{thread.unreadCount}</span> : null}
-              </button>
-            ))}
+            {visibleThreads.map((thread) => {
+              const directions = threadDirections.get(thread.threadKey) ?? { incoming: 0, outgoing: 0 };
+              return (
+                <button className={thread.threadKey === activeThread?.threadKey ? 'card active' : 'card'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
+                  <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
+                  <span className="muted">{shortPublicKey(thread.counterpartPublicKey)} · {thread.lastMessageAt}</span>
+                  <span className="status-chip-row">
+                    {directions.incoming > 0 ? <span className="status-chip">{t('nostrInbox.incomingCount').replace('{count}', String(directions.incoming))}</span> : null}
+                    {directions.outgoing > 0 ? <span className="status-chip">{t('nostrInbox.outgoingCount').replace('{count}', String(directions.outgoing))}</span> : null}
+                    {thread.unreadCount > 0 ? <span className="status-chip warning">{thread.unreadCount}</span> : null}
+                  </span>
+                </button>
+              );
+            })}
             {visibleThreads.length === 0 ? <EmptyState title={t('nostrInbox.emptyTitle')} body={t('nostrInbox.emptyBody')} /> : null}
           </div>
           <div className="panel">
@@ -4595,11 +4634,16 @@ function NostrInboxPanel({
                 {unlocked ? (
                   <div className="message-list">
                     {activeMessages.map((message) => (
-                      <article className="inline-card" key={message.id}>
+                      <article className={`inline-card message ${message.direction}`} key={message.id}>
                         <div className="row between">
-                          <strong>{message.direction === 'incoming' ? shortPublicKey(message.senderPublicKey) : t('nostrInbox.you')}</strong>
+                          <strong>{message.direction === 'incoming' ? t('nostrInbox.incoming') : t('nostrInbox.outgoing')}</strong>
                           <span className="muted">{message.messageCreatedAt}</span>
                         </div>
+                        <p className="muted">
+                          {message.direction === 'incoming'
+                            ? t('nostrInbox.from').replace('{key}', shortPublicKey(message.senderPublicKey))
+                            : t('nostrInbox.to').replace('{key}', shortPublicKey(message.counterpartPublicKey))}
+                        </p>
                         <p>{message.plaintext}</p>
                       </article>
                     ))}

@@ -28,6 +28,25 @@ describe('encrypted Nostr intro messages', () => {
     );
   });
 
+  it('creates one local gift wrap when sender contacts the same pubkey', () => {
+    const senderKey = generateSecretKey();
+    const senderPublicKey = getPublicKey(senderKey);
+    const message = 'Note to self';
+
+    const events = createLocalNostrIntroEvents({
+      senderPrivateKeyHex: bytesToHex(senderKey),
+      recipientPublicKey: senderPublicKey,
+      message
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].tags).toContainEqual(['p', senderPublicKey]);
+    const unwrapped = unwrapLocalNostrGiftWrap(events[0], bytesToHex(senderKey), senderPublicKey);
+    expect(unwrapped.senderPublicKey).toBe(senderPublicKey);
+    expect(unwrapped.recipientPublicKey).toBe(senderPublicKey);
+    expect(unwrapped.rumor.content).toBe(message);
+  });
+
   it('creates extension-backed gift wraps through signer NIP-44 encryption and signEvent', async () => {
     const senderKey = generateSecretKey();
     const senderPublicKey = getPublicKey(senderKey);
@@ -49,6 +68,25 @@ describe('encrypted Nostr intro messages', () => {
     expect(events.flatMap((event) => event.tags.filter((tag) => tag[0] === 'p').map((tag) => tag[1])).sort()).toEqual(
       [recipientPublicKey, senderPublicKey].sort()
     );
+  });
+
+  it('creates one extension-backed gift wrap when sender contacts the same pubkey', async () => {
+    const senderKey = generateSecretKey();
+    const senderPublicKey = getPublicKey(senderKey);
+    const message = 'Extension note to self';
+
+    const events = await createExtensionNostrIntroEvents({
+      senderPublicKey,
+      recipientPublicKey: senderPublicKey,
+      message,
+      encryptWithSigner: async () => encrypt('encrypted-payload', new Uint8Array(32).fill(1)),
+      signWithSigner: async (event: NostrUnsignedEvent) => finalizeEvent(event, senderKey)
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].tags).toContainEqual(['p', senderPublicKey]);
+    expect(events[0].kind).toBe(NOSTR_GIFT_WRAP_KIND);
+    expect(verifyEvent(events[0])).toBe(true);
   });
 
   it('unwraps received local-key gift wraps and rejects the wrong recipient', () => {

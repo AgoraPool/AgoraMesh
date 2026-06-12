@@ -2409,6 +2409,11 @@ dd {
   background: var(--surface);
 }
 
+.nostr-inbox .message.outgoing {
+  border-color: var(--line-strong);
+  background: var(--accent-muted);
+}
+
 .align-end {
   align-self: end;
 }

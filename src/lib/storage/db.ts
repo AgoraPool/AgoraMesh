@@ -10,6 +10,10 @@ import type {
   IdentityRecord,
   Listing,
   MediatorProfile,
+  NostrContactReceipt,
+  NostrInboxCursor,
+  NostrMessageRecord,
+  NostrMessageThread,
   NostrReviewItem,
   PublicDisputeOutcome,
   PublicProfile,
@@ -65,6 +69,10 @@ export class AgoraMeshDb extends Dexie {
   syncedCommunityLists!: Table<SyncedPublicRecord<CommunityCurationList>, string>;
   relayHealth!: Table<RelayHealth, string>;
   publishReceipts!: Table<PublishReceipt, string>;
+  nostrContactReceipts!: Table<NostrContactReceipt, string>;
+  nostrMessages!: Table<NostrMessageRecord, string>;
+  nostrMessageThreads!: Table<NostrMessageThread, string>;
+  nostrInboxCursors!: Table<NostrInboxCursor, string>;
   allowlist!: Table<CommunityAllowlistEntry, string>;
   syncSettings!: Table<SyncSettings, string>;
   blossomServers!: Table<BlossomServerConfig, string>;
@@ -232,6 +240,61 @@ export class AgoraMeshDb extends Dexie {
         Object.assign(settings, syncSettingsSchema.parse({ ...defaultSyncSettings, ...settings }));
       });
     });
+    this.version(10).stores({
+      identity: 'id, publicKey',
+      profile: 'id, publicKey, mediatorAvailable',
+      listings: 'id, authorPublicKey, type, category, region, visibility, status, createdAt, expiresAt',
+      agreements: 'id, hash, createdAt',
+      agreementReceipts: 'id, agreementHash, role, signerPublicKey, acceptedAt',
+      mediators: 'id, publicKey, region',
+      disputes: 'id, state, agreementHash, createdAt',
+      attestations: 'id, reviewerPublicKey, subjectPublicKey, agreementHash, eventId',
+      relays: 'url, enabled',
+      nostrReview: 'id, eventId, kind, relay, importStatus, receivedAt, authorPublicKey',
+      publicProfiles: 'id, publicKey, mediatorAvailable',
+      syncedProfiles: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedListings: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedMediators: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedAttestations: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedDisputeOutcomes: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      communityLists: 'id, authorPublicKey, updatedAt',
+      syncedCommunityLists: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      relayHealth: 'url, enabled, lastConnectedAt, consecutiveFailures',
+      publishReceipts: 'id, objectType, objectId, eventId, relayUrl, status, at',
+      nostrContactReceipts: 'id, senderPublicKey, recipientPublicKey, sentAt, status, contextType, contextId',
+      allowlist: 'id, publicKey, label, createdAt',
+      syncSettings: 'id',
+      blossomServers: 'id, url, enabled'
+    });
+    this.version(11).stores({
+      identity: 'id, publicKey',
+      profile: 'id, publicKey, mediatorAvailable',
+      listings: 'id, authorPublicKey, type, category, region, visibility, status, createdAt, expiresAt',
+      agreements: 'id, hash, createdAt',
+      agreementReceipts: 'id, agreementHash, role, signerPublicKey, acceptedAt',
+      mediators: 'id, publicKey, region',
+      disputes: 'id, state, agreementHash, createdAt',
+      attestations: 'id, reviewerPublicKey, subjectPublicKey, agreementHash, eventId',
+      relays: 'url, enabled',
+      nostrReview: 'id, eventId, kind, relay, importStatus, receivedAt, authorPublicKey',
+      publicProfiles: 'id, publicKey, mediatorAvailable',
+      syncedProfiles: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedListings: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedMediators: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedAttestations: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedDisputeOutcomes: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      communityLists: 'id, authorPublicKey, updatedAt',
+      syncedCommunityLists: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      relayHealth: 'url, enabled, lastConnectedAt, consecutiveFailures',
+      publishReceipts: 'id, objectType, objectId, eventId, relayUrl, status, at',
+      nostrContactReceipts: 'id, senderPublicKey, recipientPublicKey, sentAt, status, contextType, contextId',
+      nostrMessages: 'id, ownerPublicKey, eventId, threadKey, counterpartPublicKey, messageCreatedAt, read, archived',
+      nostrMessageThreads: 'id, ownerPublicKey, threadKey, counterpartPublicKey, lastMessageAt, archived',
+      nostrInboxCursors: 'id, ownerPublicKey, relayUrl, lastFetchedAt',
+      allowlist: 'id, publicKey, label, createdAt',
+      syncSettings: 'id',
+      blossomServers: 'id, url, enabled'
+    });
   }
 }
 
@@ -291,6 +354,10 @@ export async function exportAllData(): Promise<AppBackup> {
     syncedCommunityLists: await db.syncedCommunityLists.toArray(),
     relayHealth: await db.relayHealth.toArray(),
     publishReceipts: await db.publishReceipts.toArray(),
+    nostrContactReceipts: await db.nostrContactReceipts.toArray(),
+    nostrMessages: await db.nostrMessages.toArray(),
+    nostrMessageThreads: await db.nostrMessageThreads.toArray(),
+    nostrInboxCursors: await db.nostrInboxCursors.toArray(),
     allowlist: await db.allowlist.toArray(),
     syncSettings: await db.syncSettings.toArray(),
     blossomServers: await db.blossomServers.toArray()
@@ -324,6 +391,10 @@ export async function importAllData(raw: unknown): Promise<void> {
       db.syncedCommunityLists,
       db.relayHealth,
       db.publishReceipts,
+      db.nostrContactReceipts,
+      db.nostrMessages,
+      db.nostrMessageThreads,
+      db.nostrInboxCursors,
       db.allowlist,
       db.syncSettings,
       db.blossomServers
@@ -350,6 +421,10 @@ export async function importAllData(raw: unknown): Promise<void> {
         db.syncedCommunityLists.clear(),
         db.relayHealth.clear(),
         db.publishReceipts.clear(),
+        db.nostrContactReceipts.clear(),
+        db.nostrMessages.clear(),
+        db.nostrMessageThreads.clear(),
+        db.nostrInboxCursors.clear(),
         db.allowlist.clear(),
         db.syncSettings.clear(),
         db.blossomServers.clear()
@@ -377,6 +452,10 @@ export async function importAllData(raw: unknown): Promise<void> {
         db.syncedCommunityLists.bulkPut(verifiedSynced.communityLists),
         db.relayHealth.bulkPut(backup.relayHealth),
         db.publishReceipts.bulkPut(backup.publishReceipts),
+        db.nostrContactReceipts.bulkPut(backup.nostrContactReceipts),
+        db.nostrMessages.bulkPut(backup.nostrMessages),
+        db.nostrMessageThreads.bulkPut(backup.nostrMessageThreads),
+        db.nostrInboxCursors.bulkPut(backup.nostrInboxCursors),
         db.allowlist.bulkPut(backup.allowlist),
         db.syncSettings.bulkPut(
           (backup.syncSettings.length > 0 ? backup.syncSettings : [defaultSyncSettings]).map((settings) =>

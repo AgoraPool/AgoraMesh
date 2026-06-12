@@ -1,6 +1,6 @@
 export type LanguageCode = 'en' | 'cs';
 
-export type ContactKind = 'matrix' | 'simplex' | 'session' | 'email' | 'custom';
+export type ContactKind = 'matrix' | 'simplex' | 'session' | 'email' | 'nostr' | 'custom';
 
 export type PaymentPreference =
   | 'cash'
@@ -424,6 +424,72 @@ export interface PublishReceipt {
   at: string;
 }
 
+export type NostrContactContextType = 'listing' | 'profile' | 'mediator' | 'manual';
+export type NostrContactReceiptStatus = 'accepted' | 'partial' | 'failed';
+
+export interface NostrContactReceipt {
+  id: string;
+  senderPublicKey: string;
+  recipientPublicKey: string;
+  recipientNpub: string;
+  contextType: NostrContactContextType;
+  contextId?: string;
+  contextTitle?: string;
+  eventIds: string[];
+  relayReceipts: SyncStatus[];
+  status: NostrContactReceiptStatus;
+  sentAt: string;
+}
+
+export type NostrMessageDirection = 'incoming' | 'outgoing';
+
+export interface NostrMessageRecord {
+  id: string;
+  ownerPublicKey: string;
+  eventId: string;
+  wrapPublicKey: string;
+  senderPublicKey: string;
+  recipientPublicKey: string;
+  counterpartPublicKey: string;
+  direction: NostrMessageDirection;
+  threadKey: string;
+  subject?: string;
+  contextType?: NostrContactContextType;
+  contextId?: string;
+  wrapCreatedAt: string;
+  messageCreatedAt: string;
+  receivedAt: string;
+  relayUrls: string[];
+  rawEvent: string;
+  encryptedPlaintext: EncryptedSecret;
+  read: boolean;
+  archived: boolean;
+}
+
+export interface NostrMessageThread {
+  id: string;
+  ownerPublicKey: string;
+  counterpartPublicKey: string;
+  threadKey: string;
+  subject?: string;
+  contextType?: NostrContactContextType;
+  contextId?: string;
+  lastMessageAt: string;
+  lastMessageId?: string;
+  unreadCount: number;
+  archived: boolean;
+  updatedAt: string;
+}
+
+export interface NostrInboxCursor {
+  id: string;
+  ownerPublicKey: string;
+  relayUrl: string;
+  since: number;
+  newestCreatedAt: number;
+  lastFetchedAt: string;
+}
+
 export interface CommunityAllowlistEntry {
   id: string;
   publicKey: string;
@@ -484,6 +550,10 @@ export interface AppBackup {
   syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   relayHealth: RelayHealth[];
   publishReceipts: PublishReceipt[];
+  nostrContactReceipts: NostrContactReceipt[];
+  nostrMessages: NostrMessageRecord[];
+  nostrMessageThreads: NostrMessageThread[];
+  nostrInboxCursors: NostrInboxCursor[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

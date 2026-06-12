@@ -72,6 +72,8 @@
 - v0.30.0 marketplace UX polish with a linked-delta decentralization icon, centered collapsed sidebar rail, quieter Browse filter hierarchy, ordered listing image gallery editing, and clearer handling of external NIP-99 listing images.
 - v0.31.0 marketplace flow polish with one public listing discovery panel, simple listing image flipper, mesh monogram app icon, and calmer single-page Create/Edit Listing flow.
 - v0.32.0 Browse and Settings cleanup with preset-based Marketplace filters, grouped curation/maintenance controls, and review queue diagnostics hidden from primary Settings navigation.
+- v0.33.0 Nostr contact and encrypted intro messaging with Nostr contact methods, explicit outbound NIP-17/NIP-44 messages, and plaintext-free contact receipts.
+- v0.34.0 Nostr threaded inbox with explicit NIP-17 gift-wrap fetch, NIP-44 decrypt support, encrypted local message cache, lightweight threads, replies, and Inbox primary navigation.
 
 ## Not Planned For MVP
 

@@ -55,7 +55,7 @@ type CacheablePayload =
   | CommunityCurationList;
 
 const paymentPreferences = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'] as const;
-const contactKinds = ['matrix', 'simplex', 'session', 'email', 'custom'] as const;
+const contactKinds = ['matrix', 'simplex', 'session', 'email', 'nostr', 'custom'] as const;
 const fulfillmentTypes = ['local-pickup', 'shipping', 'delivery', 'digital', 'other'] as const;
 const imageMimeTypes = ['image/jpeg', 'image/png', 'image/webp'] as const;
 

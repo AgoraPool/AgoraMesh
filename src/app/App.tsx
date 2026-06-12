@@ -26,7 +26,7 @@ import {
   UserRound
 } from 'lucide-react';
 import type { Table } from 'dexie';
-import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { attestationFromSignedEvent, createSignedAttestation, prepareAttestationEvent, verifyAttestation, type AttestationSignedEvent } from '../lib/crypto/attestations';
 import { decryptDisputeBundle, encryptDisputeBundle } from '../lib/crypto/encryptedExport';
@@ -44,9 +44,10 @@ import {
   verifyAgreementAcceptanceReceipt,
   type AgreementAcceptanceSignedEvent
 } from '../lib/crypto/agreementReceipts';
-import { newId, nowIso } from '../lib/crypto/encoding';
+import { base64FromBytes, newId, nowIso, utf8ToBytes } from '../lib/crypto/encoding';
 import { generateAgreementHash } from '../lib/crypto/hash';
 import { activeSigningPublicKey, createExtensionIdentity, createIdentity, decryptPrivateKey, identityCanUseLocalUnlock, signerIdentityStatus } from '../lib/crypto/identity';
+import { decryptLocalSecret, encryptLocalSecret } from '../lib/crypto/localSecret';
 import {
   categoryLabel,
   fulfillmentBadgeForListing,
@@ -95,7 +96,28 @@ import {
   type NostrEvent,
   type NostrUnsignedEvent
 } from '../lib/nostr/events';
-import { connectNostrSigner, detectNostrSigner, signWithNostrSigner } from '../lib/nostr/signer';
+import { normalizeNostrContact } from '../lib/nostr/contact';
+import {
+  createExtensionNostrIntroEvents,
+  createLocalNostrIntroEvents,
+  fetchNostrInboxGiftWraps,
+  nostrInboxSince,
+  NOSTR_INTRO_MESSAGE_LIMIT,
+  unwrapExtensionNostrGiftWrap,
+  unwrapLocalNostrGiftWrap,
+  type NostrInboxFetchResult,
+  type NostrIntroContext,
+  type UnwrappedNostrMessage
+} from '../lib/nostr/messages';
+import {
+  connectNostrSigner,
+  decryptWithNostrSigner,
+  detectNostrSigner,
+  encryptWithNostrSigner,
+  signerSupportsNip44Decryption,
+  signerSupportsNip44Encryption,
+  signWithNostrSigner
+} from '../lib/nostr/signer';
 import { db, defaultSyncSettings, deleteLocalData, downloadJson, ensureDefaults, exportAllData, importAllData } from '../lib/storage/db';
 import { sanitizePlainText, sanitizeTags, splitList } from '../lib/security/sanitize';
 import {
@@ -154,6 +176,11 @@ import type {
   ListingType,
   ListingVisibility,
   MediatorProfile,
+  NostrContactReceipt,
+  NostrContactReceiptStatus,
+  NostrInboxCursor,
+  NostrMessageRecord,
+  NostrMessageThread,
   NostrSignerState,
   NostrReviewItem,
   PaymentIntent,
@@ -174,9 +201,18 @@ import type {
   TrustFilter
 } from '../types/domain';
 
-type Page = 'home' | 'browse' | 'listing' | 'profile' | 'mediators' | 'trade' | 'reputation' | 'settings';
+type Page = 'home' | 'browse' | 'listing' | 'profile' | 'inbox' | 'mediators' | 'trade' | 'reputation' | 'settings';
 type ListingRoute = `listing/local/${string}` | `listing/synced/${string}`;
-type RouteTarget = Page | ListingRoute | 'browse:create' | 'browse:mine' | 'profile:public' | 'settings:relays' | 'settings:review' | 'settings:backup';
+type RouteTarget =
+  | Page
+  | ListingRoute
+  | 'browse:create'
+  | 'browse:mine'
+  | 'profile:public'
+  | 'settings:relays'
+  | 'settings:review'
+  | 'settings:backup'
+  | 'settings:inbox';
 type BrowseTab = 'discover' | 'create' | 'mine';
 type SettingsTab = 'account' | 'relays' | 'cache' | 'trust' | 'media' | 'backup' | 'diagnostics';
 type ProfileTab = 'identity' | 'publicProfile' | 'backup';
@@ -191,6 +227,19 @@ type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
 type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged' | 'skipped';
 type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList;
+type NostrContactTarget = {
+  recipientPublicKey: string;
+  label: string;
+  contextType: NostrContactReceipt['contextType'];
+  contextId?: string;
+  contextTitle?: string;
+};
+type SendNostrContactIntroArgs = NostrContactTarget & {
+  message: string;
+  includeContext: boolean;
+};
+type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
+type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type ListingImageDraft =
   | { id: string; kind: 'existing'; image: ListingImage; previewUrl: string; name: string; altText: string }
   | { id: string; kind: 'new'; file: File; previewUrl: string; name: string; altText: string };
@@ -275,6 +324,40 @@ function signerRestoreCount(summary: SignerRestoreSummary): number {
   return summary.profile + summary.listings + summary.mediators;
 }
 
+function nostrContactForMethod(contact?: ContactMethod, fallbackPublicKey?: string): ReturnType<typeof normalizeNostrContact> {
+  if (contact?.kind === 'nostr') return normalizeNostrContact(contact.value) ?? (fallbackPublicKey ? normalizeNostrContact(fallbackPublicKey) : undefined);
+  return fallbackPublicKey ? normalizeNostrContact(fallbackPublicKey) : undefined;
+}
+
+function nostrContactForMethods(contacts: ContactMethod[], fallbackPublicKey?: string): ReturnType<typeof normalizeNostrContact> {
+  const explicit = contacts.find((contact) => contact.kind === 'nostr');
+  return nostrContactForMethod(explicit, fallbackPublicKey);
+}
+
+function nostrReceiptStatusFromRelayResults(eventStatuses: SyncStatus[][]): NostrContactReceiptStatus {
+  const deliveredEvents = eventStatuses.filter((statuses) => statuses.some((status) => status.ok)).length;
+  if (deliveredEvents === 0) return 'failed';
+  return deliveredEvents === eventStatuses.length ? 'accepted' : 'partial';
+}
+
+function nostrThreadKey(ownerPublicKey: string, counterpartPublicKey: string, subject = '', contextId = ''): string {
+  return [ownerPublicKey.toLowerCase(), counterpartPublicKey.toLowerCase(), subject.trim().toLowerCase(), contextId.trim()].join(':');
+}
+
+function nostrThreadId(threadKey: string): string {
+  return `nostr_thread_${base64FromBytes(utf8ToBytes(threadKey)).replace(/[^a-z0-9]/gi, '').slice(0, 48)}`;
+}
+
+function messageContextFromPlaintext(plaintext: string): { contextTitle?: string; contextId?: string } {
+  const contextTitle = plaintext.match(/^Context: (.+)$/m)?.[1]?.trim();
+  const contextId = plaintext.match(/^Reference: (.+)$/m)?.[1]?.trim();
+  return { contextTitle, contextId };
+}
+
+function messageIso(seconds: number): string {
+  return new Date(seconds * 1000).toISOString();
+}
+
 function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
   if (scope === 'all-nip99') return true;
   if (!record.discoveryScope || record.discoveryScope === 'agoramesh-native') return true;
@@ -357,8 +440,8 @@ function navFromHash(): Page {
   if (value === 'agreements' || value === 'disputes') return 'trade';
   if (value === 'listing' || value === 'browse:create' || value === 'browse:mine') return 'browse';
   if (value === 'profile:public') return 'profile';
-  if (value === 'settings:relays' || value === 'settings:review' || value === 'settings:backup') return 'settings';
-  const pages: Page[] = ['home', 'browse', 'listing', 'profile', 'mediators', 'trade', 'reputation', 'settings'];
+  if (value === 'settings:relays' || value === 'settings:review' || value === 'settings:backup' || value === 'settings:inbox') return 'settings';
+  const pages: Page[] = ['home', 'browse', 'listing', 'profile', 'inbox', 'mediators', 'trade', 'reputation', 'settings'];
   return pages.includes(value as Page) ? (value as Page) : 'home';
 }
 
@@ -379,6 +462,7 @@ function browseTabFromHash(): BrowseTab {
 function settingsTabFromHash(): SettingsTab {
   const value = window.location.hash.replace('#', '');
   if (value === 'settings:review') return 'diagnostics';
+  if (value === 'settings:inbox') return 'diagnostics';
   if (value === 'settings:relays') return 'relays';
   if (value === 'settings:backup') return 'backup';
   return 'account';
@@ -459,6 +543,10 @@ export function App(): ReactNode {
   const [syncedCommunityLists, setSyncedCommunityLists] = useState<SyncedPublicRecord<CommunityCurationList>[]>([]);
   const [relayHealth, setRelayHealth] = useState<RelayHealth[]>([]);
   const [publishReceipts, setPublishReceipts] = useState<PublishReceipt[]>([]);
+  const [nostrContactReceipts, setNostrContactReceipts] = useState<NostrContactReceipt[]>([]);
+  const [nostrMessages, setNostrMessages] = useState<NostrMessageRecord[]>([]);
+  const [nostrMessageThreads, setNostrMessageThreads] = useState<NostrMessageThread[]>([]);
+  const [nostrInboxCursors, setNostrInboxCursors] = useState<NostrInboxCursor[]>([]);
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
   const [syncSettings, setSyncSettings] = useState<SyncSettings>(defaultSyncSettings);
   const [blossomServers, setBlossomServers] = useState<BlossomServerConfig[]>([]);
@@ -476,6 +564,7 @@ export function App(): ReactNode {
     browse: t('nav.browse'),
     listing: t('listing.details'),
     profile: t('nav.profile'),
+    inbox: t('nav.inbox'),
     mediators: t('nav.mediators'),
     trade: t('nav.trade'),
     reputation: t('nav.reputation'),
@@ -487,13 +576,10 @@ export function App(): ReactNode {
     { key: 'browse', label: t('nav.browse'), route: 'browse', icon: <ShoppingBag size={18} aria-hidden="true" /> },
     { key: 'post', label: t('nav.listing'), route: 'browse:create', icon: <PlusCircle size={18} aria-hidden="true" /> },
     { key: 'profile', label: t('nav.profile'), route: 'profile', icon: <UserRound size={18} aria-hidden="true" /> },
-    { key: 'trade', label: t('nav.trade'), route: 'trade', icon: <Handshake size={18} aria-hidden="true" /> },
-    { key: 'reputation', label: t('nav.reputation'), route: 'reputation', icon: <BadgeCheck size={18} aria-hidden="true" /> },
+    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" /> },
     { key: 'settings', label: t('nav.settings'), route: 'settings', icon: <SettingsIcon size={18} aria-hidden="true" /> }
   ];
-  const secondaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [
-    { key: 'mediators', label: t('nav.mediators'), route: 'mediators', icon: <Scale size={18} aria-hidden="true" /> }
-  ];
+  const secondaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [];
   const activeNavKey = currentHash === 'browse:create' ? 'post' : page === 'listing' ? 'browse' : page;
   const renderNavButton = (item: { key: string; label: string; route: RouteTarget; icon: ReactNode }, compact = false): ReactNode => {
     const active = activeNavKey === item.key;
@@ -536,6 +622,10 @@ export function App(): ReactNode {
     setSyncedCommunityLists((await db.syncedCommunityLists.toArray()).sort((left, right) => right.importedAt.localeCompare(left.importedAt)));
     setRelayHealth(await db.relayHealth.toArray());
     setPublishReceipts((await db.publishReceipts.toArray()).sort((left, right) => right.at.localeCompare(left.at)));
+    setNostrContactReceipts((await db.nostrContactReceipts.toArray()).sort((left, right) => right.sentAt.localeCompare(left.sentAt)));
+    setNostrMessages((await db.nostrMessages.toArray()).sort((left, right) => right.messageCreatedAt.localeCompare(left.messageCreatedAt)));
+    setNostrMessageThreads((await db.nostrMessageThreads.toArray()).sort((left, right) => right.lastMessageAt.localeCompare(left.lastMessageAt)));
+    setNostrInboxCursors(await db.nostrInboxCursors.toArray());
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
     setBlossomServers(await db.blossomServers.toArray());
@@ -894,6 +984,198 @@ export function App(): ReactNode {
     await reload();
   };
 
+  const sendNostrContactIntro = async (args: SendNostrContactIntroArgs): Promise<NostrContactReceipt> => {
+    const recipient = normalizeNostrContact(args.recipientPublicKey);
+    if (!recipient) throw new Error(t('nostrContact.invalidRecipient'));
+    if (!identity) throw new Error(t('nostrContact.identityRequired'));
+    if (args.message.trim().length === 0) throw new Error(t('nostrContact.messageRequired'));
+    if (args.message.trim().length > NOSTR_INTRO_MESSAGE_LIMIT) throw new Error(t('nostrContact.messageTooLong'));
+    if (relays.filter((relay) => relay.enabled).length === 0) throw new Error(t('nostrContact.relaysRequired'));
+
+    const context: NostrIntroContext | undefined = args.includeContext
+      ? { type: args.contextType, id: args.contextId, title: args.contextTitle }
+      : undefined;
+    const senderPublicKey = identity.publicKey.toLowerCase();
+    const localSigningKey = activeSigningPublicKey(identity, nostrSigner, privateKeyHex, senderPublicKey);
+    let events: NostrEvent[];
+
+    if (identityCanUseLocalUnlock(identity) && privateKeyHex && localSigningKey) {
+      events = createLocalNostrIntroEvents({
+        senderPrivateKeyHex: privateKeyHex,
+        recipientPublicKey: recipient.publicKey,
+        message: args.message,
+        context
+      });
+    } else {
+      const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
+      if (!signer.connected || !signer.publicKey || signer.publicKey.toLowerCase() !== senderPublicKey) {
+        throw new Error(t('nostrContact.signerRequired'));
+      }
+      if (!signerSupportsNip44Encryption()) {
+        throw new Error(t('nostrContact.signerNoNip44'));
+      }
+      events = await createExtensionNostrIntroEvents({
+        senderPublicKey,
+        recipientPublicKey: recipient.publicKey,
+        message: args.message,
+        context,
+        encryptWithSigner: encryptWithNostrSigner,
+        signWithSigner: (event) => signWithNostrSigner(event, senderPublicKey)
+      });
+    }
+
+    const eventStatuses = await Promise.all(events.map((event) => publishToRelays(event, relays)));
+    const receipt: NostrContactReceipt = {
+      id: newId('nostr_contact'),
+      senderPublicKey,
+      recipientPublicKey: recipient.publicKey,
+      recipientNpub: recipient.npub,
+      contextType: args.contextType,
+      contextId: args.contextId,
+      contextTitle: args.contextTitle,
+      eventIds: events.map((event) => event.id),
+      relayReceipts: eventStatuses.flat(),
+      status: nostrReceiptStatusFromRelayResults(eventStatuses),
+      sentAt: nowIso()
+    };
+    await db.nostrContactReceipts.put(receipt);
+    setNostrContactReceipts((current) => [receipt, ...current.filter((entry) => entry.id !== receipt.id)]);
+    showNotice(receipt.status === 'failed' ? t('nostrContact.sentFailed') : t('nostrContact.sent'));
+    return receipt;
+  };
+
+  const rebuildNostrThread = async (threadKey: string): Promise<void> => {
+    const messages = (await db.nostrMessages.where('threadKey').equals(threadKey).toArray()).sort((left, right) =>
+      right.messageCreatedAt.localeCompare(left.messageCreatedAt)
+    );
+    const newest = messages[0];
+    if (!newest) return;
+    const thread: NostrMessageThread = {
+      id: nostrThreadId(threadKey),
+      ownerPublicKey: newest.ownerPublicKey,
+      counterpartPublicKey: newest.counterpartPublicKey,
+      threadKey,
+      subject: newest.subject,
+      contextType: newest.contextType,
+      contextId: newest.contextId,
+      lastMessageAt: newest.messageCreatedAt,
+      lastMessageId: newest.id,
+      unreadCount: messages.filter((message) => !message.read && message.direction === 'incoming').length,
+      archived: messages.every((message) => message.archived),
+      updatedAt: nowIso()
+    };
+    await db.nostrMessageThreads.put(thread);
+  };
+
+  const cacheUnwrappedNostrMessage = async (
+    unwrapped: UnwrappedNostrMessage,
+    relayUrl: string,
+    inboxPassphrase: string
+  ): Promise<'imported' | 'duplicate' | 'skipped'> => {
+    if (!identity) return 'skipped';
+    const ownerPublicKey = identity.publicKey.toLowerCase();
+    if (unwrapped.senderPublicKey.toLowerCase() === ownerPublicKey) return 'skipped';
+    const existing = await db.nostrMessages.where('eventId').equals(unwrapped.wrap.id).first();
+    if (existing) {
+      const relayUrls = mergeRelayUrls(existing.relayUrls, relayUrl);
+      if (relayUrls.length !== existing.relayUrls.length) await db.nostrMessages.put({ ...existing, relayUrls });
+      return 'duplicate';
+    }
+    const parsedContext = messageContextFromPlaintext(unwrapped.rumor.content);
+    const subject = unwrapped.subject ?? parsedContext.contextTitle;
+    const threadKey = nostrThreadKey(ownerPublicKey, unwrapped.senderPublicKey, subject, parsedContext.contextId);
+    const record: NostrMessageRecord = {
+      id: `nostr_msg_${unwrapped.wrap.id}`,
+      ownerPublicKey,
+      eventId: unwrapped.wrap.id,
+      wrapPublicKey: unwrapped.wrap.pubkey,
+      senderPublicKey: unwrapped.senderPublicKey,
+      recipientPublicKey: ownerPublicKey,
+      counterpartPublicKey: unwrapped.senderPublicKey,
+      direction: 'incoming',
+      threadKey,
+      subject,
+      contextId: parsedContext.contextId,
+      wrapCreatedAt: messageIso(unwrapped.wrap.created_at),
+      messageCreatedAt: messageIso(unwrapped.rumor.created_at),
+      receivedAt: nowIso(),
+      relayUrls: [relayUrl],
+      rawEvent: JSON.stringify(unwrapped.wrap),
+      encryptedPlaintext: await encryptLocalSecret(unwrapped.rumor.content, inboxPassphrase),
+      read: false,
+      archived: false
+    };
+    await db.nostrMessages.put(record);
+    await rebuildNostrThread(threadKey);
+    return 'imported';
+  };
+
+  const unwrapFetchedNostrMessage = async (event: NostrEvent): Promise<UnwrappedNostrMessage> => {
+    if (!identity) throw new Error(t('nostrInbox.identityRequired'));
+    if (identityCanUseLocalUnlock(identity) && privateKeyHex) {
+      return unwrapLocalNostrGiftWrap(event, privateKeyHex, identity.publicKey);
+    }
+    const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
+    if (!signer.connected || signer.publicKey?.toLowerCase() !== identity.publicKey.toLowerCase()) {
+      throw new Error(t('nostrInbox.signerRequired'));
+    }
+    if (!signerSupportsNip44Decryption()) {
+      throw new Error(t('nostrInbox.signerNoDecrypt'));
+    }
+    return unwrapExtensionNostrGiftWrap(event, identity.publicKey, decryptWithNostrSigner);
+  };
+
+  const fetchNostrInbox = async (inboxPassphrase: string): Promise<InboxFetchSummary> => {
+    if (!identity) throw new Error(t('nostrInbox.identityRequired'));
+    if (inboxPassphrase.length < 10) throw new Error(t('nostrInbox.passphraseTooShort'));
+    const enabledRelays = relays.filter((relay) => relay.enabled);
+    if (enabledRelays.length === 0) throw new Error(t('nostrContact.relaysRequired'));
+    if (!identityCanUseLocalUnlock(identity) || !privateKeyHex) {
+      const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
+      if (!signer.connected || signer.publicKey?.toLowerCase() !== identity.publicKey.toLowerCase()) throw new Error(t('nostrInbox.signerRequired'));
+      if (!signerSupportsNip44Decryption()) throw new Error(t('nostrInbox.signerNoDecrypt'));
+    }
+    const ownerPublicKey = identity.publicKey.toLowerCase();
+    const cursorMap = new Map(nostrInboxCursors.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
+    const sinceByRelay = Object.fromEntries(enabledRelays.map((relay) => [relay.url, nostrInboxSince(cursorMap.get(relay.url)?.newestCreatedAt)]));
+    const results: NostrInboxFetchResult[] = await fetchNostrInboxGiftWraps(relays, ownerPublicKey, sinceByRelay);
+    const summary: InboxFetchSummary = { fetched: 0, imported: 0, duplicates: 0, failed: 0, relays: enabledRelays.length };
+
+    for (const result of results) {
+      if (!result.ok) summary.failed += 1;
+      summary.fetched += result.events.length;
+      for (const event of result.events) {
+        try {
+          const cached = await cacheUnwrappedNostrMessage(await unwrapFetchedNostrMessage(event), result.relayUrl, inboxPassphrase);
+          if (cached === 'imported') summary.imported += 1;
+          if (cached === 'duplicate') summary.duplicates += 1;
+        } catch {
+          summary.failed += 1;
+        }
+      }
+      if (result.ok) {
+        await db.nostrInboxCursors.put({
+          id: `nostr_cursor_${ownerPublicKey}_${result.relayUrl}`,
+          ownerPublicKey,
+          relayUrl: result.relayUrl,
+          since: sinceByRelay[result.relayUrl],
+          newestCreatedAt: result.newestCreatedAt,
+          lastFetchedAt: nowIso()
+        });
+      }
+    }
+    showNotice(t('nostrInbox.fetchComplete').replace('{count}', String(summary.imported)));
+    await reload();
+    return summary;
+  };
+
+  const updateNostrThread = async (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }): Promise<void> => {
+    const messages = await db.nostrMessages.where('threadKey').equals(thread.threadKey).toArray();
+    await db.nostrMessages.bulkPut(messages.map((message) => ({ ...message, ...changes })));
+    await rebuildNostrThread(thread.threadKey);
+    await reload();
+  };
+
   return (
     <div className={sidebarCollapsed ? 'app-shell sidebar-collapsed' : 'app-shell'}>
       <a className="skip-link" href="#main-content">
@@ -918,9 +1200,11 @@ export function App(): ReactNode {
         <nav className="nav primary-nav" aria-label={t('nav.primary')}>
           {primaryNavItems.map((item) => renderNavButton(item))}
         </nav>
-        <nav className="nav secondary-nav" aria-label={t('nav.secondary')}>
-          {secondaryNavItems.map((item) => renderNavButton(item))}
-        </nav>
+        {secondaryNavItems.length > 0 ? (
+          <nav className="nav secondary-nav" aria-label={t('nav.secondary')}>
+            {secondaryNavItems.map((item) => renderNavButton(item))}
+          </nav>
+        ) : null}
         <div className="sidebar-footer">
           <p className="muted">{identity ? identity.displayName : t('identity.noIdentity')}</p>
           <div className="language-switch" aria-label={t('language.switcher')} role="group">
@@ -1059,6 +1343,7 @@ export function App(): ReactNode {
             privateKeyHex={privateKeyHex}
             nostrSigner={nostrSigner}
             publishReceipts={publishReceipts}
+            nostrContactReceipts={nostrContactReceipts}
             relays={relays}
             syncSettings={syncSettings}
             communityLists={communityLists}
@@ -1090,6 +1375,7 @@ export function App(): ReactNode {
                 listing.authorPublicKey
               )
             }
+            onSendNostrIntro={sendNostrContactIntro}
             onStartTrade={(listingRef) => {
               setTradeListingRef(listingRef);
               go('trade');
@@ -1171,6 +1457,10 @@ export function App(): ReactNode {
             syncedProfiles={syncedProfiles}
             syncedMediators={syncedMediators}
             syncSettings={syncSettings}
+            relays={relays}
+            nostrSigner={nostrSigner}
+            privateKeyHex={privateKeyHex}
+            nostrContactReceipts={nostrContactReceipts}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onSaved={() => {
               showNotice(t('notice.mediatorSaved'));
@@ -1185,6 +1475,7 @@ export function App(): ReactNode {
                 mediator.publicKey
               )
             }
+            onSendNostrIntro={sendNostrContactIntro}
           />
         ) : null}
         {page === 'trade' ? (
@@ -1252,6 +1543,27 @@ export function App(): ReactNode {
             }
           />
         ) : null}
+        {page === 'inbox' ? (
+          <section className="page">
+            <div className="panel">
+              <SectionHeader icon={<Radio />} title={t('nostrInbox.title')} body={t('nostrInbox.pageBody')} />
+              <NostrInboxPanel
+                cursors={nostrInboxCursors}
+                defaultOpen
+                identity={identity}
+                messages={nostrMessages}
+                nostrSigner={nostrSigner}
+                privateKeyHex={privateKeyHex}
+                receipts={nostrContactReceipts}
+                relays={relays}
+                threads={nostrMessageThreads}
+                onFetch={fetchNostrInbox}
+                onSend={sendNostrContactIntro}
+                onThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
+              />
+            </div>
+          </section>
+        ) : null}
         {page === 'settings' ? (
           <SettingsPage
             listings={listings}
@@ -1259,6 +1571,10 @@ export function App(): ReactNode {
             reviewItems={reviewItems}
             relayHealth={relayHealth}
             publishReceipts={publishReceipts}
+            nostrContactReceipts={nostrContactReceipts}
+            nostrMessages={nostrMessages}
+            nostrMessageThreads={nostrMessageThreads}
+            nostrInboxCursors={nostrInboxCursors}
             allowlist={allowlist}
             syncedProfiles={syncedProfiles}
             syncedListings={syncedListings}
@@ -1272,11 +1588,15 @@ export function App(): ReactNode {
             blossomServers={blossomServers}
             identity={identity}
             nostrSigner={nostrSigner}
+            privateKeyHex={privateKeyHex}
             go={go}
             onConnectSigner={() => void connectSigner()}
             onUseConnectedSignerAsIdentity={() => void useConnectedSignerAsIdentity()}
             onRelayFetchSummaries={setRelayFetchSummaries}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
+            onFetchNostrInbox={fetchNostrInbox}
+            onNostrThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
+            onSendNostrIntro={sendNostrContactIntro}
             onChanged={(message = t('common.created'), next) => {
               showNotice(message, next);
               void reload();
@@ -1408,6 +1728,10 @@ function ProductSection({
 }
 
 function formatContact(contact: ContactMethod): string {
+  if (contact.kind === 'nostr') {
+    const normalized = normalizeNostrContact(contact.value);
+    return normalized ? `nostr: ${normalized.npub}` : `nostr: ${contact.value}`;
+  }
   return `${contact.kind}: ${contact.value}`;
 }
 
@@ -1628,6 +1952,143 @@ function ListingImageGallery({ images = [], title }: { images?: ListingImage[]; 
   );
 }
 
+function NostrContactPanel({
+  target,
+  identity,
+  relays,
+  nostrSigner,
+  privateKeyHex,
+  receipts,
+  onSend
+}: {
+  target: NostrContactTarget;
+  identity?: IdentityRecord;
+  relays: RelayConfig[];
+  nostrSigner: NostrSignerState;
+  privateKeyHex: string;
+  receipts: NostrContactReceipt[];
+  onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const normalized = normalizeNostrContact(target.recipientPublicKey);
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState('');
+  const [includeContext, setIncludeContext] = useState(Boolean(target.contextTitle));
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [lastSentReceipt, setLastSentReceipt] = useState<NostrContactReceipt | undefined>();
+  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+  const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+  const canUseSigner = Boolean(
+    identity &&
+      nostrSigner.connected &&
+      nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase() &&
+      signerSupportsNip44Encryption()
+  );
+  const canSend = Boolean(normalized && identity && enabledRelayCount > 0 && message.trim() && message.trim().length <= NOSTR_INTRO_MESSAGE_LIMIT && (canUseLocal || canUseSigner));
+  const contextReceipts = receipts.filter(
+    (receipt) =>
+      receipt.recipientPublicKey.toLowerCase() === normalized?.publicKey.toLowerCase() &&
+      receipt.contextType === target.contextType &&
+      (!target.contextId || receipt.contextId === target.contextId)
+  );
+  const visibleReceipt = lastSentReceipt ?? contextReceipts[0];
+  const copy = (value: string): void => {
+    void navigator.clipboard?.writeText(value);
+  };
+
+  const send = async (): Promise<void> => {
+    if (!normalized) return;
+    setError('');
+    setSending(true);
+    try {
+      const receipt = await onSend({
+        ...target,
+        recipientPublicKey: normalized.publicKey,
+        message,
+        includeContext
+      });
+      setLastSentReceipt(receipt);
+      setMessage('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nostrContact.sendFailed'));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (!normalized) return null;
+
+  return (
+    <section className="nostr-contact">
+      <button className="subtle" onClick={() => setOpen((current) => !current)} type="button">
+        <Radio size={16} /> {t('nostrContact.action')}
+      </button>
+      {open ? (
+        <div className="inline-card nostr-contact-panel">
+          <div className="row between">
+            <div>
+              <strong>{t('nostrContact.title')}</strong>
+              <p className="muted">{target.label}</p>
+            </div>
+            <span className="pill subtle-pill">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</span>
+          </div>
+          <SafetyNotice>{t('nostrContact.metadataWarning')}</SafetyNotice>
+          {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrContact.copyFallback')}</ActionHint> : null}
+          {target.contextTitle ? (
+            <label className="check-row">
+              <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
+              {t('nostrContact.includeContext').replace('{title}', target.contextTitle)}
+            </label>
+          ) : null}
+          <label>
+            {t('nostrContact.message')}
+            <textarea
+              maxLength={NOSTR_INTRO_MESSAGE_LIMIT}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder={t('nostrContact.placeholder')}
+              value={message}
+            />
+          </label>
+          <p className="muted">{t('nostrContact.length').replace('{count}', String(message.length)).replace('{limit}', String(NOSTR_INTRO_MESSAGE_LIMIT))}</p>
+          {error ? <p className="warning" role="alert">{error}</p> : null}
+          <div className="actions small">
+            <button className="subtle" onClick={() => copy(normalized.npub)} type="button">
+              {t('nostrContact.copyNpub')}
+            </button>
+            <button className="subtle" onClick={() => copy(normalized.uri)} type="button">
+              {t('nostrContact.copyUri')}
+            </button>
+            <button className="subtle" disabled={!message.trim()} onClick={() => copy(message)} type="button">
+              {t('nostrContact.copyDraft')}
+            </button>
+            <button className="subtle" onClick={() => (window.location.hash = 'inbox')} type="button">
+              {t('nostrInbox.open')}
+            </button>
+            <button disabled={!canSend || sending} onClick={() => void send()} type="button">
+              {sending ? t('nostrContact.sending') : t('nostrContact.send')}
+            </button>
+          </div>
+          {visibleReceipt ? (
+            <div className="receipt-summary">
+              <p className="muted">
+                {t('nostrContact.recentReceipt')}: {visibleReceipt.status} · {visibleReceipt.sentAt}
+              </p>
+              <p className="muted">{t('nostrContact.lookupHint')}</p>
+              <p className="key">{visibleReceipt.eventIds.join(', ')}</p>
+              <div className="actions small">
+                <button className="subtle" onClick={() => copy(visibleReceipt.eventIds.join('\n'))} type="button">
+                  {t('nostrContact.copyEventIds')}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ListingPage({
   route,
   listings,
@@ -1642,6 +2103,7 @@ function ListingPage({
   privateKeyHex,
   nostrSigner,
   publishReceipts,
+  nostrContactReceipts,
   relays,
   syncSettings,
   communityLists,
@@ -1652,6 +2114,7 @@ function ListingPage({
   onUseConnectedSignerAsIdentity,
   onListingSaved,
   onPublish,
+  onSendNostrIntro,
   onStartTrade,
   onToggleHidden
 }: {
@@ -1668,6 +2131,7 @@ function ListingPage({
   privateKeyHex: string;
   nostrSigner: NostrSignerState;
   publishReceipts: PublishReceipt[];
+  nostrContactReceipts: NostrContactReceipt[];
   relays: RelayConfig[];
   syncSettings: SyncSettings;
   communityLists: CommunityCurationList[];
@@ -1678,6 +2142,7 @@ function ListingPage({
   onUseConnectedSignerAsIdentity: () => void;
   onListingSaved: (listing: Listing) => void;
   onPublish: (listing: Listing) => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onStartTrade: (listingRef: ListingSourceRef) => void;
   onToggleHidden: (record: SyncedPublicRecord<Listing>, hidden: boolean) => void;
 }): ReactNode {
@@ -1705,6 +2170,7 @@ function ListingPage({
       : { source: 'synced', id: listing.id, recordId: syncedRecord?.id, listing };
   const sellerSummary = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, attestations, syncedAttestations, allowlist);
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
+  const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
   const canPublish = relays.some((relay) => relay.enabled);
   const canEdit =
     Boolean(localListing) &&
@@ -1793,6 +2259,23 @@ function ListingPage({
           </section>
         </article>
         <aside className="panel listing-actions">
+          {nostrContact ? (
+            <NostrContactPanel
+              target={{
+                recipientPublicKey: nostrContact.publicKey,
+                label: sellerSummary.displayName,
+                contextType: 'listing',
+                contextId: listing.id,
+                contextTitle: listing.title
+              }}
+              identity={identity}
+              relays={relays}
+              nostrSigner={nostrSigner}
+              privateKeyHex={privateKeyHex}
+              receipts={nostrContactReceipts}
+              onSend={onSendNostrIntro}
+            />
+          ) : null}
           <button onClick={() => onStartTrade(listingRef)} type="button">
             <Handshake size={16} /> {t('marketplace.startTrade')}
           </button>
@@ -2708,6 +3191,9 @@ function ListingCreatePanel({
     setSaving(true);
     try {
       assertPeacefulListingText(form.title, form.description);
+      if (form.contactKind === 'nostr' && !normalizeNostrContact(form.contactValue)) {
+        throw new Error(t('nostrContact.invalidRecipient'));
+      }
       const at = nowIso();
       const uploadedImages = await uploadListingImages();
       const images = imageDrafts
@@ -2844,11 +3330,22 @@ function ListingCreatePanel({
           <div className="listing-form-row two-up">
             <label>
               {t('profile.contacts')}
-              <select value={form.contactKind} onChange={(event) => setForm({ ...form, contactKind: event.target.value as ContactKind })}>
+              <select
+                value={form.contactKind}
+                onChange={(event) => {
+                  const kind = event.target.value as ContactKind;
+                  setForm({
+                    ...form,
+                    contactKind: kind,
+                    contactValue: kind === 'nostr' && !form.contactValue.trim() && identity?.publicKey ? identity.publicKey : form.contactValue
+                  });
+                }}
+              >
                 <option value="matrix">Matrix</option>
                 <option value="simplex">SimpleX</option>
                 <option value="session">Session</option>
                 <option value="email">Email</option>
+                <option value="nostr">Nostr</option>
                 <option value="custom">Custom</option>
               </select>
             </label>
@@ -3229,6 +3726,9 @@ function ProfilePage({
     try {
       const at = nowIso();
       const contact = { ...emptyContact(), kind: form.contactKind, value: sanitizePlainText(form.contactValue) };
+      if (contact.kind === 'nostr' && !normalizeNostrContact(contact.value)) {
+        throw new Error(t('nostrContact.invalidRecipient'));
+      }
       const profileId = profile?.id ?? savedProfileId ?? newId('profile');
       const avatarUrl = avatarFile ? await uploadAvatar(avatarFile) : sanitizePlainText(form.avatarUrl);
       const next: PublicProfile = publicProfileSchema.parse({
@@ -3528,11 +4028,22 @@ function ProfilePage({
             <div className="two">
               <label>
                 {t('profile.contacts')}
-                <select value={form.contactKind} onChange={(event) => setForm({ ...form, contactKind: event.target.value as ContactKind })}>
+                <select
+                  value={form.contactKind}
+                  onChange={(event) => {
+                    const kind = event.target.value as ContactKind;
+                    setForm({
+                      ...form,
+                      contactKind: kind,
+                      contactValue: kind === 'nostr' && !form.contactValue.trim() && identity?.publicKey ? identity.publicKey : form.contactValue
+                    });
+                  }}
+                >
                   <option value="matrix">Matrix</option>
                   <option value="simplex">SimpleX</option>
                   <option value="session">Session</option>
                   <option value="email">Email</option>
+                  <option value="nostr">Nostr</option>
                   <option value="custom">Custom</option>
                 </select>
               </label>
@@ -3669,9 +4180,14 @@ function MediatorPage({
   syncedProfiles,
   syncedMediators,
   syncSettings,
+  relays,
+  nostrSigner,
+  privateKeyHex,
+  nostrContactReceipts,
   onToggleHidden,
   onSaved,
-  onPublish
+  onPublish,
+  onSendNostrIntro
 }: {
   identity?: IdentityRecord;
   profile?: PublicProfile;
@@ -3679,9 +4195,14 @@ function MediatorPage({
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
   syncedMediators: SyncedPublicRecord<MediatorProfile>[];
   syncSettings: SyncSettings;
+  relays: RelayConfig[];
+  nostrSigner: NostrSignerState;
+  privateKeyHex: string;
+  nostrContactReceipts: NostrContactReceipt[];
   onToggleHidden: (record: SyncedPublicRecord<MediatorProfile>, hidden: boolean) => void;
   onSaved: () => void;
   onPublish: (profile: MediatorProfile) => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
 }): ReactNode {
   const { t } = useI18n();
   const [source, setSource] = useState<DataSourceFilter>(syncSettings.defaultBrowseSource);
@@ -3830,6 +4351,26 @@ function MediatorPage({
         <div className="card-grid single">
           {visibleMediators.map(({ mediator, source: rowSource, trusted, record }) => (
             <article className="card" key={record?.id ?? `${rowSource}-${mediator.id}`}>
+              {(() => {
+                const contact = nostrContactForMethods(mediator.contactMethods, mediator.publicKey);
+                return contact ? (
+                  <NostrContactPanel
+                    target={{
+                      recipientPublicKey: contact.publicKey,
+                      label: mediator.displayName,
+                      contextType: 'mediator',
+                      contextId: mediator.id,
+                      contextTitle: mediator.displayName
+                    }}
+                    identity={identity}
+                    relays={relays}
+                    nostrSigner={nostrSigner}
+                    privateKeyHex={privateKeyHex}
+                    receipts={nostrContactReceipts}
+                    onSend={onSendNostrIntro}
+                  />
+                ) : null;
+              })()}
               {syncSettings.showDataSource ? (
                 <span className="pill">
                   {rowSource === 'synced'
@@ -3882,6 +4423,210 @@ function MediatorPage({
         </div>
       </div>
     </section>
+  );
+}
+
+function NostrInboxPanel({
+  identity,
+  relays,
+  nostrSigner,
+  privateKeyHex,
+  messages,
+  threads,
+  cursors,
+  receipts,
+  defaultOpen,
+  onFetch,
+  onThreadChange,
+  onSend
+}: {
+  identity?: IdentityRecord;
+  relays: RelayConfig[];
+  nostrSigner: NostrSignerState;
+  privateKeyHex: string;
+  messages: NostrMessageRecord[];
+  threads: NostrMessageThread[];
+  cursors: NostrInboxCursor[];
+  receipts: NostrContactReceipt[];
+  defaultOpen: boolean;
+  onFetch: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
+  onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [passphrase, setPassphrase] = useState('');
+  const [unlocked, setUnlocked] = useState(false);
+  const [error, setError] = useState('');
+  const [fetching, setFetching] = useState(false);
+  const [summary, setSummary] = useState<InboxFetchSummary | undefined>();
+  const [decrypted, setDecrypted] = useState<DecryptedNostrMessage[]>([]);
+  const [activeThreadKey, setActiveThreadKey] = useState('');
+  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+  const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+  const canUseSigner = Boolean(
+    identity &&
+      nostrSigner.connected &&
+      nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase() &&
+      signerSupportsNip44Decryption()
+  );
+  const ownerPublicKey = identity?.publicKey.toLowerCase() ?? '';
+  const ownerMessages = useMemo(() => messages.filter((message) => message.ownerPublicKey === ownerPublicKey), [messages, ownerPublicKey]);
+  const visibleThreads = threads.filter((thread) => thread.ownerPublicKey === ownerPublicKey && !thread.archived);
+  const activeThread = visibleThreads.find((thread) => thread.threadKey === activeThreadKey) ?? visibleThreads[0];
+  const activeMessages = activeThread ? decrypted.filter((message) => message.threadKey === activeThread.threadKey).sort((left, right) => left.messageCreatedAt.localeCompare(right.messageCreatedAt)) : [];
+
+  const decryptMessages = useCallback(async (): Promise<void> => {
+    const next = await Promise.all(
+      ownerMessages.map(async (message) => ({
+        ...message,
+        plaintext: await decryptLocalSecret(message.encryptedPlaintext, passphrase)
+      }))
+    );
+    setDecrypted(next);
+  }, [ownerMessages, passphrase]);
+
+  useEffect(() => {
+    if (!unlocked || passphrase.length < 10) return;
+    void decryptMessages().catch(() => {
+      setUnlocked(false);
+      setDecrypted([]);
+      setError(t('nostrInbox.unlockFailed'));
+    });
+  }, [decryptMessages, passphrase.length, t, unlocked]);
+
+  const unlock = async (): Promise<void> => {
+    setError('');
+    if (passphrase.length < 10) {
+      setError(t('nostrInbox.passphraseTooShort'));
+      return;
+    }
+    try {
+      await decryptMessages();
+      setUnlocked(true);
+    } catch {
+      setUnlocked(false);
+      setDecrypted([]);
+      setError(t('nostrInbox.unlockFailed'));
+    }
+  };
+
+  const fetch = async (): Promise<void> => {
+    setError('');
+    setFetching(true);
+    try {
+      const result = await onFetch(passphrase);
+      setSummary(result);
+      setUnlocked(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nostrInbox.fetchFailed'));
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  return (
+    <DisclosurePanel key={defaultOpen ? 'inbox-open' : 'inbox-closed'} title={t('nostrInbox.title')} defaultOpen={defaultOpen}>
+      <div className="nostr-inbox">
+        <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
+        <div className="status-chip-row">
+          <span className="status-chip">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</span>
+          <span className={canUseLocal || canUseSigner ? 'status-chip' : 'status-chip warning'}>
+            {canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}
+          </span>
+          <span className="status-chip">
+            {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
+          </span>
+        </div>
+        <div className="listing-form-row two-up">
+          <label>
+            {t('nostrInbox.passphrase')}
+            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
+          </label>
+          <div className="actions small align-end">
+            <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
+              {t('nostrInbox.unlock')}
+            </button>
+            <button disabled={!identity || enabledRelayCount === 0 || fetching || passphrase.length < 10 || (!canUseLocal && !canUseSigner)} onClick={() => void fetch()} type="button">
+              {fetching ? t('nostrInbox.fetching') : t('nostrInbox.fetch')}
+            </button>
+          </div>
+        </div>
+        {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrInbox.decryptFallback')}</ActionHint> : null}
+        {error ? <p className="warning" role="alert">{error}</p> : null}
+        {summary ? (
+          <p className="muted">
+            {t('nostrInbox.fetchSummary')
+              .replace('{fetched}', String(summary.fetched))
+              .replace('{imported}', String(summary.imported))
+              .replace('{duplicates}', String(summary.duplicates))
+              .replace('{failed}', String(summary.failed))
+              .replace('{relays}', String(summary.relays))}
+          </p>
+        ) : null}
+        <div className="split compact-split">
+          <div className="card-grid single">
+            {visibleThreads.map((thread) => (
+              <button className={thread.threadKey === activeThread?.threadKey ? 'card active' : 'card'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
+                <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
+                <span className="muted">{shortPublicKey(thread.counterpartPublicKey)} · {thread.lastMessageAt}</span>
+                {thread.unreadCount > 0 ? <span className="pill">{thread.unreadCount}</span> : null}
+              </button>
+            ))}
+            {visibleThreads.length === 0 ? <EmptyState title={t('nostrInbox.emptyTitle')} body={t('nostrInbox.emptyBody')} /> : null}
+          </div>
+          <div className="panel">
+            {activeThread ? (
+              <>
+                <div className="row between">
+                  <div>
+                    <h3>{activeThread.subject || shortPublicKey(activeThread.counterpartPublicKey)}</h3>
+                    <p className="key">{activeThread.counterpartPublicKey}</p>
+                  </div>
+                  <div className="actions small">
+                    <button className="subtle" onClick={() => onThreadChange(activeThread, { read: true })} type="button">
+                      {t('nostrInbox.markRead')}
+                    </button>
+                    <button className="subtle" onClick={() => onThreadChange(activeThread, { archived: true })} type="button">
+                      {t('nostrInbox.archive')}
+                    </button>
+                  </div>
+                </div>
+                {!unlocked ? <ActionHint>{t('nostrInbox.unlockToRead')}</ActionHint> : null}
+                {unlocked ? (
+                  <div className="message-list">
+                    {activeMessages.map((message) => (
+                      <article className="inline-card" key={message.id}>
+                        <div className="row between">
+                          <strong>{message.direction === 'incoming' ? shortPublicKey(message.senderPublicKey) : t('nostrInbox.you')}</strong>
+                          <span className="muted">{message.messageCreatedAt}</span>
+                        </div>
+                        <p>{message.plaintext}</p>
+                      </article>
+                    ))}
+                    {activeMessages.length === 0 ? <p className="muted">{t('nostrInbox.noDecryptedMessages')}</p> : null}
+                  </div>
+                ) : null}
+                <NostrContactPanel
+                  target={{
+                    recipientPublicKey: activeThread.counterpartPublicKey,
+                    label: shortPublicKey(activeThread.counterpartPublicKey),
+                    contextType: activeThread.contextType ?? 'manual',
+                    contextId: activeThread.contextId,
+                    contextTitle: activeThread.subject
+                  }}
+                  identity={identity}
+                  relays={relays}
+                  nostrSigner={nostrSigner}
+                  privateKeyHex={privateKeyHex}
+                  receipts={receipts}
+                  onSend={onSend}
+                />
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </DisclosurePanel>
   );
 }
 
@@ -5183,6 +5928,10 @@ function SettingsPage({
   reviewItems,
   relayHealth,
   publishReceipts,
+  nostrContactReceipts,
+  nostrMessages,
+  nostrMessageThreads,
+  nostrInboxCursors,
   allowlist,
   syncedProfiles,
   syncedListings,
@@ -5196,11 +5945,15 @@ function SettingsPage({
   blossomServers,
   identity,
   nostrSigner,
+  privateKeyHex,
   go,
   onConnectSigner,
   onUseConnectedSignerAsIdentity,
   onRelayFetchSummaries,
   onToggleHidden,
+  onFetchNostrInbox,
+  onNostrThreadChange,
+  onSendNostrIntro,
   onChanged
 }: {
   listings: Listing[];
@@ -5208,6 +5961,10 @@ function SettingsPage({
   reviewItems: NostrReviewItem[];
   relayHealth: RelayHealth[];
   publishReceipts: PublishReceipt[];
+  nostrContactReceipts: NostrContactReceipt[];
+  nostrMessages: NostrMessageRecord[];
+  nostrMessageThreads: NostrMessageThread[];
+  nostrInboxCursors: NostrInboxCursor[];
   allowlist: CommunityAllowlistEntry[];
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
   syncedListings: SyncedPublicRecord<Listing>[];
@@ -5221,6 +5978,7 @@ function SettingsPage({
   blossomServers: BlossomServerConfig[];
   identity?: IdentityRecord;
   nostrSigner: NostrSignerState;
+  privateKeyHex: string;
   go: (page: RouteTarget) => void;
   onConnectSigner: () => void;
   onUseConnectedSignerAsIdentity: () => void;
@@ -5229,6 +5987,9 @@ function SettingsPage({
     record: SyncedPublicRecord<PublicProfile> | SyncedPublicRecord<Listing> | SyncedPublicRecord<PublicDisputeOutcome> | SyncedPublicRecord<CommunityCurationList>,
     hidden: boolean
   ) => void;
+  onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onNostrThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onChanged: (message?: string, next?: NextStep) => void;
 }): ReactNode {
   const { t } = useI18n();
@@ -5774,6 +6535,21 @@ function SettingsPage({
             <p className="muted">{t('signer.body')}</p>
             <SignerStatusStrip status={signerStatus} onConnect={onConnectSigner} onUseAsIdentity={onUseConnectedSignerAsIdentity} />
             {nostrSigner.lastError ? <p className="warning">{nostrSigner.lastError}</p> : null}
+            <div className="inline-card">
+              <h3>{t('settings.workspaceTools')}</h3>
+              <p className="muted">{t('settings.workspaceToolsBody')}</p>
+              <div className="actions small">
+                <button className="subtle" onClick={() => go('trade')} type="button">
+                  <Handshake size={16} aria-hidden="true" /> {t('nav.trade')}
+                </button>
+                <button className="subtle" onClick={() => go('mediators')} type="button">
+                  <Scale size={16} aria-hidden="true" /> {t('nav.mediators')}
+                </button>
+                <button className="subtle" onClick={() => go('reputation')} type="button">
+                  <BadgeCheck size={16} aria-hidden="true" /> {t('nav.reputation')}
+                </button>
+              </div>
+            </div>
             <DisclosurePanel title={t('ui.whyMatters')}>
               <InlineHelp>{t('settings.accountSignerBody')}</InlineHelp>
             </DisclosurePanel>
@@ -6154,6 +6930,42 @@ function SettingsPage({
                   </article>
                 ))}
                 {publishReceipts.length === 0 ? <EmptyState title={t('empty.receiptsTitle')} body={t('empty.receiptsBody')} /> : null}
+              </div>
+            </DisclosurePanel>
+            <NostrInboxPanel
+              cursors={nostrInboxCursors}
+              defaultOpen={window.location.hash === '#settings:inbox'}
+              identity={identity}
+              messages={nostrMessages}
+              nostrSigner={nostrSigner}
+              privateKeyHex={privateKeyHex}
+              receipts={nostrContactReceipts}
+              relays={relays}
+              threads={nostrMessageThreads}
+              onFetch={onFetchNostrInbox}
+              onSend={onSendNostrIntro}
+              onThreadChange={onNostrThreadChange}
+            />
+            <DisclosurePanel title={t('nostrContact.receipts')}>
+              <div className="card-grid single">
+                {nostrContactReceipts.slice(0, 12).map((receipt) => (
+                  <article className="card compact" key={receipt.id}>
+                    <div className="row between">
+                      <span className="pill">{receipt.contextType}</span>
+                      <span className={receipt.status === 'accepted' ? 'ok mini' : 'warning mini'}>{receipt.status}</span>
+                    </div>
+                    <p className="key">{receipt.recipientNpub}</p>
+                    <p className="muted">
+                      {receipt.contextTitle || receipt.contextId || t('common.none')} · {receipt.sentAt}
+                    </p>
+                    <p className="muted">
+                      {t('nostrContact.receiptEvents')}: {receipt.eventIds.length} · {t('sync.published')}:{' '}
+                      {receipt.relayReceipts.filter((entry) => entry.ok).length}
+                    </p>
+                    <p className="key">{receipt.eventIds.join(', ')}</p>
+                  </article>
+                ))}
+                {nostrContactReceipts.length === 0 ? <EmptyState title={t('nostrContact.noReceiptsTitle')} body={t('nostrContact.noReceiptsBody')} /> : null}
               </div>
             </DisclosurePanel>
             <DisclosurePanel key={shouldOpenAdvancedReview ? 'review-route-open' : 'review-route-closed'} title={t('settings.advancedReviewQueue')} defaultOpen={shouldOpenAdvancedReview}>

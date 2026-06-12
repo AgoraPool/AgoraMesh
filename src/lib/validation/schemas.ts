@@ -5,7 +5,7 @@ const optionalText = z.string().trim().optional();
 
 export const contactMethodSchema = z.object({
   id: nonEmpty,
-  kind: z.enum(['matrix', 'simplex', 'session', 'email', 'custom']),
+  kind: z.enum(['matrix', 'simplex', 'session', 'email', 'nostr', 'custom']),
   value: nonEmpty.max(500),
   note: optionalText
 });
@@ -361,6 +361,74 @@ export const publishReceiptSchema = z.object({
   at: nonEmpty
 });
 
+export const nostrContactReceiptSchema = z.object({
+  id: nonEmpty,
+  senderPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  recipientPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  recipientNpub: nonEmpty,
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']),
+  contextId: optionalText,
+  contextTitle: optionalText,
+  eventIds: z.array(nonEmpty),
+  relayReceipts: z.array(
+    z.object({
+      relay: nonEmpty,
+      ok: z.boolean(),
+      message: z.string(),
+      at: nonEmpty
+    })
+  ),
+  status: z.enum(['accepted', 'partial', 'failed']),
+  sentAt: nonEmpty
+});
+
+export const nostrMessageRecordSchema = z.object({
+  id: nonEmpty,
+  ownerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  eventId: nonEmpty,
+  wrapPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  senderPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  recipientPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  counterpartPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  direction: z.enum(['incoming', 'outgoing']),
+  threadKey: nonEmpty,
+  subject: optionalText,
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']).optional(),
+  contextId: optionalText,
+  wrapCreatedAt: nonEmpty,
+  messageCreatedAt: nonEmpty,
+  receivedAt: nonEmpty,
+  relayUrls: z.array(nonEmpty),
+  rawEvent: nonEmpty,
+  encryptedPlaintext: encryptedSecretSchema,
+  read: z.boolean(),
+  archived: z.boolean()
+});
+
+export const nostrMessageThreadSchema = z.object({
+  id: nonEmpty,
+  ownerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  counterpartPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  threadKey: nonEmpty,
+  subject: optionalText,
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']).optional(),
+  contextId: optionalText,
+  lastMessageAt: nonEmpty,
+  lastMessageId: optionalText,
+  unreadCount: z.number().int().nonnegative(),
+  archived: z.boolean(),
+  updatedAt: nonEmpty
+});
+
+export const nostrInboxCursorSchema = z.object({
+  id: nonEmpty,
+  ownerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  relayUrl: nonEmpty,
+  since: z.number().int().nonnegative(),
+  newestCreatedAt: z.number().int().nonnegative(),
+  lastFetchedAt: nonEmpty
+});
+
 export const communityAllowlistEntrySchema = z.object({
   id: nonEmpty,
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i),
@@ -443,6 +511,10 @@ export const appBackupSchema = z.object({
   syncedCommunityLists: z.array(syncedPublicRecordSchema(communityCurationListSchema)).default([]),
   relayHealth: z.array(relayHealthSchema).default([]),
   publishReceipts: z.array(publishReceiptSchema).default([]),
+  nostrContactReceipts: z.array(nostrContactReceiptSchema).default([]),
+  nostrMessages: z.array(nostrMessageRecordSchema).default([]),
+  nostrMessageThreads: z.array(nostrMessageThreadSchema).default([]),
+  nostrInboxCursors: z.array(nostrInboxCursorSchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

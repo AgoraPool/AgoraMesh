@@ -2365,6 +2365,54 @@ dd {
   }
 }
 
+.nostr-contact {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.nostr-contact-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.nostr-contact-panel textarea {
+  min-height: 8rem;
+}
+
+.nostr-inbox {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.nostr-inbox .compact-split {
+  grid-template-columns: minmax(14rem, 0.8fr) minmax(0, 1.2fr);
+  gap: var(--space-4);
+}
+
+.nostr-inbox button.card {
+  width: 100%;
+  text-align: left;
+}
+
+.nostr-inbox .card.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.nostr-inbox .message-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-block: var(--space-3);
+}
+
+.nostr-inbox .message-list .inline-card {
+  background: var(--surface);
+}
+
+.align-end {
+  align-self: end;
+}
+
 @media (max-width: 640px) {
   .marketplace-toolbar {
     align-items: stretch;

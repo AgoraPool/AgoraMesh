@@ -4,6 +4,10 @@ import type { NostrSignerState } from '../../types/domain';
 interface NostrExtension {
   getPublicKey?: () => Promise<string>;
   signEvent?: (event: NostrUnsignedEvent) => Promise<NostrEvent>;
+  nip44?: {
+    encrypt?: (pubkey: string, plaintext: string) => Promise<string>;
+    decrypt?: (pubkey: string, ciphertext: string) => Promise<string>;
+  };
 }
 
 declare global {
@@ -62,4 +66,28 @@ export async function signWithNostrSigner(event: NostrUnsignedEvent, expectedPub
     throw new Error('Signer returned an invalid event signature.');
   }
   return signed;
+}
+
+export function signerSupportsNip44Encryption(): boolean {
+  return Boolean(extension()?.nip44?.encrypt);
+}
+
+export function signerSupportsNip44Decryption(): boolean {
+  return Boolean(extension()?.nip44?.decrypt);
+}
+
+export async function encryptWithNostrSigner(recipientPublicKey: string, plaintext: string): Promise<string> {
+  const encrypt = extension()?.nip44?.encrypt;
+  if (!encrypt) {
+    throw new Error('Nostr signer does not expose NIP-44 encryption.');
+  }
+  return encrypt(recipientPublicKey, plaintext);
+}
+
+export async function decryptWithNostrSigner(senderPublicKey: string, ciphertext: string): Promise<string> {
+  const decrypt = extension()?.nip44?.decrypt;
+  if (!decrypt) {
+    throw new Error('Nostr signer does not expose NIP-44 decryption.');
+  }
+  return decrypt(senderPublicKey, ciphertext);
 }

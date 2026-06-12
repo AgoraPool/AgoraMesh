@@ -97,7 +97,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.32.0`.
+Current app version: `0.34.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.32.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.34.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -133,7 +133,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - Listing images are public Blossom uploads. AgoraMesh stores only public HTTPS image metadata and does not provide a media backend.
 - Seller context is advisory and local. Signatures prove event authorship only, not legal identity or fulfillment.
 - Community curation lists help public discovery but do not certify identity or trust.
-- Private trade coordination is still file/copy based; private Nostr coordination is a later protocol investigation.
+- Private Nostr coordination is limited to explicit NIP-17/NIP-44 intro and reply flows. There is no live chat, inbox polling, delivery guarantee, or metadata privacy guarantee.
 - Allowlists help filter trust but do not certify truth.
 - Relay scores and conflict labels are advisory. They help review noisy public data but do not prove truth or safety.
 - Marketplace ranking, curation filters, and duplicate hiding are local convenience tools, not moderation or certification.
@@ -147,6 +147,8 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.30.0 marketplace UX pass adds the linked-delta icon, tightens collapsed sidebar alignment, simplifies Browse filters, and adds ordered multi-image listing gallery editing.
 - The v0.31.0 marketplace flow pass merges public listing discovery controls, adds a simple listing image flipper, introduces a mesh monogram icon, and calms the Create Listing form.
 - The v0.32.0 Browse and Settings cleanup moves advanced filtering into grouped presets and hides the old review queue under diagnostics.
+- The v0.33.0 Nostr contact pass adds first-class Nostr contacts, explicit encrypted NIP-17/NIP-44 intro messages, and plaintext-free outbox receipts.
+- The v0.34.0 threaded inbox pass adds explicit NIP-17 fetching, passphrase-protected readable message cache, lightweight threads, and primary Inbox navigation.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

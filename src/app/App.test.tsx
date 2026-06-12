@@ -83,7 +83,7 @@ describe('production readiness UI', () => {
     expect(await screen.findByRole('link', { name: 'Skip to main content' })).toHaveAttribute('href', '#main-content');
     expect(screen.getByRole('main', { name: 'Marketplace' })).toHaveAttribute('id', 'main-content');
     expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
-    expect(screen.getByRole('navigation', { name: 'Secondary navigation' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Secondary navigation' })).not.toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Mobile navigation' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument();
     expect(document.querySelector('.app-sidebar .brand-mark')).toHaveAttribute('src', '/icons/icon.svg');
@@ -98,6 +98,9 @@ describe('production readiness UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Post' }));
     expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('button', { name: 'Post' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(screen.getByRole('button', { name: 'Marketplace' }));
+    expect(screen.getByRole('button', { name: 'Marketplace' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Post' })).not.toHaveAttribute('aria-current');
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
     const shell = document.querySelector('.app-shell') as HTMLElement;
@@ -547,10 +550,8 @@ describe('production readiness UI', () => {
   it('shows workflow hints and action-specific next steps after creating an identity', async () => {
     renderAppAt('#profile');
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Status details' }));
-    expect(await screen.findByRole('heading', { name: 'Status details' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Use existing Nostr account' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Generate new identity' })).toBeInTheDocument();
+    expect(await screen.findByText('Use existing Nostr account')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate new identity' }));
     expect(screen.getByPlaceholderText('Example: Agora gardener')).toBeInTheDocument();
     expect(screen.getByText(/AgoraMesh cannot recover it/i)).toBeInTheDocument();
 
@@ -1157,6 +1158,7 @@ describe('production readiness UI', () => {
   it('supports identity backup verification and locking the decrypted key', async () => {
     renderAppAt('#profile');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate new identity' }));
     fireEvent.change((await screen.findAllByLabelText('Display name'))[1], { target: { value: 'alice' } });
     fireEvent.change(screen.getByLabelText('Passphrase'), { target: { value: 'correct horse battery staple' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create encrypted identity' }));
@@ -1169,7 +1171,7 @@ describe('production readiness UI', () => {
 
     const backupConfirmed = await screen.findByText(/Identity backup\/passphrase verified/i);
     expect(backupConfirmed.closest('[role="status"]')).not.toBeNull();
-    expect(screen.getByRole('button', { name: /Unlocked/i })).toBeInTheDocument();
+    expect(screen.getByText(/Local encrypted key · Unlocked/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Lock key/i }));
     expect(screen.getByRole('button', { name: /Unlock for signing/i })).toBeInTheDocument();
@@ -1197,6 +1199,7 @@ describe('production readiness UI', () => {
 
     renderAppAt('#profile');
 
+    fireEvent.click(await screen.findByRole('button', { name: 'Status details' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Advanced' }));
     fireEvent.click(screen.getByRole('button', { name: 'Forget active identity' }));
 

@@ -309,8 +309,13 @@ pre {
 .sidebar-footer {
   display: grid;
   gap: var(--space-2);
+  margin-top: auto;
   padding-top: var(--space-3);
   border-top: 1px solid var(--line);
+}
+
+.footer-nav {
+  flex-direction: column;
 }
 
 .sidebar-footer p {
@@ -333,6 +338,7 @@ pre {
 
 .app-sidebar.collapsed .primary-nav,
 .app-sidebar.collapsed .secondary-nav,
+.app-sidebar.collapsed .footer-nav,
 .app-sidebar.collapsed .sidebar-footer {
   align-items: center;
   width: var(--sidebar-rail-size);
@@ -2373,10 +2379,37 @@ dd {
 .nostr-contact-panel {
   display: grid;
   gap: var(--space-3);
+  max-width: 48rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: clamp(0.85rem, 2vw, 1rem);
 }
 
 .nostr-contact-panel textarea {
   min-height: 8rem;
+}
+
+.message-context {
+  display: grid;
+  gap: var(--space-1);
+  border-left: 2px solid var(--accent);
+  padding: 0.35rem 0 0.35rem var(--space-3);
+}
+
+.message-context p {
+  margin: 0;
+}
+
+.message-context .check-row {
+  margin-top: var(--space-1);
+}
+
+.form-eyebrow {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .nostr-inbox {
@@ -2389,14 +2422,45 @@ dd {
   gap: var(--space-4);
 }
 
-.nostr-inbox button.card {
+.compact-meta {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.compact-warning {
+  margin: 0;
+}
+
+.compact-meta-list {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.compact-meta-list p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.nostr-inbox button.card,
+.nostr-inbox .thread-row {
   width: 100%;
   text-align: left;
 }
 
-.nostr-inbox .card.active {
+.nostr-inbox .card.active,
+.nostr-inbox .thread-row.active {
   border-color: var(--accent);
   background: var(--accent-muted);
+}
+
+.nostr-inbox .thread-row {
+  display: grid;
+  gap: var(--space-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: 0.75rem;
+  color: var(--text);
 }
 
 .nostr-inbox .message-list {
@@ -2418,7 +2482,31 @@ dd {
   align-self: end;
 }
 
+.identity-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: clamp(0.9rem, 2vw, 1.1rem);
+}
+
+.identity-summary > div {
+  min-width: 0;
+}
+
+.identity-summary label {
+  margin-top: var(--space-3);
+}
+
 @media (max-width: 640px) {
+  .identity-summary {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .marketplace-toolbar {
     align-items: stretch;
   }

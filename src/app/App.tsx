@@ -434,8 +434,7 @@ async function cachePublicReviewItem(
   throw new Error('This event kind is not cacheable.');
 }
 
-function navFromHash(): Page {
-  const value = window.location.hash.replace('#', '');
+function navFromRoute(value: string): Page {
   if (value.startsWith('listing/local/') || value.startsWith('listing/synced/')) return 'listing';
   if (value === 'agreements' || value === 'disputes') return 'trade';
   if (value === 'listing' || value === 'browse:create' || value === 'browse:mine') return 'browse';
@@ -443,6 +442,10 @@ function navFromHash(): Page {
   if (value === 'settings:relays' || value === 'settings:review' || value === 'settings:backup' || value === 'settings:inbox') return 'settings';
   const pages: Page[] = ['home', 'browse', 'listing', 'profile', 'inbox', 'mediators', 'trade', 'reputation', 'settings'];
   return pages.includes(value as Page) ? (value as Page) : 'home';
+}
+
+function navFromHash(): Page {
+  return navFromRoute(window.location.hash.replace('#', ''));
 }
 
 function listingRouteFromHash(): { source: 'local' | 'synced'; id: string } | undefined {
@@ -559,6 +562,7 @@ export function App(): ReactNode {
   const [nextStep, setNextStep] = useState<NextStep | undefined>();
   const [tradeListingRef, setTradeListingRef] = useState<ListingSourceRef | undefined>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [routeHash, setRouteHash] = useState(() => window.location.hash.replace('#', ''));
   const pageLabels: Record<Page, string> = {
     home: t('nav.home'),
     browse: t('nav.browse'),
@@ -570,17 +574,17 @@ export function App(): ReactNode {
     reputation: t('nav.reputation'),
     settings: t('nav.settings')
   };
-  const currentHash = window.location.hash.replace('#', '');
   const primaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [
     { key: 'home', label: t('nav.home'), route: 'home', icon: <Home size={18} aria-hidden="true" /> },
     { key: 'browse', label: t('nav.browse'), route: 'browse', icon: <ShoppingBag size={18} aria-hidden="true" /> },
     { key: 'post', label: t('nav.listing'), route: 'browse:create', icon: <PlusCircle size={18} aria-hidden="true" /> },
     { key: 'profile', label: t('nav.profile'), route: 'profile', icon: <UserRound size={18} aria-hidden="true" /> },
-    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" /> },
-    { key: 'settings', label: t('nav.settings'), route: 'settings', icon: <SettingsIcon size={18} aria-hidden="true" /> }
+    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" /> }
   ];
+  const settingsNavItem = { key: 'settings', label: t('nav.settings'), route: 'settings' as RouteTarget, icon: <SettingsIcon size={18} aria-hidden="true" /> };
+  const mobileNavItems = [...primaryNavItems, settingsNavItem];
   const secondaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [];
-  const activeNavKey = currentHash === 'browse:create' ? 'post' : page === 'listing' ? 'browse' : page;
+  const activeNavKey = routeHash === 'browse:create' ? 'post' : page === 'listing' || page === 'browse' ? 'browse' : page;
   const renderNavButton = (item: { key: string; label: string; route: RouteTarget; icon: ReactNode }, compact = false): ReactNode => {
     const active = activeNavKey === item.key;
     return (
@@ -633,7 +637,11 @@ export function App(): ReactNode {
 
   useEffect(() => {
     void reload();
-    const onHash = (): void => setPage(navFromHash());
+    const onHash = (): void => {
+      const nextRoute = window.location.hash.replace('#', '');
+      setRouteHash(nextRoute);
+      setPage(navFromRoute(nextRoute));
+    };
     const onFocus = (): void => {
       const next = detectNostrSigner();
       setNostrSigner((current) => (current.connected ? current : next));
@@ -648,7 +656,8 @@ export function App(): ReactNode {
 
   const go = (next: RouteTarget): void => {
     window.location.hash = next;
-    setPage(next.startsWith('browse:') || next.startsWith('profile:') || next.startsWith('settings:') || next.startsWith('listing/') ? navFromHash() : (next as Page));
+    setRouteHash(next);
+    setPage(navFromRoute(next));
   };
 
   const showNotice = (message: string, next?: NextStep): void => {
@@ -1215,6 +1224,9 @@ export function App(): ReactNode {
           </nav>
         ) : null}
         <div className="sidebar-footer">
+          <nav className="nav footer-nav" aria-label={t('nav.settings')}>
+            {renderNavButton(settingsNavItem)}
+          </nav>
           <p className="muted">{identity ? identity.displayName : t('identity.noIdentity')}</p>
           <div className="language-switch" aria-label={t('language.switcher')} role="group">
             <Languages size={16} aria-hidden="true" />
@@ -1253,7 +1265,7 @@ export function App(): ReactNode {
         </div>
       </header>
       <nav className="mobile-bottom-nav" aria-label={t('nav.mobile')}>
-        {primaryNavItems.map((item) => renderNavButton(item, true))}
+        {mobileNavItems.map((item) => renderNavButton(item, true))}
       </nav>
 
       {notice || nextStep ? (
@@ -1566,6 +1578,7 @@ export function App(): ReactNode {
                 receipts={nostrContactReceipts}
                 relays={relays}
                 threads={nostrMessageThreads}
+                onConnectSigner={() => void connectSigner()}
                 onFetch={fetchNostrInbox}
                 onSend={sendNostrContactIntro}
                 onThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
@@ -1968,6 +1981,7 @@ function NostrContactPanel({
   nostrSigner,
   privateKeyHex,
   receipts,
+  onConnectSigner,
   onSend
 }: {
   target: NostrContactTarget;
@@ -1976,6 +1990,7 @@ function NostrContactPanel({
   nostrSigner: NostrSignerState;
   privateKeyHex: string;
   receipts: NostrContactReceipt[];
+  onConnectSigner: () => void;
   onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
 }): ReactNode {
   const { t } = useI18n();
@@ -2002,6 +2017,13 @@ function NostrContactPanel({
       (!target.contextId || receipt.contextId === target.contextId)
   );
   const visibleReceipt = lastSentReceipt ?? contextReceipts[0];
+  const sendBlocker = !identity
+    ? t('nostrContact.identityRequired')
+    : enabledRelayCount === 0
+      ? t('nostrContact.relaysRequired')
+      : !canUseLocal && !canUseSigner
+        ? t('nostrContact.signerRequired')
+        : '';
   const copy = (value: string): void => {
     void navigator.clipboard?.writeText(value);
   };
@@ -2031,24 +2053,26 @@ function NostrContactPanel({
   return (
     <section className="nostr-contact">
       <button className="subtle" onClick={() => setOpen((current) => !current)} type="button">
-        <Radio size={16} /> {t('nostrContact.action')}
+        <Radio size={16} /> {t('nostrContact.messageAction')}
       </button>
       {open ? (
-        <div className="inline-card nostr-contact-panel">
+        <div className="nostr-contact-panel">
           <div className="row between">
             <div>
-              <strong>{t('nostrContact.title')}</strong>
-              <p className="muted">{target.label}</p>
+              <strong>{target.label}</strong>
+              <p className="muted">{t('nostrContact.title')}</p>
             </div>
-            <span className="pill subtle-pill">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</span>
           </div>
-          <SafetyNotice>{t('nostrContact.metadataWarning')}</SafetyNotice>
-          {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrContact.copyFallback')}</ActionHint> : null}
           {target.contextTitle ? (
-            <label className="check-row">
-              <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
-              {t('nostrContact.includeContext').replace('{title}', target.contextTitle)}
-            </label>
+            <div className="message-context">
+              <span className="form-eyebrow">{t('nostrContact.context')}</span>
+              <strong>{target.contextTitle}</strong>
+              <p className="muted">{t(`nostrContact.context.${target.contextType}`)}</p>
+              <label className="check-row">
+                <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
+                {t('nostrContact.includeContext')}
+              </label>
+            </div>
           ) : null}
           <label>
             {t('nostrContact.message')}
@@ -2059,39 +2083,55 @@ function NostrContactPanel({
               value={message}
             />
           </label>
-          <p className="muted">{t('nostrContact.length').replace('{count}', String(message.length)).replace('{limit}', String(NOSTR_INTRO_MESSAGE_LIMIT))}</p>
+          <p className="muted compact-meta">{t('nostrContact.length').replace('{count}', String(message.length)).replace('{limit}', String(NOSTR_INTRO_MESSAGE_LIMIT))}</p>
+          {sendBlocker ? <p className="warning compact-warning">{sendBlocker}</p> : null}
           {error ? <p className="warning" role="alert">{error}</p> : null}
           <div className="actions small">
-            <button className="subtle" onClick={() => copy(normalized.npub)} type="button">
-              {t('nostrContact.copyNpub')}
-            </button>
-            <button className="subtle" onClick={() => copy(normalized.uri)} type="button">
-              {t('nostrContact.copyUri')}
-            </button>
-            <button className="subtle" disabled={!message.trim()} onClick={() => copy(message)} type="button">
-              {t('nostrContact.copyDraft')}
+            {identity && !canUseLocal && !canUseSigner ? (
+              <button className="subtle" onClick={onConnectSigner} type="button">
+                <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+              </button>
+            ) : null}
+            <button disabled={!canSend || sending} onClick={() => void send()} type="button">
+              {sending ? t('nostrContact.sending') : t('nostrContact.send')}
             </button>
             <button className="subtle" onClick={() => (window.location.hash = 'inbox')} type="button">
               {t('nostrInbox.open')}
             </button>
-            <button disabled={!canSend || sending} onClick={() => void send()} type="button">
-              {sending ? t('nostrContact.sending') : t('nostrContact.send')}
-            </button>
           </div>
-          {visibleReceipt ? (
-            <div className="receipt-summary">
-              <p className="muted">
-                {t('nostrContact.recentReceipt')}: {visibleReceipt.status} · {visibleReceipt.sentAt}
-              </p>
-              <p className="muted">{t('nostrContact.lookupHint')}</p>
-              <p className="key">{visibleReceipt.eventIds.join(', ')}</p>
-              <div className="actions small">
+          {lastSentReceipt ? (
+            <p className={lastSentReceipt.status === 'failed' ? 'warning compact-warning' : 'ok compact-meta'}>
+              {lastSentReceipt.status === 'failed' ? t('nostrContact.sentFailedCompact') : t('nostrContact.sentCompact')}
+            </p>
+          ) : null}
+          <DisclosurePanel title={t('nostrContact.details')}>
+            <SafetyNotice>{t('nostrContact.metadataWarning')}</SafetyNotice>
+            <p className="muted">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
+            {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrContact.copyFallback')}</ActionHint> : null}
+            <div className="actions small">
+              <button className="subtle" onClick={() => copy(normalized.npub)} type="button">
+                {t('nostrContact.copyNpub')}
+              </button>
+              <button className="subtle" onClick={() => copy(normalized.uri)} type="button">
+                {t('nostrContact.copyUri')}
+              </button>
+              <button className="subtle" disabled={!message.trim()} onClick={() => copy(message)} type="button">
+                {t('nostrContact.copyDraft')}
+              </button>
+            </div>
+            {visibleReceipt ? (
+              <div className="receipt-summary">
+                <p className="muted">
+                  {t('nostrContact.recentReceipt')}: {visibleReceipt.status} · {visibleReceipt.sentAt}
+                </p>
+                <p className="muted">{t('nostrContact.lookupHint')}</p>
+                <p className="key">{visibleReceipt.eventIds.join(', ')}</p>
                 <button className="subtle" onClick={() => copy(visibleReceipt.eventIds.join('\n'))} type="button">
                   {t('nostrContact.copyEventIds')}
                 </button>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </DisclosurePanel>
         </div>
       ) : null}
     </section>
@@ -2282,6 +2322,7 @@ function ListingPage({
               nostrSigner={nostrSigner}
               privateKeyHex={privateKeyHex}
               receipts={nostrContactReceipts}
+              onConnectSigner={onConnectSigner}
               onSend={onSendNostrIntro}
             />
           ) : null}
@@ -3856,6 +3897,15 @@ function ProfilePage({
       detail: form.mediatorAvailable ? (localMediator ? t('readiness.ready') : t('readiness.needsAttention')) : t('common.none')
     }
   ];
+  const identityStatusText = !identity
+    ? t('identity.noIdentity')
+    : extensionIdentity
+      ? nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase()
+        ? t('identity.extensionConnectedCompact')
+        : t('identity.extensionReconnectCompact')
+      : privateKeyHex
+        ? t('identity.unlocked')
+        : t('identity.lockedCompact');
 
   return (
     <section className="page">
@@ -3875,38 +3925,32 @@ function ProfilePage({
         {activeProfileTab === 'identity' ? (
           <section className="settings-section" aria-labelledby="profile-identity">
             <h2 id="profile-identity">{t('identity.title')}</h2>
-            <SignerStatusStrip
-              status={signerStatus}
-              onConnect={() => void onConnectSigner()}
-              onUseAsIdentity={() => void onUseConnectedSignerAsIdentity()}
-            />
-            <PageStatusDisclosure title={t('guided.statusDetails')} items={identityReadiness} />
             {identity ? (
               <>
-                <article className="card compact">
-                  <strong>{identity.displayName}</strong>
-                  <span className="pill">{extensionIdentity ? t('identity.sourceExtension') : t('identity.sourceLocal')}</span>
-                  <p className="key" title={t('common.publicKey')}>
-                    {identity.publicKey}
-                  </p>
+                <article className="identity-summary">
+                  <div>
+                    <strong>{identity.displayName}</strong>
+                    <p className="muted">
+                      {extensionIdentity ? t('identity.sourceExtension') : t('identity.sourceLocal')} · {identityStatusText}
+                    </p>
+                    <p className="key" title={t('common.publicKey')}>
+                      {identity.publicKey}
+                    </p>
+                  </div>
+                  <div className="actions small">
+                    {extensionIdentity ? (
+                      <button onClick={() => void useExistingNostrAccount()} type="button">
+                        <KeyRound size={16} /> {t('signer.reconnect')}
+                      </button>
+                    ) : privateKeyHex ? (
+                      <button onClick={onLock} type="button">
+                        <LockKeyhole size={16} /> {t('identity.lock')}
+                      </button>
+                    ) : null}
+                  </div>
                 </article>
-                {extensionIdentity ? (
-                  <>
-                    <ActionHint>
-                      {nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase()
-                        ? t('identity.extensionConnected')
-                        : t('identity.extensionReconnect')}
-                    </ActionHint>
-                    <button onClick={() => void useExistingNostrAccount()} type="button">
-                      <KeyRound size={16} /> {t('identity.connectExisting')}
-                    </button>
-                  </>
-                ) : privateKeyHex ? (
-                  <button onClick={onLock} type="button">
-                    <LockKeyhole size={16} /> {t('identity.lock')}
-                  </button>
-                ) : (
-                  <>
+                {!extensionIdentity && !privateKeyHex ? (
+                  <div className="inline-card">
                     <label>
                       {t('common.passphrase')}
                       <input
@@ -3920,67 +3964,80 @@ function ProfilePage({
                     <button onClick={() => void unlock()} type="button">
                       <FileLock2 size={16} /> {t('identity.decrypt')}
                     </button>
-                  </>
-                )}
-                {localIdentity && !identityBackedUp ? <ActionHint>{t('hint.backupNext')}</ActionHint> : null}
-                <DisclosurePanel title={t('ui.advanced')}>
-                  <SafetyNotice>{t('identity.forgetBody')}</SafetyNotice>
-                  <button className="danger" onClick={() => void forgetIdentity()} type="button">
-                    <LockKeyhole size={16} /> {t('identity.forget')}
-                  </button>
+                  </div>
+                ) : null}
+                <DisclosurePanel title={t('guided.statusDetails')}>
+                  <PageStatusDisclosure title={t('readiness.identityProfile')} items={identityReadiness} />
+                  {localIdentity && !identityBackedUp ? <p className="muted">{t('hint.backupNext')}</p> : null}
+                  <DisclosurePanel title={t('identity.metadataTitle')}>
+                    <p className="muted">{t('identity.metadataBody')}</p>
+                    <button onClick={() => void fetchMetadata()} type="button">
+                      <Download size={16} /> {t('identity.metadataFetch')}
+                    </button>
+                    {metadataMessage ? <StatusMessage>{metadataMessage}</StatusMessage> : null}
+                  </DisclosurePanel>
+                  <DisclosurePanel title={t('ui.advanced')}>
+                    <SafetyNotice>{t('identity.forgetBody')}</SafetyNotice>
+                    <button className="danger" onClick={() => void forgetIdentity()} type="button">
+                      <LockKeyhole size={16} /> {t('identity.forget')}
+                    </button>
+                  </DisclosurePanel>
                 </DisclosurePanel>
               </>
             ) : (
-              <div className="split-grid">
-                <section className="card compact">
-                  <h3>{t('identity.existingTitle')}</h3>
-                  <p className="muted">{t('identity.existingBody')}</p>
-                  <label>
-                    {t('common.displayName')}
-                    <input placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
-                  </label>
-                  <button onClick={() => void useExistingNostrAccount()} type="button">
-                    <KeyRound size={16} /> {t('identity.connectExisting')}
-                  </button>
-                  <FieldHint>{nostrSigner.available ? t('signer.available') : t('signer.unavailable')}</FieldHint>
+              <>
+                <section className="identity-summary">
+                  <div>
+                    <strong>{t('identity.existingTitle')}</strong>
+                    <p className="muted">{t('identity.existingBodyCompact')}</p>
+                    <label>
+                      {t('common.displayName')}
+                      <input placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
+                    </label>
+                  </div>
+                  <div className="actions small">
+                    <button onClick={() => void useExistingNostrAccount()} type="button">
+                      <KeyRound size={16} /> {t('identity.connectExisting')}
+                    </button>
+                  </div>
                 </section>
-                <form className="card compact stack-form" onSubmit={(event) => void create(event)}>
-                  <h3>{t('identity.generateTitle')}</h3>
-                  <p className="muted">{t('identity.generateBody')}</p>
-                  <label>
-                    {t('common.displayName')}
-                    <input
-                      required
-                      placeholder={t('placeholder.displayName')}
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    {t('common.passphrase')}
-                    <input
-                      required
-                      minLength={10}
-                      placeholder={t('placeholder.passphrase')}
-                      type="password"
-                      value={passphrase}
-                      onChange={(event) => setPassphrase(event.target.value)}
-                    />
-                    <FieldHint>{t('hint.identityPassphraseShort')}</FieldHint>
-                  </label>
-                  <button type="submit">{t('identity.create')}</button>
-                </form>
-              </div>
+                <DisclosurePanel title={t('identity.generateTitle')}>
+                  <form className="stack-form" onSubmit={(event) => void create(event)}>
+                    <p className="muted">{t('identity.generateBody')}</p>
+                    <label>
+                      {t('common.displayName')}
+                      <input
+                        required
+                        placeholder={t('placeholder.displayName')}
+                        value={name}
+                        onChange={(event) => setName(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      {t('common.passphrase')}
+                      <input
+                        required
+                        minLength={10}
+                        placeholder={t('placeholder.passphrase')}
+                        type="password"
+                        value={passphrase}
+                        onChange={(event) => setPassphrase(event.target.value)}
+                      />
+                      <FieldHint>{t('hint.identityPassphraseShort')}</FieldHint>
+                    </label>
+                    <button type="submit">{t('identity.create')}</button>
+                  </form>
+                </DisclosurePanel>
+                <DisclosurePanel title={t('guided.statusDetails')}>
+                  <SignerStatusStrip
+                    status={signerStatus}
+                    onConnect={() => void onConnectSigner()}
+                    onUseAsIdentity={() => void onUseConnectedSignerAsIdentity()}
+                  />
+                  <PageStatusDisclosure title={t('readiness.identityProfile')} items={identityReadiness} />
+                </DisclosurePanel>
+              </>
             )}
-            {identity ? (
-              <DisclosurePanel title={t('identity.metadataTitle')}>
-                <p className="muted">{t('identity.metadataBody')}</p>
-                <button onClick={() => void fetchMetadata()} type="button">
-                  <Download size={16} /> {t('identity.metadataFetch')}
-                </button>
-                {metadataMessage ? <StatusMessage>{metadataMessage}</StatusMessage> : null}
-              </DisclosurePanel>
-            ) : null}
           </section>
         ) : null}
 
@@ -4376,6 +4433,7 @@ function MediatorPage({
                     nostrSigner={nostrSigner}
                     privateKeyHex={privateKeyHex}
                     receipts={nostrContactReceipts}
+                    onConnectSigner={() => void onConnectSigner()}
                     onSend={onSendNostrIntro}
                   />
                 ) : null;
@@ -4445,6 +4503,7 @@ function NostrInboxPanel({
   cursors,
   receipts,
   defaultOpen,
+  onConnectSigner,
   onFetch,
   onThreadChange,
   onSend
@@ -4458,6 +4517,7 @@ function NostrInboxPanel({
   cursors: NostrInboxCursor[];
   receipts: NostrContactReceipt[];
   defaultOpen: boolean;
+  onConnectSigner: () => void;
   onFetch: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
   onThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
   onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
@@ -4479,6 +4539,13 @@ function NostrInboxPanel({
       nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase() &&
       signerSupportsNip44Decryption()
   );
+  const fetchBlocker = !identity
+    ? t('nostrInbox.identityRequired')
+    : enabledRelayCount === 0
+      ? t('nostrContact.relaysRequired')
+      : !canUseLocal && !canUseSigner
+        ? t('nostrInbox.signerRequired')
+        : '';
   const ownerPublicKey = identity?.publicKey.toLowerCase() ?? '';
   const ownerMessages = useMemo(() => messages.filter((message) => message.ownerPublicKey === ownerPublicKey), [messages, ownerPublicKey]);
   const threadDirections = useMemo(() => {
@@ -4552,22 +4619,17 @@ function NostrInboxPanel({
   return (
     <DisclosurePanel key={defaultOpen ? 'inbox-open' : 'inbox-closed'} title={t('nostrInbox.title')} defaultOpen={defaultOpen}>
       <div className="nostr-inbox">
-        <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
-        <div className="status-chip-row">
-          <span className="status-chip">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</span>
-          <span className={canUseLocal || canUseSigner ? 'status-chip' : 'status-chip warning'}>
-            {canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}
-          </span>
-          <span className="status-chip">
-            {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
-          </span>
-        </div>
         <div className="listing-form-row two-up">
           <label>
             {t('nostrInbox.passphrase')}
             <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
           </label>
           <div className="actions small align-end">
+            {identity && !canUseLocal && !canUseSigner ? (
+              <button className="subtle" onClick={onConnectSigner} type="button">
+                <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+              </button>
+            ) : null}
             <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
               {t('nostrInbox.unlock')}
             </button>
@@ -4576,18 +4638,6 @@ function NostrInboxPanel({
             </button>
           </div>
         </div>
-        {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrInbox.decryptFallback')}</ActionHint> : null}
-        {error ? <p className="warning" role="alert">{error}</p> : null}
-        {summary ? (
-          <p className="muted">
-            {t('nostrInbox.fetchSummary')
-              .replace('{fetched}', String(summary.fetched))
-              .replace('{imported}', String(summary.imported))
-              .replace('{duplicates}', String(summary.duplicates))
-              .replace('{failed}', String(summary.failed))
-              .replace('{relays}', String(summary.relays))}
-          </p>
-        ) : null}
         <div className="segmented-control compact" aria-label={t('nostrInbox.boxFilter')}>
           {(['all', 'inbox', 'outbox'] as const).map((filter) => (
             <button className={boxFilter === filter ? 'active' : ''} key={filter} onClick={() => setBoxFilter(filter)} type="button">
@@ -4595,18 +4645,42 @@ function NostrInboxPanel({
             </button>
           ))}
         </div>
+        {fetchBlocker ? <p className="warning compact-warning">{fetchBlocker}</p> : null}
+        {error ? <p className="warning" role="alert">{error}</p> : null}
+        <DisclosurePanel title={t('nostrInbox.privacySyncDetails')}>
+          <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
+          <div className="compact-meta-list">
+            <p>{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
+            <p>{canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}</p>
+            <p>
+              {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
+            </p>
+          </div>
+          {!canUseLocal && !canUseSigner ? <p className="muted">{t('nostrInbox.decryptFallback')}</p> : null}
+          {summary ? (
+            <p className="muted">
+              {t('nostrInbox.fetchSummary')
+                .replace('{fetched}', String(summary.fetched))
+                .replace('{imported}', String(summary.imported))
+                .replace('{duplicates}', String(summary.duplicates))
+                .replace('{failed}', String(summary.failed))
+                .replace('{relays}', String(summary.relays))}
+            </p>
+          ) : null}
+        </DisclosurePanel>
         <div className="split compact-split">
           <div className="card-grid single">
             {visibleThreads.map((thread) => {
               const directions = threadDirections.get(thread.threadKey) ?? { incoming: 0, outgoing: 0 };
               return (
-                <button className={thread.threadKey === activeThread?.threadKey ? 'card active' : 'card'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
+                <button className={thread.threadKey === activeThread?.threadKey ? 'thread-row active' : 'thread-row'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
                   <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
                   <span className="muted">{shortPublicKey(thread.counterpartPublicKey)} · {thread.lastMessageAt}</span>
-                  <span className="status-chip-row">
-                    {directions.incoming > 0 ? <span className="status-chip">{t('nostrInbox.incomingCount').replace('{count}', String(directions.incoming))}</span> : null}
-                    {directions.outgoing > 0 ? <span className="status-chip">{t('nostrInbox.outgoingCount').replace('{count}', String(directions.outgoing))}</span> : null}
-                    {thread.unreadCount > 0 ? <span className="status-chip warning">{thread.unreadCount}</span> : null}
+                  <span className="muted compact-meta">
+                    {directions.incoming > 0 ? t('nostrInbox.incomingCount').replace('{count}', String(directions.incoming)) : null}
+                    {directions.incoming > 0 && directions.outgoing > 0 ? ' · ' : null}
+                    {directions.outgoing > 0 ? t('nostrInbox.outgoingCount').replace('{count}', String(directions.outgoing)) : null}
+                    {thread.unreadCount > 0 ? ` · ${t('nostrInbox.unreadCount').replace('{count}', String(thread.unreadCount))}` : null}
                   </span>
                 </button>
               );
@@ -4663,6 +4737,7 @@ function NostrInboxPanel({
                   nostrSigner={nostrSigner}
                   privateKeyHex={privateKeyHex}
                   receipts={receipts}
+                  onConnectSigner={() => void onConnectSigner()}
                   onSend={onSend}
                 />
               </>
@@ -6986,6 +7061,7 @@ function SettingsPage({
               receipts={nostrContactReceipts}
               relays={relays}
               threads={nostrMessageThreads}
+              onConnectSigner={onConnectSigner}
               onFetch={onFetchNostrInbox}
               onSend={onSendNostrIntro}
               onThreadChange={onNostrThreadChange}

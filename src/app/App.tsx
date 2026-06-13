@@ -3068,7 +3068,6 @@ function OperatorSupportPanel({
             {visibleAttempt.createdAt} · {visibleAttempt.amountSats} sats · {t(`payment.status.${visibleAttempt.status}`)}
           </p>
         ) : null}
-        {supportReceipt ? <p className="key">{supportReceipt.receiptEventId}</p> : null}
       </DisclosurePanel>
     </section>
   );

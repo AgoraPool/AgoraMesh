@@ -111,11 +111,15 @@ import {
   type UnwrappedNostrMessage
 } from '../lib/nostr/messages';
 import { fetchLnurlPayMetadata, lnurlTagForPayUrl, requestLnurlInvoice } from '../lib/payments/lnurl';
+import { operatorSupportConfig, type OperatorSupportConfig } from '../lib/payments/operatorSupport';
 import { parseNwcUri, payNwcInvoice, requestNwcInfo, type NwcRequestResult } from '../lib/nostr/nwc';
 import {
+  OPERATOR_SUPPORT_PURPOSE,
+  OPERATOR_SUPPORT_TAG,
   fetchZapReceiptsFromRelays,
   signZapRequestLocally,
   signZapRequestWithExtension,
+  validateOperatorSupportReceipt,
   validateZapReceipt,
   type ZapRequestArgs
 } from '../lib/nostr/zaps';
@@ -196,6 +200,7 @@ import type {
   NwcConnection,
   NostrSignerState,
   NostrReviewItem,
+  OperatorSupportReceipt,
   PaymentIntent,
   PaymentPreference,
   PublicDisputeOutcome,
@@ -254,6 +259,10 @@ type LightningPaymentRequest = {
   amountSats: number;
   publicNote: string;
 };
+type OperatorSupportPaymentRequest = {
+  amountSats: number;
+  publicNote: string;
+};
 type SaveNwcConnectionRequest = {
   uri: string;
   passphrase: string;
@@ -265,6 +274,14 @@ type SendNostrContactIntroArgs = NostrContactTarget & {
 };
 type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
 type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
+type SupportFilter = 'all' | 'supporters' | 'non-supporters';
+type ReputationDraftRequest = {
+  subjectPublicKey: string;
+  role: 'buyer' | 'seller' | 'mediator';
+  listingId?: string;
+  listingTitle?: string;
+  listingCoordinate?: string;
+};
 type ListingImageDraft =
   | { id: string; kind: 'existing'; image: ListingImage; previewUrl: string; name: string; altText: string }
   | { id: string; kind: 'new'; file: File; previewUrl: string; name: string; altText: string };
@@ -290,6 +307,7 @@ const attestationTags: AttestationTag[] = [
 
 const emptyContact = (): ContactMethod => ({ id: newId('contact'), kind: 'matrix', value: '' });
 const marketplacePageSize = 24;
+const operatorSupport = operatorSupportConfig();
 
 function defaultListingExpirationDate(): string {
   return new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
@@ -539,7 +557,7 @@ function reputationEventTags(attestation: ReputationAttestation): string[][] {
   const tags: string[][] = [
     ['d', attestation.id],
     ['p', attestation.subjectPublicKey],
-    ['agreement', attestation.agreementHash],
+    ...(attestation.agreementHash ? [['agreement', attestation.agreementHash]] : []),
     ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
     ...(attestation.score ? [['score', String(attestation.score)]] : [])
   ];
@@ -562,6 +580,26 @@ function paidAttemptFromNwcResult(attempt: LightningPaymentAttempt, result: NwcR
     error: undefined,
     updatedAt: nowIso()
   };
+}
+
+function supportReceiptForPublicKey(publicKey: string | undefined, receipts: OperatorSupportReceipt[]): OperatorSupportReceipt | undefined {
+  if (!publicKey) return undefined;
+  const normalized = publicKey.toLowerCase();
+  return receipts
+    .filter((receipt) => receipt.payerPublicKey.toLowerCase() === normalized)
+    .sort((left, right) => right.validatedAt.localeCompare(left.validatedAt))[0];
+}
+
+function supportFilterMatches(publicKey: string, receipts: OperatorSupportReceipt[], filter: SupportFilter): boolean {
+  if (filter === 'all') return true;
+  const supported = Boolean(supportReceiptForPublicKey(publicKey, receipts));
+  return filter === 'supporters' ? supported : !supported;
+}
+
+function supportFilterLabel(filter: SupportFilter, t: (key: string) => string): string {
+  if (filter === 'supporters') return t('support.supporters');
+  if (filter === 'non-supporters') return t('support.nonSupporters');
+  return t('support.all');
 }
 
 function summarizeListingReceipts(listing: Listing, publishReceipts: PublishReceipt[]): PublishReceiptSummary {
@@ -630,6 +668,7 @@ export function App(): ReactNode {
   const [nostrMessageThreads, setNostrMessageThreads] = useState<NostrMessageThread[]>([]);
   const [nostrInboxCursors, setNostrInboxCursors] = useState<NostrInboxCursor[]>([]);
   const [lightningPaymentAttempts, setLightningPaymentAttempts] = useState<LightningPaymentAttempt[]>([]);
+  const [operatorSupportReceipts, setOperatorSupportReceipts] = useState<OperatorSupportReceipt[]>([]);
   const [nwcConnections, setNwcConnections] = useState<NwcConnection[]>([]);
   const [unlockedNwcSecrets, setUnlockedNwcSecrets] = useState<Record<string, string>>({});
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
@@ -643,6 +682,7 @@ export function App(): ReactNode {
   const [notice, setNotice] = useState('');
   const [nextStep, setNextStep] = useState<NextStep | undefined>();
   const [tradeListingRef, setTradeListingRef] = useState<ListingSourceRef | undefined>();
+  const [reputationDraftRequest, setReputationDraftRequest] = useState<ReputationDraftRequest | undefined>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash.replace('#', ''));
   const pageLabels: Record<Page, string> = {
@@ -713,6 +753,7 @@ export function App(): ReactNode {
     setNostrMessageThreads((await db.nostrMessageThreads.toArray()).sort((left, right) => right.lastMessageAt.localeCompare(left.lastMessageAt)));
     setNostrInboxCursors(await db.nostrInboxCursors.toArray());
     setLightningPaymentAttempts((await db.lightningPaymentAttempts.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    setOperatorSupportReceipts((await db.operatorSupportReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
     setNwcConnections((await db.nwcConnections.toArray()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
@@ -1369,6 +1410,146 @@ export function App(): ReactNode {
     return updated;
   };
 
+  const cacheOperatorSupportReceipt = async (
+    receipt: NostrEvent,
+    relayUrls: string[],
+    config: OperatorSupportConfig,
+    payerPublicKey?: string,
+    operatorWalletPubkey?: string
+  ): Promise<OperatorSupportReceipt> => {
+    const operatorLnurlTag = lnurlTagForPayUrl(config.lnurl);
+    const validation = validateOperatorSupportReceipt({
+      receipt,
+      payerPublicKey,
+      operatorWalletPubkey: operatorWalletPubkey ?? receipt.pubkey,
+      operatorLnurl: operatorLnurlTag,
+      minimumMsats: config.minimumSats * 1000
+    });
+    const at = nowIso();
+    const id = `operator_support_${validation.zapRequest.pubkey.toLowerCase()}_${receipt.id}`;
+    const existing = await db.operatorSupportReceipts.get(id);
+    const cached: OperatorSupportReceipt = {
+      id,
+      payerPublicKey: validation.zapRequest.pubkey.toLowerCase(),
+      operatorLnurl: config.lnurl,
+      operatorWalletPubkey: receipt.pubkey.toLowerCase(),
+      amountMsats: validation.amountMsats,
+      minimumSats: config.minimumSats,
+      zapRequestId: validation.zapRequest.id,
+      zapRequest: JSON.stringify(validation.zapRequest),
+      receiptEventId: receipt.id,
+      receiptEvent: JSON.stringify(receipt),
+      relayUrls: [...new Set([...(existing?.relayUrls ?? []), ...relayUrls])],
+      paidAt: new Date(receipt.created_at * 1000).toISOString(),
+      validatedAt: at
+    };
+    await db.operatorSupportReceipts.put(cached);
+    return cached;
+  };
+
+  const createOperatorSupportPaymentAttempt = async (request: OperatorSupportPaymentRequest): Promise<LightningPaymentAttempt> => {
+    if (!operatorSupport.enabled) throw new Error(t('support.notConfigured'));
+    if (!identity) throw new Error(t('payment.identityRequired'));
+    const enabledRelays = relays.filter((relay) => relay.enabled);
+    if (enabledRelays.length === 0) throw new Error(t('nostrContact.relaysRequired'));
+    const amountSats = Math.max(operatorSupport.minimumSats, Math.floor(Number(request.amountSats)));
+    const amountMsats = amountSats * 1000;
+    const buyerPublicKey = identity.publicKey.toLowerCase();
+    const metadata = await fetchLnurlPayMetadata(operatorSupport.lnurl);
+    const operatorLnurlTag = lnurlTagForPayUrl(operatorSupport.lnurl);
+    const zapArgs: ZapRequestArgs = {
+      buyerPublicKey,
+      sellerPublicKey: metadata.nostrPubkey.toLowerCase(),
+      amountMsats,
+      lnurl: operatorLnurlTag,
+      relays: enabledRelays.map((relay) => relay.url),
+      content: sanitizePlainText(request.publicNote),
+      customTags: [
+        ['t', OPERATOR_SUPPORT_TAG],
+        ['purpose', OPERATOR_SUPPORT_PURPOSE]
+      ]
+    };
+    let zapRequest: NostrEvent;
+    if (identityCanUseLocalUnlock(identity) && privateKeyHex) {
+      zapRequest = signZapRequestLocally(zapArgs, privateKeyHex);
+    } else {
+      const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
+      if (!signer.connected || signer.publicKey?.toLowerCase() !== buyerPublicKey) throw new Error(t('payment.signerRequired'));
+      zapRequest = await signZapRequestWithExtension(zapArgs, (event) => signWithNostrSigner(event, buyerPublicKey));
+    }
+    const invoice = await requestLnurlInvoice(metadata, amountMsats, JSON.stringify(zapRequest));
+    const at = nowIso();
+    const attempt: LightningPaymentAttempt = {
+      id: newId('lightning_payment'),
+      buyerPublicKey,
+      sellerPublicKey: metadata.nostrPubkey.toLowerCase(),
+      purpose: 'operator-support',
+      badgeSubjectPublicKey: buyerPublicKey,
+      amountSats,
+      amountMsats,
+      lnurlSource: operatorSupport.lnurl,
+      callbackUrl: metadata.callback,
+      sellerWalletPubkey: metadata.nostrPubkey,
+      zapRequestId: zapRequest.id,
+      zapRequest: JSON.stringify(zapRequest),
+      bolt11: invoice.bolt11,
+      receiptRelayUrls: [],
+      status: 'invoice-created',
+      createdAt: at,
+      updatedAt: at
+    };
+    await db.lightningPaymentAttempts.put(attempt);
+    await reload();
+    return attempt;
+  };
+
+  const checkOperatorSupportReceipt = async (attempt?: LightningPaymentAttempt): Promise<OperatorSupportReceipt | undefined> => {
+    if (!operatorSupport.enabled) throw new Error(t('support.notConfigured'));
+    const metadata = await fetchLnurlPayMetadata(operatorSupport.lnurl);
+    const since = attempt ? Math.max(0, Math.floor(new Date(attempt.createdAt).getTime() / 1000) - 600) : undefined;
+    const results = await fetchZapReceiptsFromRelays(relays, metadata.nostrPubkey, since);
+    let cached: OperatorSupportReceipt | undefined;
+    for (const result of results) {
+      for (const event of result.events) {
+        try {
+          if (attempt) {
+            const zapRequest = parseNostrEvent(JSON.parse(attempt.zapRequest));
+            validateZapReceipt({
+              receipt: event,
+              zapRequest,
+              bolt11: attempt.bolt11,
+              sellerWalletPubkey: attempt.sellerWalletPubkey
+            });
+          }
+          cached = await cacheOperatorSupportReceipt(
+            event,
+            [result.relayUrl],
+            operatorSupport,
+            attempt?.badgeSubjectPublicKey ?? attempt?.buyerPublicKey,
+            metadata.nostrPubkey
+          );
+          if (attempt && cached) {
+            const updated: LightningPaymentAttempt = {
+              ...attempt,
+              receiptEventId: cached.receiptEventId,
+              receiptEvent: cached.receiptEvent,
+              receiptRelayUrls: cached.relayUrls,
+              status: 'receipt-found',
+              updatedAt: nowIso(),
+              error: undefined
+            };
+            await db.lightningPaymentAttempts.put(updated);
+          }
+        } catch {
+          // Continue scanning for a matching, validated support receipt.
+        }
+      }
+    }
+    await reload();
+    if (!cached && attempt) throw new Error(t('support.receiptNotFound'));
+    return cached;
+  };
+
   const saveNwcConnection = async ({ uri, passphrase, label }: SaveNwcConnectionRequest): Promise<NwcConnection> => {
     const parsed = parseNwcUri(uri);
     const at = nowIso();
@@ -1591,6 +1772,7 @@ export function App(): ReactNode {
             listings={listings}
             syncedListings={syncedListings}
             syncedProfiles={syncedProfiles}
+            operatorSupportReceipts={operatorSupportReceipts}
             communityLists={communityLists}
             syncedCommunityLists={syncedCommunityLists}
             blossomServers={blossomServers}
@@ -1660,6 +1842,7 @@ export function App(): ReactNode {
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
             lightningPaymentAttempts={lightningPaymentAttempts}
+            operatorSupportReceipts={operatorSupportReceipts}
             nwcConnections={nwcConnections}
             unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             relays={relays}
@@ -1696,9 +1879,15 @@ export function App(): ReactNode {
             onSendNostrIntro={sendNostrContactIntro}
             onCreateLightningPaymentAttempt={createLightningPaymentAttempt}
             onCheckLightningPaymentReceipt={checkLightningPaymentReceipt}
+            onCreateOperatorSupportPaymentAttempt={createOperatorSupportPaymentAttempt}
+            onCheckOperatorSupportReceipt={checkOperatorSupportReceipt}
             onSaveNwcConnection={saveNwcConnection}
             onUnlockNwcConnection={unlockNwcConnection}
             onPayLightningAttemptWithNwc={payLightningAttemptWithNwc}
+            onReviewSeller={(request) => {
+              setReputationDraftRequest(request);
+              go('reputation');
+            }}
             onStartTrade={(listingRef) => {
               setTradeListingRef(listingRef);
               go('trade');
@@ -1716,6 +1905,11 @@ export function App(): ReactNode {
             privateKeyHex={privateKeyHex}
             identityBackedUp={identityBackedUp}
             mediators={mediators}
+            operatorSupportConfig={operatorSupport}
+            operatorSupportReceipts={operatorSupportReceipts}
+            lightningPaymentAttempts={lightningPaymentAttempts}
+            nwcConnections={nwcConnections}
+            unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             onPrivateKey={setPrivateKeyHex}
             onLock={() => setPrivateKeyHex('')}
             onConnectSigner={connectSigner}
@@ -1770,6 +1964,11 @@ export function App(): ReactNode {
                 publicProfile.publicKey
               )
             }
+            onCreateOperatorSupportPaymentAttempt={createOperatorSupportPaymentAttempt}
+            onCheckOperatorSupportReceipt={checkOperatorSupportReceipt}
+            onSaveNwcConnection={saveNwcConnection}
+            onUnlockNwcConnection={unlockNwcConnection}
+            onPayLightningAttemptWithNwc={payLightningAttemptWithNwc}
           />
         ) : null}
         {page === 'mediators' ? (
@@ -1779,6 +1978,7 @@ export function App(): ReactNode {
             mediators={mediators}
             syncedProfiles={syncedProfiles}
             syncedMediators={syncedMediators}
+            operatorSupportReceipts={operatorSupportReceipts}
             syncSettings={syncSettings}
             relays={relays}
             nostrSigner={nostrSigner}
@@ -1840,8 +2040,11 @@ export function App(): ReactNode {
             agreementReceipts={agreementReceipts}
             attestations={attestations}
             syncedAttestations={syncedAttestations}
+            operatorSupportReceipts={operatorSupportReceipts}
             allowlist={allowlist}
             syncSettings={syncSettings}
+            draftRequest={reputationDraftRequest}
+            onDraftRequestConsumed={() => setReputationDraftRequest(undefined)}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onSaved={() => {
               showNotice(t('notice.reputationSaved'));
@@ -1894,6 +2097,7 @@ export function App(): ReactNode {
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
             lightningPaymentAttempts={lightningPaymentAttempts}
+            operatorSupportReceipts={operatorSupportReceipts}
             nwcConnections={nwcConnections}
             unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             nostrMessages={nostrMessages}
@@ -2081,7 +2285,25 @@ function AvatarCircle({ avatarUrl, label, size = 'regular' }: { avatarUrl?: stri
   );
 }
 
-function SellerSummaryCard({ summary }: { summary: SellerSummary }): ReactNode {
+function SupporterBadge({ receipt, compact = false }: { receipt?: OperatorSupportReceipt; compact?: boolean }): ReactNode {
+  const { t } = useI18n();
+  if (!receipt) return null;
+  return (
+    <span className={compact ? 'supporter-badge compact' : 'supporter-badge'} title={t('support.badgeTitle').replace('{amount}', String(Math.floor(receipt.amountMsats / 1000)))}>
+      <BadgeCheck size={14} aria-hidden="true" /> {compact ? t('support.badgeShort') : t('support.badge')}
+    </span>
+  );
+}
+
+function SellerSummaryCard({
+  summary,
+  supportReceipt,
+  onReview
+}: {
+  summary: SellerSummary;
+  supportReceipt?: OperatorSupportReceipt;
+  onReview?: () => void;
+}): ReactNode {
   const { t } = useI18n();
   return (
     <article className="inline-card seller-summary">
@@ -2091,6 +2313,7 @@ function SellerSummaryCard({ summary }: { summary: SellerSummary }): ReactNode {
           <strong>{summary.displayName}</strong>
           <span className="pill">{summary.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
           {summary.mediatorAvailable ? <span className="pill">{t('profile.mediatorAvailable')}</span> : null}
+          <SupporterBadge receipt={supportReceipt} />
         </div>
         <p className="key">{summary.shortKey}</p>
         {summary.region || summary.languages.length > 0 ? (
@@ -2116,6 +2339,11 @@ function SellerSummaryCard({ summary }: { summary: SellerSummary }): ReactNode {
           {summary.trustedReviewCount > 0 ? ` · ${summary.trustedReviewCount} ${t('reputation.trustedReviews')}` : ''}
         </p>
         <p className="muted">{t('seller.notVerified')}</p>
+        {onReview ? (
+          <button className="subtle" onClick={onReview} type="button">
+            <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
+          </button>
+        ) : null}
       </div>
     </article>
   );
@@ -2580,6 +2808,229 @@ function LightningPaymentPanel({
   );
 }
 
+function OperatorSupportPanel({
+  config,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  attempts,
+  receipts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
+  onConnectSigner,
+  onCreatePaymentAttempt,
+  onCheckReceipt,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onPayWithNwc
+}: {
+  config: OperatorSupportConfig;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  attempts: LightningPaymentAttempt[];
+  receipts: OperatorSupportReceipt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
+  onConnectSigner: () => void;
+  onCreatePaymentAttempt: (request: OperatorSupportPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckReceipt: (attempt?: LightningPaymentAttempt) => Promise<OperatorSupportReceipt | undefined>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onPayWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [amountSats, setAmountSats] = useState(config.minimumSats);
+  const [publicNote, setPublicNote] = useState('');
+  const [walletUri, setWalletUri] = useState('');
+  const [walletPassphrase, setWalletPassphrase] = useState('');
+  const [showWalletConnect, setShowWalletConnect] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState('');
+  const [activeAttempt, setActiveAttempt] = useState<LightningPaymentAttempt | undefined>();
+  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+  const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+  const canUseSigner = Boolean(identity && nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase());
+  const supportReceipt = supportReceiptForPublicKey(identity?.publicKey, receipts);
+  const supportAttempts = attempts.filter((attempt) => attempt.purpose === 'operator-support' && publicKeysMatch(attempt.badgeSubjectPublicKey, identity?.publicKey));
+  const visibleAttempt = activeAttempt ?? supportAttempts[0];
+  const walletConnection = nwcConnections[0];
+  const walletUnlocked = Boolean(walletConnection && unlockedNwcConnectionIds.includes(walletConnection.id));
+  const canGenerate = Boolean(identity && enabledRelayCount > 0 && Number(amountSats) >= config.minimumSats && (canUseLocal || canUseSigner));
+  const canPayWithWallet = Boolean(canGenerate && walletConnection && walletUnlocked);
+  const duplicatePaymentSent = Boolean(visibleAttempt?.nwcRequestEventId && visibleAttempt.status !== 'failed');
+
+  const generate = async (): Promise<LightningPaymentAttempt> => {
+    setError('');
+    setWorking(true);
+    try {
+      const attempt = await onCreatePaymentAttempt({ amountSats: Math.floor(Number(amountSats)), publicNote });
+      setActiveAttempt(attempt);
+      return attempt;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('payment.invoiceFailed'));
+      throw err;
+    } finally {
+      setWorking(false);
+    }
+  };
+  const connectWallet = async (): Promise<void> => {
+    setError('');
+    setWorking(true);
+    try {
+      await onSaveNwcConnection({ uri: walletUri, passphrase: walletPassphrase });
+      setWalletUri('');
+      setShowWalletConnect(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.invalidUri'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const unlockWallet = async (): Promise<void> => {
+    if (!walletConnection) return;
+    setError('');
+    setWorking(true);
+    try {
+      await onUnlockNwcConnection(walletConnection, walletPassphrase);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.unlockFailed'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const pay = async (): Promise<void> => {
+    setError('');
+    if (!walletConnection) {
+      setShowWalletConnect(true);
+      return;
+    }
+    if (!walletUnlocked) {
+      setError(t('nwc.unlockRequired'));
+      return;
+    }
+    if (duplicatePaymentSent) {
+      setError(t('nwc.duplicateWarning'));
+      return;
+    }
+    setWorking(true);
+    try {
+      const attempt =
+        visibleAttempt && (visibleAttempt.status === 'invoice-created' || visibleAttempt.status === 'failed') ? visibleAttempt : await generate();
+      setActiveAttempt(await onPayWithNwc(attempt, walletConnection.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.paymentFailed'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const check = async (attempt?: LightningPaymentAttempt): Promise<void> => {
+    setError('');
+    setWorking(true);
+    try {
+      await onCheckReceipt(attempt);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('support.receiptNotFound'));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  if (!config.enabled) return null;
+  return (
+    <section className="operator-support-panel">
+      <div className="row between">
+        <div>
+          <strong>{t('support.title')}</strong>
+          <p className="muted">{t('support.body').replace('{amount}', String(config.minimumSats)).replace('{operator}', config.label)}</p>
+        </div>
+        <SupporterBadge receipt={supportReceipt} />
+      </div>
+      <label>
+        {t('payment.amountSats')}
+        <input inputMode="numeric" min={config.minimumSats} type="number" value={amountSats} onChange={(event) => setAmountSats(Number(event.target.value))} />
+      </label>
+      <label>
+        {t('payment.publicNote')}
+        <input maxLength={240} placeholder={t('support.publicNotePlaceholder')} value={publicNote} onChange={(event) => setPublicNote(event.target.value)} />
+      </label>
+      {!identity ? <p className="warning compact-warning">{t('payment.identityRequired')}</p> : null}
+      {identity && enabledRelayCount === 0 ? <p className="warning compact-warning">{t('nostrContact.relaysRequired')}</p> : null}
+      {identity && !canUseLocal && !canUseSigner ? <p className="warning compact-warning">{t('payment.signerRequired')}</p> : null}
+      {walletConnection && !walletUnlocked ? <p className="warning compact-warning">{t('nwc.unlockRequired')}</p> : null}
+      {error ? <p className="warning" role="alert">{error}</p> : null}
+      {showWalletConnect || !walletConnection ? (
+        <DisclosurePanel title={t('nwc.title')}>
+          <label>
+            {t('nwc.uri')}
+            <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
+          </label>
+          <label>
+            {t('nwc.passphrase')}
+            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+          </label>
+          <p className="muted">{t('nwc.notBackedUp')}</p>
+          <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
+            {t('nwc.connect')}
+          </button>
+        </DisclosurePanel>
+      ) : !walletUnlocked ? (
+        <DisclosurePanel title={walletConnection.label}>
+          <label>
+            {t('nwc.passphrase')}
+            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+          </label>
+          <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
+            {t('nwc.unlock')}
+          </button>
+        </DisclosurePanel>
+      ) : null}
+      <div className="actions small">
+        {identity && !canUseLocal && !canUseSigner ? (
+          <button className="subtle" onClick={onConnectSigner} type="button">
+            <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+          </button>
+        ) : null}
+        <button disabled={!canPayWithWallet || working || duplicatePaymentSent} onClick={() => void pay()} type="button">
+          {working ? t('payment.working') : t('support.pay')}
+        </button>
+        <button className="subtle" disabled={working || !identity} onClick={() => void check()} type="button">
+          {t('support.checkReceipts')}
+        </button>
+      </div>
+      <DisclosurePanel title={t('payment.details')}>
+        <SafetyNotice>{t('support.metadataWarning')}</SafetyNotice>
+        <p className="key">{config.lnurl}</p>
+        {visibleAttempt ? (
+          <div className="actions small">
+            <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
+              {t('payment.copyInvoice')}
+            </button>
+            <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
+              {t('payment.openInvoice')}
+            </button>
+            <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
+              {t('payment.checkReceipt')}
+            </button>
+          </div>
+        ) : (
+          <button disabled={!canGenerate || working} onClick={() => void generate()} type="button">
+            {working ? t('payment.working') : t('payment.generateInvoice')}
+          </button>
+        )}
+        {visibleAttempt ? (
+          <p className="muted">
+            {visibleAttempt.createdAt} · {visibleAttempt.amountSats} sats · {t(`payment.status.${visibleAttempt.status}`)}
+          </p>
+        ) : null}
+        {supportReceipt ? <p className="key">{supportReceipt.receiptEventId}</p> : null}
+      </DisclosurePanel>
+    </section>
+  );
+}
+
 function NwcWalletPanel({
   connections,
   unlockedConnectionIds,
@@ -2693,6 +3144,7 @@ function NostrContactPanel({
   nostrSigner,
   privateKeyHex,
   receipts,
+  defaultOpen = false,
   onConnectSigner,
   onSend
 }: {
@@ -2702,12 +3154,13 @@ function NostrContactPanel({
   nostrSigner: NostrSignerState;
   privateKeyHex: string;
   receipts: NostrContactReceipt[];
+  defaultOpen?: boolean;
   onConnectSigner: () => void;
   onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
 }): ReactNode {
   const { t } = useI18n();
   const normalized = normalizeNostrContact(target.recipientPublicKey);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [message, setMessage] = useState('');
   const [includeContext, setIncludeContext] = useState(Boolean(target.contextTitle));
   const [error, setError] = useState('');
@@ -2866,6 +3319,7 @@ function ListingPage({
   publishReceipts,
   nostrContactReceipts,
   lightningPaymentAttempts,
+  operatorSupportReceipts,
   nwcConnections,
   unlockedNwcConnectionIds,
   relays,
@@ -2881,9 +3335,12 @@ function ListingPage({
   onSendNostrIntro,
   onCreateLightningPaymentAttempt,
   onCheckLightningPaymentReceipt,
+  onCreateOperatorSupportPaymentAttempt,
+  onCheckOperatorSupportReceipt,
   onSaveNwcConnection,
   onUnlockNwcConnection,
   onPayLightningAttemptWithNwc,
+  onReviewSeller,
   onStartTrade,
   onToggleHidden
 }: {
@@ -2902,6 +3359,7 @@ function ListingPage({
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   nwcConnections: NwcConnection[];
   unlockedNwcConnectionIds: string[];
   relays: RelayConfig[];
@@ -2917,9 +3375,12 @@ function ListingPage({
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
   onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
+  onCreateOperatorSupportPaymentAttempt: (request: OperatorSupportPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckOperatorSupportReceipt: (attempt?: LightningPaymentAttempt) => Promise<OperatorSupportReceipt | undefined>;
   onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
   onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
   onPayLightningAttemptWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
+  onReviewSeller: (request: ReputationDraftRequest) => void;
   onStartTrade: (listingRef: ListingSourceRef) => void;
   onToggleHidden: (record: SyncedPublicRecord<Listing>, hidden: boolean) => void;
 }): ReactNode {
@@ -2946,6 +3407,7 @@ function ListingPage({
       ? { source: 'local', id: listing.id, listing }
       : { source: 'synced', id: listing.id, recordId: syncedRecord?.id, listing };
   const sellerSummary = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, attestations, syncedAttestations, allowlist);
+  const sellerSupportReceipt = supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts);
   const sellerProfile =
     profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
       ? profile
@@ -2956,6 +3418,7 @@ function ListingPage({
   const canEdit =
     Boolean(localListing) &&
     (publicKeysMatch(identity?.publicKey, listing.authorPublicKey) || publicKeysMatch(nostrSigner.publicKey, listing.authorPublicKey));
+  const canReviewSeller = Boolean(identity && !publicKeysMatch(identity.publicKey, listing.authorPublicKey));
   const curatedBy = [...communityLists, ...syncedCommunityLists.map((record) => record.payload)]
     .filter((list) => list.referencedCoordinates.includes(nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)))
     .map((list) => list.title);
@@ -3014,7 +3477,22 @@ function ListingPage({
           </section>
           <section className="listing-section">
             <h2>{t('listing.sectionSeller')}</h2>
-            <SellerSummaryCard summary={sellerSummary} />
+            <SellerSummaryCard
+              summary={sellerSummary}
+              supportReceipt={sellerSupportReceipt}
+              onReview={
+                canReviewSeller
+                  ? () =>
+                      onReviewSeller({
+                        subjectPublicKey: listing.authorPublicKey,
+                        role: 'seller',
+                        listingId: listing.id,
+                        listingTitle: listing.title,
+                        listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
+                      })
+                  : undefined
+              }
+            />
           </section>
           <section className="listing-section">
             <h2>{t('listing.sectionDetails')}</h2>
@@ -3057,6 +3535,25 @@ function ListingPage({
             onUnlockNwcConnection={onUnlockNwcConnection}
             onPayWithNwc={onPayLightningAttemptWithNwc}
           />
+          {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
+            <OperatorSupportPanel
+              config={operatorSupport}
+              identity={identity}
+              privateKeyHex={privateKeyHex}
+              nostrSigner={nostrSigner}
+              relays={relays}
+              attempts={lightningPaymentAttempts}
+              receipts={operatorSupportReceipts}
+              nwcConnections={nwcConnections}
+              unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+              onConnectSigner={onConnectSigner}
+              onCreatePaymentAttempt={onCreateOperatorSupportPaymentAttempt}
+              onCheckReceipt={onCheckOperatorSupportReceipt}
+              onSaveNwcConnection={onSaveNwcConnection}
+              onUnlockNwcConnection={onUnlockNwcConnection}
+              onPayWithNwc={onPayLightningAttemptWithNwc}
+            />
+          ) : null}
           {nostrContact ? (
             <NostrContactPanel
               target={{
@@ -3078,6 +3575,23 @@ function ListingPage({
           <button onClick={() => onStartTrade(listingRef)} type="button">
             <Handshake size={16} /> {t('marketplace.startTrade')}
           </button>
+          {canReviewSeller ? (
+            <button
+              className="subtle"
+              onClick={() =>
+                onReviewSeller({
+                  subjectPublicKey: listing.authorPublicKey,
+                  role: 'seller',
+                  listingId: listing.id,
+                  listingTitle: listing.title,
+                  listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
+                })
+              }
+              type="button"
+            >
+              <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
+            </button>
+          ) : null}
           {canEdit ? (
             <button className="subtle" onClick={() => setEditing(true)} type="button">
               <Pencil size={16} /> {t('listing.edit')}
@@ -3117,6 +3631,7 @@ function BrowsePage({
   listings,
   syncedListings,
   syncedProfiles,
+  operatorSupportReceipts,
   communityLists,
   syncedCommunityLists,
   blossomServers,
@@ -3140,6 +3655,7 @@ function BrowsePage({
   listings: Listing[];
   syncedListings: SyncedPublicRecord<Listing>[];
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   communityLists: CommunityCurationList[];
   syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   blossomServers: BlossomServerConfig[];
@@ -3169,6 +3685,7 @@ function BrowsePage({
   const [sort, setSort] = useState<'newest' | 'expiring'>('newest');
   const [source, setSource] = useState<DataSourceFilter>(syncSettings.defaultBrowseSource);
   const [trust, setTrust] = useState<TrustFilter>('all');
+  const [support, setSupport] = useState<SupportFilter>('all');
   const [hidden, setHidden] = useState<HiddenFilter>('visible');
   const [curationFilter, setCurationFilter] = useState('all');
   const [showExpired, setShowExpired] = useState(false);
@@ -3211,7 +3728,7 @@ function BrowsePage({
 
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
-  }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, syncSettings.listingDiscoveryScope, trust, type]);
+  }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type]);
 
   const filtered = useMemo(() => {
     const normalized = query.toLowerCase();
@@ -3235,12 +3752,13 @@ function BrowsePage({
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
+      .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
     return sort === 'expiring' ? ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt)) : ranked;
-  }, [category, curationCoordinateMap, fulfillment, hidden, listings, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, trust, type]);
+  }, [category, curationCoordinateMap, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -3262,13 +3780,16 @@ function BrowsePage({
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
+      .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     return dedupeMarketplaceListings(filteredRows).duplicates.length;
-  }, [category, fulfillment, hidden, listings, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, trust, type]);
+  }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type]);
   const visibleFiltered = filtered.slice(0, visibleLimit);
   const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => ({
-    label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}`,
+    label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}${
+      supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts) ? ` · ${t('support.badge')}` : ''
+    }`,
     coordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
   }));
   const advancedFilterLabels = [
@@ -3279,6 +3800,7 @@ function BrowsePage({
     sort !== 'newest' ? `${t('common.sort')}: ${t('common.expiring')}` : undefined,
     source !== syncSettings.defaultBrowseSource ? `${t('sync.source')}: ${source}` : undefined,
     trust !== 'all' ? `${t('sync.trust')}: ${trust}` : undefined,
+    support !== 'all' ? `${t('support.filter')}: ${supportFilterLabel(support, t)}` : undefined,
     hidden !== 'visible' ? `${t('sync.hiddenFilter')}: ${hidden}` : undefined,
     curationFilter !== 'all' ? `${t('curation.filter')}: ${visibleCommunityLists.find((record) => record.id === curationFilter)?.payload.title ?? curationFilter}` : undefined,
     showExpired ? t('marketplace.showExpired') : undefined
@@ -3291,6 +3813,7 @@ function BrowsePage({
     setSort('newest');
     setSource(syncSettings.defaultBrowseSource);
     setTrust('all');
+    setSupport('all');
     setHidden('visible');
     setCurationFilter('all');
     setShowExpired(false);
@@ -3424,6 +3947,7 @@ function BrowsePage({
       : listing.visibility;
     const visibleTags = listing.tags.slice(0, 3);
     const seller = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, [], [], []);
+    const supportReceipt = supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts);
     return (
       <article className="card listing-card" key={listingKey}>
         {renderListingThumb(listing)}
@@ -3453,6 +3977,7 @@ function BrowsePage({
           <div className="listing-card-seller">
             <AvatarCircle avatarUrl={seller.avatarUrl} label={seller.displayName} size="small" />
             <span className="muted">{seller.displayName}</span>
+            <SupporterBadge receipt={supportReceipt} compact />
           </div>
           <button onClick={() => onNavigateListing(listingRef)} type="button">
             {t('listing.viewItem')}
@@ -3632,6 +4157,11 @@ function BrowsePage({
                     <option value="all">{t('common.all')}</option>
                     <option value="trusted">{t('sync.trusted')}</option>
                     <option value="untrusted">{t('sync.untrusted')}</option>
+                  </select>
+                  <select aria-label={t('support.filter')} value={support} onChange={(event) => setSupport(event.target.value as SupportFilter)}>
+                    <option value="all">{t('support.all')}</option>
+                    <option value="supporters">{t('support.supporters')}</option>
+                    <option value="non-supporters">{t('support.nonSupporters')}</option>
                   </select>
                   <select aria-label={t('sync.hiddenFilter')} value={hidden} onChange={(event) => setHidden(event.target.value as HiddenFilter)}>
                     <option value="visible">{t('sync.visibleOnly')}</option>
@@ -4396,6 +4926,11 @@ function ProfilePage({
   privateKeyHex,
   identityBackedUp,
   mediators,
+  operatorSupportConfig,
+  operatorSupportReceipts,
+  lightningPaymentAttempts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
   onPrivateKey,
   onLock,
   onConnectSigner,
@@ -4404,7 +4939,12 @@ function ProfilePage({
   onBackupConfirmed,
   onIdentitySaved,
   onSaved,
-  onPublish
+  onPublish,
+  onCreateOperatorSupportPaymentAttempt,
+  onCheckOperatorSupportReceipt,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onPayLightningAttemptWithNwc
 }: {
   identity?: IdentityRecord;
   profile?: PublicProfile;
@@ -4414,6 +4954,11 @@ function ProfilePage({
   privateKeyHex: string;
   identityBackedUp: boolean;
   mediators: MediatorProfile[];
+  operatorSupportConfig: OperatorSupportConfig;
+  operatorSupportReceipts: OperatorSupportReceipt[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
   onPrivateKey: (privateKey: string) => void;
   onLock: () => void;
   onConnectSigner: () => Promise<NostrSignerState>;
@@ -4423,6 +4968,11 @@ function ProfilePage({
   onIdentitySaved: (message?: string) => void;
   onSaved: (result: ProfileSaveResult) => void;
   onPublish: (profile: PublicProfile) => void;
+  onCreateOperatorSupportPaymentAttempt: (request: OperatorSupportPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckOperatorSupportReceipt: (attempt?: LightningPaymentAttempt) => Promise<OperatorSupportReceipt | undefined>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onPayLightningAttemptWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
 }): ReactNode {
   const { t } = useI18n();
   const localMediator = identity
@@ -4460,6 +5010,7 @@ function ProfilePage({
   const extensionIdentity = identity?.keySource === 'nostr-extension';
   const signerStatus = signerIdentityStatus(identity, nostrSigner);
   const enabledBlossomServer = blossomServers.find((server) => server.enabled);
+  const activeSupportReceipt = supportReceiptForPublicKey(identity?.publicKey ?? profile?.publicKey, operatorSupportReceipts);
 
   useEffect(() => {
     setName(identity?.displayName ?? '');
@@ -4752,7 +5303,10 @@ function ProfilePage({
               <>
                 <article className="identity-summary">
                   <div>
-                    <strong>{identity.displayName}</strong>
+                    <div className="row">
+                      <strong>{identity.displayName}</strong>
+                      <SupporterBadge receipt={activeSupportReceipt} />
+                    </div>
                     <p className="muted">
                       {extensionIdentity ? t('identity.sourceExtension') : t('identity.sourceLocal')} · {identityStatusText}
                     </p>
@@ -4880,10 +5434,30 @@ function ProfilePage({
             <div className="profile-avatar-editor">
               <AvatarCircle avatarUrl={avatarPreview || form.avatarUrl} label={name || identity?.displayName || t('profile.title')} />
               <div>
-                <strong>{t('profile.avatarPreview')}</strong>
+                <div className="row">
+                  <strong>{t('profile.avatarPreview')}</strong>
+                  <SupporterBadge receipt={activeSupportReceipt} />
+                </div>
                 <p className="muted">{t('profile.avatarHelp')}</p>
               </div>
             </div>
+            <OperatorSupportPanel
+              config={operatorSupportConfig}
+              identity={identity}
+              privateKeyHex={privateKeyHex}
+              nostrSigner={nostrSigner}
+              relays={relays}
+              attempts={lightningPaymentAttempts}
+              receipts={operatorSupportReceipts}
+              nwcConnections={nwcConnections}
+              unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+              onConnectSigner={() => void onConnectSigner()}
+              onCreatePaymentAttempt={onCreateOperatorSupportPaymentAttempt}
+              onCheckReceipt={onCheckOperatorSupportReceipt}
+              onSaveNwcConnection={onSaveNwcConnection}
+              onUnlockNwcConnection={onUnlockNwcConnection}
+              onPayWithNwc={onPayLightningAttemptWithNwc}
+            />
             <label>
               {t('profile.bio')}
               <textarea placeholder={t('placeholder.profileBio')} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} />
@@ -5080,6 +5654,7 @@ function MediatorPage({
   mediators,
   syncedProfiles,
   syncedMediators,
+  operatorSupportReceipts,
   syncSettings,
   relays,
   nostrSigner,
@@ -5096,6 +5671,7 @@ function MediatorPage({
   mediators: MediatorProfile[];
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
   syncedMediators: SyncedPublicRecord<MediatorProfile>[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   syncSettings: SyncSettings;
   relays: RelayConfig[];
   nostrSigner: NostrSignerState;
@@ -5291,7 +5867,10 @@ function MediatorPage({
               ) : null}
               <div className="profile-card-heading">
                 <AvatarCircle avatarUrl={profileForPublicKey(mediator.publicKey)?.avatarUrl} label={mediator.displayName} />
-                <h2>{mediator.displayName}</h2>
+                <div>
+                  <h2>{mediator.displayName}</h2>
+                  <SupporterBadge receipt={supportReceiptForPublicKey(mediator.publicKey, operatorSupportReceipts)} />
+                </div>
               </div>
               <p>{mediator.mediationStyle}</p>
               <p className="muted">{mediator.region} · {mediator.languages.join(', ')}</p>
@@ -5316,7 +5895,10 @@ function MediatorPage({
               <span className="pill">{record.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
               <div className="profile-card-heading">
                 <AvatarCircle avatarUrl={record.payload.avatarUrl} label={record.payload.displayName} />
-                <h2>{record.payload.displayName}</h2>
+                <div>
+                  <h2>{record.payload.displayName}</h2>
+                  <SupporterBadge receipt={supportReceiptForPublicKey(record.payload.publicKey, operatorSupportReceipts)} />
+                </div>
               </div>
               <p className="muted">{record.payload.region || t('common.region')} · {record.payload.languages.join(', ')}</p>
               <p>{t('profile.mediatorSignalIncomplete')}</p>
@@ -5454,27 +6036,12 @@ function NostrInboxPanel({
   };
 
   return (
-    <DisclosurePanel key={defaultOpen ? 'inbox-open' : 'inbox-closed'} title={t('nostrInbox.title')} defaultOpen={defaultOpen}>
-      <div className="nostr-inbox">
-        <div className="listing-form-row two-up">
-          <label>
-            {t('nostrInbox.passphrase')}
-            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
-          </label>
-          <div className="actions small align-end">
-            {identity && !canUseLocal && !canUseSigner ? (
-              <button className="subtle" onClick={onConnectSigner} type="button">
-                <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
-              </button>
-            ) : null}
-            <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
-              {t('nostrInbox.unlock')}
-            </button>
-            <button disabled={!identity || enabledRelayCount === 0 || fetching || passphrase.length < 10 || (!canUseLocal && !canUseSigner)} onClick={() => void fetch()} type="button">
-              {fetching ? t('nostrInbox.fetching') : t('nostrInbox.fetch')}
-            </button>
-          </div>
-        </div>
+    <section className="nostr-inbox dm-inbox" key={defaultOpen ? 'inbox-open' : 'inbox-closed'}>
+      <div className="dm-toolbar">
+        <label className="dm-passphrase">
+          {t('nostrInbox.passphrase')}
+          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
+        </label>
         <div className="segmented-control compact" aria-label={t('nostrInbox.boxFilter')}>
           {(['all', 'inbox', 'outbox'] as const).map((filter) => (
             <button className={boxFilter === filter ? 'active' : ''} key={filter} onClick={() => setBoxFilter(filter)} type="button">
@@ -5482,86 +6049,74 @@ function NostrInboxPanel({
             </button>
           ))}
         </div>
-        {fetchBlocker ? <p className="warning compact-warning">{fetchBlocker}</p> : null}
-        {error ? <p className="warning" role="alert">{error}</p> : null}
-        <DisclosurePanel title={t('nostrInbox.privacySyncDetails')}>
-          <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
-          <div className="compact-meta-list">
-            <p>{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
-            <p>{canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}</p>
-            <p>
-              {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
-            </p>
-          </div>
-          {!canUseLocal && !canUseSigner ? <p className="muted">{t('nostrInbox.decryptFallback')}</p> : null}
-          {summary ? (
-            <p className="muted">
-              {t('nostrInbox.fetchSummary')
-                .replace('{fetched}', String(summary.fetched))
-                .replace('{imported}', String(summary.imported))
-                .replace('{duplicates}', String(summary.duplicates))
-                .replace('{failed}', String(summary.failed))
-                .replace('{relays}', String(summary.relays))}
-            </p>
+        <div className="actions small">
+          {identity && !canUseLocal && !canUseSigner ? (
+            <button className="subtle" onClick={onConnectSigner} type="button">
+              <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+            </button>
           ) : null}
-        </DisclosurePanel>
-        <div className="split compact-split">
-          <div className="card-grid single">
-            {visibleThreads.map((thread) => {
-              const directions = threadDirections.get(thread.threadKey) ?? { incoming: 0, outgoing: 0 };
-              return (
-                <button className={thread.threadKey === activeThread?.threadKey ? 'thread-row active' : 'thread-row'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
-                  <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
-                  <span className="muted">{shortPublicKey(thread.counterpartPublicKey)} · {thread.lastMessageAt}</span>
-                  <span className="muted compact-meta">
-                    {directions.incoming > 0 ? t('nostrInbox.incomingCount').replace('{count}', String(directions.incoming)) : null}
-                    {directions.incoming > 0 && directions.outgoing > 0 ? ' · ' : null}
-                    {directions.outgoing > 0 ? t('nostrInbox.outgoingCount').replace('{count}', String(directions.outgoing)) : null}
-                    {thread.unreadCount > 0 ? ` · ${t('nostrInbox.unreadCount').replace('{count}', String(thread.unreadCount))}` : null}
-                  </span>
-                </button>
-              );
-            })}
-            {visibleThreads.length === 0 ? <EmptyState title={t('nostrInbox.emptyTitle')} body={t('nostrInbox.emptyBody')} /> : null}
-          </div>
-          <div className="panel">
-            {activeThread ? (
-              <>
-                <div className="row between">
-                  <div>
-                    <h3>{activeThread.subject || shortPublicKey(activeThread.counterpartPublicKey)}</h3>
-                    <p className="key">{activeThread.counterpartPublicKey}</p>
-                  </div>
-                  <div className="actions small">
-                    <button className="subtle" onClick={() => onThreadChange(activeThread, { read: true })} type="button">
-                      {t('nostrInbox.markRead')}
-                    </button>
-                    <button className="subtle" onClick={() => onThreadChange(activeThread, { archived: true })} type="button">
-                      {t('nostrInbox.archive')}
-                    </button>
-                  </div>
+          <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
+            {t('nostrInbox.unlock')}
+          </button>
+          <button disabled={!identity || enabledRelayCount === 0 || fetching || passphrase.length < 10 || (!canUseLocal && !canUseSigner)} onClick={() => void fetch()} type="button">
+            {fetching ? t('nostrInbox.fetching') : t('nostrInbox.fetch')}
+          </button>
+        </div>
+      </div>
+      {fetchBlocker ? <p className="warning compact-warning">{fetchBlocker}</p> : null}
+      {error ? <p className="warning" role="alert">{error}</p> : null}
+      <div className="dm-layout">
+        <aside className="dm-thread-list" aria-label={t('nostrInbox.title')}>
+          {visibleThreads.map((thread) => {
+            const directions = threadDirections.get(thread.threadKey) ?? { incoming: 0, outgoing: 0 };
+            return (
+              <button className={thread.threadKey === activeThread?.threadKey ? 'thread-row active' : 'thread-row'} key={thread.id} onClick={() => setActiveThreadKey(thread.threadKey)} type="button">
+                <strong>{thread.subject || shortPublicKey(thread.counterpartPublicKey)}</strong>
+                <span className="muted">{shortPublicKey(thread.counterpartPublicKey)}</span>
+                <span className="muted compact-meta">
+                  {thread.lastMessageAt}
+                  {thread.unreadCount > 0 ? ` · ${t('nostrInbox.unreadCount').replace('{count}', String(thread.unreadCount))}` : ''}
+                  {directions.incoming > 0 && directions.outgoing > 0 ? ` · ${t('nostrInbox.all')}` : directions.incoming > 0 ? ` · ${t('nostrInbox.inbox')}` : directions.outgoing > 0 ? ` · ${t('nostrInbox.outbox')}` : ''}
+                </span>
+              </button>
+            );
+          })}
+          {visibleThreads.length === 0 ? <EmptyState title={t('nostrInbox.emptyTitle')} body={t('nostrInbox.emptyBody')} /> : null}
+        </aside>
+        <section className="dm-conversation">
+          {activeThread ? (
+            <>
+              <header className="dm-conversation-header">
+                <div>
+                  <h3>{activeThread.subject || shortPublicKey(activeThread.counterpartPublicKey)}</h3>
+                  <p className="key">{activeThread.counterpartPublicKey}</p>
                 </div>
-                {!unlocked ? <ActionHint>{t('nostrInbox.unlockToRead')}</ActionHint> : null}
-                {unlocked ? (
-                  <div className="message-list">
-                    {activeMessages.map((message) => (
-                      <article className={`inline-card message ${message.direction}`} key={message.id}>
-                        <div className="row between">
-                          <strong>{message.direction === 'incoming' ? t('nostrInbox.incoming') : t('nostrInbox.outgoing')}</strong>
-                          <span className="muted">{message.messageCreatedAt}</span>
-                        </div>
-                        <p className="muted">
-                          {message.direction === 'incoming'
-                            ? t('nostrInbox.from').replace('{key}', shortPublicKey(message.senderPublicKey))
-                            : t('nostrInbox.to').replace('{key}', shortPublicKey(message.counterpartPublicKey))}
-                        </p>
-                        <p>{message.plaintext}</p>
-                      </article>
-                    ))}
-                    {activeMessages.length === 0 ? <p className="muted">{t('nostrInbox.noDecryptedMessages')}</p> : null}
-                  </div>
-                ) : null}
+                <div className="actions small">
+                  <button className="subtle" onClick={() => onThreadChange(activeThread, { read: true })} type="button">
+                    {t('nostrInbox.markRead')}
+                  </button>
+                  <button className="subtle" onClick={() => onThreadChange(activeThread, { archived: true })} type="button">
+                    {t('nostrInbox.archive')}
+                  </button>
+                </div>
+              </header>
+              {!unlocked ? <ActionHint>{t('nostrInbox.unlockToRead')}</ActionHint> : null}
+              {unlocked ? (
+                <div className="message-list dm-message-list">
+                  {activeMessages.map((message) => (
+                    <article className={`message-bubble ${message.direction}`} key={message.id}>
+                      <p>{message.plaintext}</p>
+                      <span className="muted">
+                        {message.direction === 'incoming' ? t('nostrInbox.incoming') : t('nostrInbox.outgoing')} · {message.messageCreatedAt}
+                      </span>
+                    </article>
+                  ))}
+                  {activeMessages.length === 0 ? <p className="muted">{t('nostrInbox.noDecryptedMessages')}</p> : null}
+                </div>
+              ) : null}
+              <div className="dm-composer">
                 <NostrContactPanel
+                  key={activeThread.threadKey}
                   target={{
                     recipientPublicKey: activeThread.counterpartPublicKey,
                     label: shortPublicKey(activeThread.counterpartPublicKey),
@@ -5574,15 +6129,37 @@ function NostrInboxPanel({
                   nostrSigner={nostrSigner}
                   privateKeyHex={privateKeyHex}
                   receipts={receipts}
+                  defaultOpen
                   onConnectSigner={() => void onConnectSigner()}
                   onSend={onSend}
                 />
-              </>
-            ) : null}
-          </div>
-        </div>
+              </div>
+            </>
+          ) : null}
+        </section>
       </div>
-    </DisclosurePanel>
+      <DisclosurePanel title={t('nostrInbox.privacySyncDetails')} defaultOpen={defaultOpen}>
+        <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
+        <div className="compact-meta-list">
+          <p>{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
+          <p>{canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}</p>
+          <p>
+            {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
+          </p>
+        </div>
+        {!canUseLocal && !canUseSigner ? <p className="muted">{t('nostrInbox.decryptFallback')}</p> : null}
+        {summary ? (
+          <p className="muted">
+            {t('nostrInbox.fetchSummary')
+              .replace('{fetched}', String(summary.fetched))
+              .replace('{imported}', String(summary.imported))
+              .replace('{duplicates}', String(summary.duplicates))
+              .replace('{failed}', String(summary.failed))
+              .replace('{relays}', String(summary.relays))}
+          </p>
+        ) : null}
+      </DisclosurePanel>
+    </section>
   );
 }
 
@@ -6502,8 +7079,11 @@ function ReputationPage({
   agreementReceipts,
   attestations,
   syncedAttestations,
+  operatorSupportReceipts,
   allowlist,
   syncSettings,
+  draftRequest,
+  onDraftRequestConsumed,
   onToggleHidden,
   onSaved,
   onPublish
@@ -6515,21 +7095,25 @@ function ReputationPage({
   agreementReceipts: AgreementAcceptanceReceipt[];
   attestations: ReputationAttestation[];
   syncedAttestations: SyncedPublicRecord<ReputationAttestation>[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings;
+  draftRequest?: ReputationDraftRequest;
+  onDraftRequestConsumed: () => void;
   onToggleHidden: (record: SyncedPublicRecord<ReputationAttestation>, hidden: boolean) => void;
   onSaved: () => void;
   onPublish: (attestation: ReputationAttestation) => void;
 }): ReactNode {
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<ReputationTab>('create');
-  const [filter, setFilter] = useState<ReputationFilterState>({
+  const [filter, setFilter] = useState<ReputationFilterState & { support: SupportFilter }>({
     query: '',
     role: 'all',
     tag: 'all',
     minScore: 'all',
     source: syncSettings.defaultBrowseSource,
     trust: 'all',
+    support: 'all' as SupportFilter,
     hidden: 'visible',
     verification: 'all'
   });
@@ -6549,7 +7133,10 @@ function ReputationPage({
   const conflictGroups = useMemo(() => findSyncedConflictGroups(syncedAttestations), [syncedAttestations]);
   const agreementCandidates = useMemo(() => agreementReputationCandidates(agreements, agreementReceipts), [agreementReceipts, agreements]);
   const rows = useMemo(() => reputationRows(attestations, syncedAttestations, filter.hidden), [attestations, filter.hidden, syncedAttestations]);
-  const visibleAttestations = useMemo(() => filterReputationRows(rows, filter), [filter, rows]);
+  const visibleAttestations = useMemo(
+    () => filterReputationRows(rows, filter).filter((row) => supportFilterMatches(row.attestation.subjectPublicKey, operatorSupportReceipts, filter.support)),
+    [filter, operatorSupportReceipts, rows]
+  );
   const subjectSummaries = useMemo(() => reputationSubjectSummaries(visibleAttestations, allowlist), [allowlist, visibleAttestations]);
   const selectedAgreement = agreementCandidates.find((candidate) => candidate.agreement.id === selectedAgreementId);
   const reviewPrompts = useMemo(
@@ -6578,6 +7165,24 @@ function ReputationPage({
       }),
     [agreementCandidates, identity, t]
   );
+
+  useEffect(() => {
+    if (!draftRequest) return;
+    setForm((current) => ({
+      ...current,
+      subjectPublicKey: draftRequest.subjectPublicKey,
+      agreementHash: '',
+      role: draftRequest.role,
+      score: current.score || 5,
+      listingId: draftRequest.listingId ?? '',
+      listingTitle: draftRequest.listingTitle ?? '',
+      listingCoordinate: draftRequest.listingCoordinate ?? '',
+      tags: draftRequest.role === 'mediator' ? ['fair-mediator'] : ['fulfilled-agreement', 'clear-communication']
+    }));
+    setSelectedAgreementId('');
+    setActiveTab('create');
+    onDraftRequestConsumed();
+  }, [draftRequest, onDraftRequestConsumed]);
 
   const applyAgreementCandidate = (candidate: AgreementReputationCandidate, role: 'buyer' | 'seller' | 'mediator'): void => {
     const subjectPublicKey = role === 'buyer' ? candidate.buyerPublicKey : role === 'seller' ? candidate.sellerPublicKey : candidate.mediatorPublicKey;
@@ -6615,7 +7220,7 @@ function ReputationPage({
     const draft = {
       reviewerPublicKey: identity.publicKey,
       subjectPublicKey: form.subjectPublicKey.toLowerCase(),
-      agreementHash: form.agreementHash,
+      agreementHash: form.agreementHash.trim() || undefined,
       role: form.role,
       score: form.score,
       listingId: form.listingId.trim() || undefined,
@@ -6681,36 +7286,6 @@ function ReputationPage({
                 </div>
               </section>
             ) : null}
-            {agreementCandidates.length > 0 ? (
-              <fieldset className="fieldset-list">
-                <legend>{t('reputation.fromAgreement')}</legend>
-                <label>
-                  {t('trade.selectAgreement')}
-                  <select value={selectedAgreementId} onChange={(event) => setSelectedAgreementId(event.target.value)}>
-                    <option value="">{t('common.none')}</option>
-                    {agreementCandidates.map((candidate) => (
-                      <option value={candidate.agreement.id} key={candidate.agreement.id}>
-                        {candidate.agreement.exchangeDescription} · {t(`agreement.status.${candidate.receiptStatus}`)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {selectedAgreement ? (
-                  <div className="actions small">
-                    <span className="pill">{t(`agreement.status.${selectedAgreement.receiptStatus}`)}</span>
-                    <button disabled={!selectedAgreement.buyerPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'buyer')} type="button">
-                      {t('reputation.useBuyer')}
-                    </button>
-                    <button disabled={!selectedAgreement.sellerPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'seller')} type="button">
-                      {t('reputation.useSeller')}
-                    </button>
-                    <button disabled={!selectedAgreement.mediatorPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'mediator')} type="button">
-                      {t('reputation.useMediator')}
-                    </button>
-                  </div>
-                ) : null}
-              </fieldset>
-            ) : null}
             <div className="two">
               <label>
                 {t('reputation.subject')}
@@ -6722,15 +7297,6 @@ function ReputationPage({
                   onChange={(event) => setForm({ ...form, subjectPublicKey: event.target.value })}
                 />
                 <FieldHint>{t('hint.reputationSubject')}</FieldHint>
-              </label>
-              <label>
-                {t('agreement.hash')}
-                <input
-                  required
-                  placeholder={t('placeholder.agreementHash')}
-                  value={form.agreementHash}
-                  onChange={(event) => setForm({ ...form, agreementHash: event.target.value })}
-                />
               </label>
             </div>
             <div className="two">
@@ -6771,6 +7337,46 @@ function ReputationPage({
                 />
               </label>
             </div>
+            <DisclosurePanel title={t('reputation.optionalAgreementContext')}>
+              {agreementCandidates.length > 0 ? (
+                <fieldset className="fieldset-list">
+                  <legend>{t('reputation.fromAgreement')}</legend>
+                  <label>
+                    {t('trade.selectAgreement')}
+                    <select value={selectedAgreementId} onChange={(event) => setSelectedAgreementId(event.target.value)}>
+                      <option value="">{t('common.none')}</option>
+                      {agreementCandidates.map((candidate) => (
+                        <option value={candidate.agreement.id} key={candidate.agreement.id}>
+                          {candidate.agreement.exchangeDescription} · {t(`agreement.status.${candidate.receiptStatus}`)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedAgreement ? (
+                    <div className="actions small">
+                      <span className="pill">{t(`agreement.status.${selectedAgreement.receiptStatus}`)}</span>
+                      <button disabled={!selectedAgreement.buyerPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'buyer')} type="button">
+                        {t('reputation.useBuyer')}
+                      </button>
+                      <button disabled={!selectedAgreement.sellerPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'seller')} type="button">
+                        {t('reputation.useSeller')}
+                      </button>
+                      <button disabled={!selectedAgreement.mediatorPublicKey} onClick={() => applyAgreementCandidate(selectedAgreement, 'mediator')} type="button">
+                        {t('reputation.useMediator')}
+                      </button>
+                    </div>
+                  ) : null}
+                </fieldset>
+              ) : null}
+              <label>
+                {t('agreement.hash')}
+                <input
+                  placeholder={t('placeholder.agreementHash')}
+                  value={form.agreementHash}
+                  onChange={(event) => setForm({ ...form, agreementHash: event.target.value })}
+                />
+              </label>
+            </DisclosurePanel>
             <div className="two">
               <label>
                 {t('reputation.tags')}
@@ -6845,6 +7451,11 @@ function ReputationPage({
                 <option value="trusted">{t('sync.trusted')}</option>
                 <option value="untrusted">{t('sync.untrusted')}</option>
               </select>
+              <select aria-label={t('support.filter')} value={filter.support} onChange={(event) => setFilter({ ...filter, support: event.target.value as SupportFilter })}>
+                <option value="all">{t('support.all')}</option>
+                <option value="supporters">{t('support.supporters')}</option>
+                <option value="non-supporters">{t('support.nonSupporters')}</option>
+              </select>
               <select aria-label={t('sync.hiddenFilter')} value={filter.hidden} onChange={(event) => setFilter({ ...filter, hidden: event.target.value as HiddenFilter })}>
                 <option value="visible">{t('sync.visibleOnly')}</option>
                 <option value="hidden">{t('sync.hiddenOnly')}</option>
@@ -6881,8 +7492,10 @@ function ReputationPage({
                   <h2>{attestation.score ? `${formatReviewScore(attestation.score)} · ` : ''}{attestation.tags.map((tag) => t(`reputation.tag.${tag}`)).join(', ')}</h2>
                   <p>{attestation.text || t('reputation.noText')}</p>
                   <p className="muted">
-                    {t('reputation.subjectShort')}: {shortPublicKey(attestation.subjectPublicKey)} · {t('agreement.hash')}: {attestation.agreementHash.slice(0, 12)}...
+                    {t('reputation.subjectShort')}: {shortPublicKey(attestation.subjectPublicKey)}
+                    {attestation.agreementHash ? ` · ${t('agreement.hash')}: ${attestation.agreementHash.slice(0, 12)}...` : ''}
                   </p>
+                  <SupporterBadge receipt={supportReceiptForPublicKey(attestation.subjectPublicKey, operatorSupportReceipts)} />
                   {attestation.listingTitle || attestation.listingCoordinate ? (
                     <p className="muted">
                       {t('reputation.listingContext')}: {attestation.listingTitle || attestation.listingCoordinate}
@@ -6892,7 +7505,7 @@ function ReputationPage({
                     <p>{attestation.text || t('reputation.noText')}</p>
                     <p className="key">{attestation.subjectPublicKey}</p>
                     <p className="key">{attestation.reviewerPublicKey}</p>
-                    <p className="key">{attestation.agreementHash}</p>
+                    {attestation.agreementHash ? <p className="key">{attestation.agreementHash}</p> : null}
                     {attestation.listingCoordinate ? <p className="key">{attestation.listingCoordinate}</p> : null}
                     <div className="actions small">
                       <button
@@ -6933,7 +7546,10 @@ function ReputationPage({
               {subjectSummaries.map((summary) => (
                 <article className="card compact" key={summary.subjectPublicKey}>
                   <div className="row between">
-                    <h2>{summary.shortKey}</h2>
+                    <div className="row">
+                      <h2>{summary.shortKey}</h2>
+                      <SupporterBadge receipt={supportReceiptForPublicKey(summary.subjectPublicKey, operatorSupportReceipts)} />
+                    </div>
                     <span className="pill">
                       {summary.averageScore ? `${formatReviewScore(summary.averageScore)} · ` : ''}{summary.verified}/{summary.total} {t('reputation.verifiedCount')}
                     </span>
@@ -7002,6 +7618,7 @@ function SettingsPage({
   publishReceipts,
   nostrContactReceipts,
   lightningPaymentAttempts,
+  operatorSupportReceipts,
   nwcConnections,
   unlockedNwcConnectionIds,
   nostrMessages,
@@ -7043,6 +7660,7 @@ function SettingsPage({
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   nwcConnections: NwcConnection[];
   unlockedNwcConnectionIds: string[];
   nostrMessages: NostrMessageRecord[];
@@ -7755,7 +8373,10 @@ function SettingsPage({
                     />
                     <div className="profile-card-heading">
                       <AvatarCircle avatarUrl={record.payload.avatarUrl} label={record.payload.displayName} />
-                      <h2>{record.payload.displayName}</h2>
+                      <div>
+                        <h2>{record.payload.displayName}</h2>
+                        <SupporterBadge receipt={supportReceiptForPublicKey(record.payload.publicKey, operatorSupportReceipts)} />
+                      </div>
                     </div>
                     <p>{record.payload.bio}</p>
                     <p className="key">{record.authorPublicKey}</p>
@@ -7816,7 +8437,7 @@ function SettingsPage({
                     </div>
                     <h2>{record.payload.state}</h2>
                     <p>{record.payload.outcomeSummary}</p>
-                    <p className="key">{record.payload.agreementHash}</p>
+                    {record.payload.agreementHash ? <p className="key">{record.payload.agreementHash}</p> : null}
                     <SyncedRecordActions
                       conflict={isRecordConflicted(record, outcomeConflicts)}
                       preferred={isPreferredConflictRecord(record, outcomeConflicts)}
@@ -8091,6 +8712,24 @@ function SettingsPage({
                   </article>
                 ))}
                 {lightningPaymentAttempts.length === 0 ? <EmptyState title={t('payment.noAttemptsTitle')} body={t('payment.noAttemptsBody')} /> : null}
+              </div>
+            </DisclosurePanel>
+            <DisclosurePanel title={t('support.receipts')}>
+              <div className="card-grid single">
+                {operatorSupportReceipts.slice(0, 12).map((receipt) => (
+                  <article className="card compact" key={receipt.id}>
+                    <div className="row between">
+                      <SupporterBadge receipt={receipt} />
+                      <span className="muted">{Math.floor(receipt.amountMsats / 1000)} sats</span>
+                    </div>
+                    <p className="key">{receipt.payerPublicKey}</p>
+                    <p className="muted">
+                      {receipt.operatorLnurl} · {receipt.validatedAt}
+                    </p>
+                    <p className="key">{receipt.receiptEventId}</p>
+                  </article>
+                ))}
+                {operatorSupportReceipts.length === 0 ? <EmptyState title={t('support.noReceiptsTitle')} body={t('support.noReceiptsBody')} /> : null}
               </div>
             </DisclosurePanel>
             <DisclosurePanel key={shouldOpenAdvancedReview ? 'review-route-open' : 'review-route-closed'} title={t('settings.advancedReviewQueue')} defaultOpen={shouldOpenAdvancedReview}>

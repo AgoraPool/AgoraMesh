@@ -43,12 +43,10 @@ describe('reputation summaries', () => {
     const reviewer = keypair();
     const trustedReviewer = keypair();
     const subject = 'a'.repeat(64);
-    const agreementHash = 'e'.repeat(64);
     const local = createSignedAttestation(
       {
         reviewerPublicKey: reviewer.publicKey,
         subjectPublicKey: subject,
-        agreementHash,
         role: 'seller',
         score: 4,
         listingId: 'listing_1',
@@ -63,7 +61,6 @@ describe('reputation summaries', () => {
       {
         reviewerPublicKey: trustedReviewer.publicKey,
         subjectPublicKey: subject,
-        agreementHash,
         role: 'seller',
         score: 5,
         listingId: 'listing_1',
@@ -111,7 +108,7 @@ describe('reputation summaries', () => {
     expect(filterReputationRows(rows, { query: 'reliable', role: 'all', tag: 'all', minScore: '4', source: 'combined', trust: 'all', hidden: 'visible', verification: 'verified' })).toHaveLength(1);
   });
 
-  it('keeps the newest review per reviewer, subject, role, and listing context', () => {
+  it('keeps the newest verified review per reviewer, subject, and strongest context', () => {
     const reviewer = keypair();
     const subject = 'a'.repeat(64);
     const agreementHash = 'e'.repeat(64);
@@ -145,6 +142,31 @@ describe('reputation summaries', () => {
 
     expect(dedupeReputationRows(rows)).toHaveLength(1);
     expect(dedupeReputationRows(rows)[0].attestation.score).toBe(5);
+  });
+
+  it('aggregates generic seller reviews without agreement or listing context', () => {
+    const reviewer = keypair();
+    const subject = 'a'.repeat(64);
+    const review = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: subject,
+        role: 'seller',
+        score: 5,
+        tags: ['clear-communication'],
+        text: 'Easy to coordinate with.'
+      },
+      reviewer.privateKeyHex
+    );
+    const rows = reputationRows([review], [], 'visible');
+
+    expect(review.agreementHash).toBeUndefined();
+    expect(reputationSubjectSummaries(rows, [])[0]).toMatchObject({
+      subjectPublicKey: subject,
+      averageScore: 5,
+      scoreCount: 1,
+      verified: 1
+    });
   });
 
   it('creates agreement candidates without exposing private terms beyond local UI fields', () => {

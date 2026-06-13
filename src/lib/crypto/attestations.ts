@@ -6,7 +6,7 @@ import { privateKeyBytes } from './identity';
 export interface AttestationDraft {
   reviewerPublicKey: string;
   subjectPublicKey: string;
-  agreementHash: string;
+  agreementHash?: string;
   role: 'buyer' | 'seller' | 'mediator';
   score?: number;
   listingId?: string;
@@ -43,7 +43,7 @@ function attestationContent(draft: AttestationDraft, id: string, timestamp: numb
     id,
     reviewerPublicKey: draft.reviewerPublicKey,
     subjectPublicKey: draft.subjectPublicKey,
-    agreementHash: draft.agreementHash,
+    ...(draft.agreementHash ? { agreementHash: draft.agreementHash } : {}),
     role: draft.role,
     ...(draft.score ? { score: draft.score } : {}),
     ...(draft.listingId ? { listingId: draft.listingId } : {}),
@@ -61,7 +61,7 @@ export function prepareAttestationEvent(draft: AttestationDraft): PreparedAttest
   const tags: string[][] = [
     ['client', 'agoramesh'],
     ['p', draft.subjectPublicKey],
-    ['agreement', draft.agreementHash],
+    ...(draft.agreementHash ? [['agreement', draft.agreementHash]] : []),
     ...(draft.listingCoordinate ? [['a', draft.listingCoordinate]] : []),
     ...(draft.score ? [['score', String(draft.score)]] : [])
   ];
@@ -134,7 +134,7 @@ export function verifyAttestation(attestation: ReputationAttestation): boolean {
   const tags: string[][] = [
     ['client', 'agoramesh'],
     ['p', attestation.subjectPublicKey],
-    ['agreement', attestation.agreementHash],
+    ...(attestation.agreementHash ? [['agreement', attestation.agreementHash]] : []),
     ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
     ...(attestation.score ? [['score', String(attestation.score)]] : [])
   ];

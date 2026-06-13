@@ -1,7 +1,16 @@
 import { bytesToHex } from '@noble/hashes/utils';
 import { describe, expect, it } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
-import { signZapRequestLocally, signZapRequestWithExtension, validateZapReceipt, validateZapRequest, NOSTR_ZAP_RECEIPT_KIND } from './zaps';
+import {
+  signZapRequestLocally,
+  signZapRequestWithExtension,
+  validateOperatorSupportReceipt,
+  validateZapReceipt,
+  validateZapRequest,
+  NOSTR_ZAP_RECEIPT_KIND,
+  OPERATOR_SUPPORT_PURPOSE,
+  OPERATOR_SUPPORT_TAG
+} from './zaps';
 import type { NostrEvent, NostrUnsignedEvent } from './events';
 
 describe('NIP-57 zap helpers', () => {
@@ -133,5 +142,139 @@ describe('NIP-57 zap helpers', () => {
         sellerWalletPubkey: walletPublicKey
       })
     ).toThrow(/request|buyer/i);
+  });
+
+  it('validates operator support receipts with support purpose tags', () => {
+    const payerKey = generateSecretKey();
+    const operatorKey = generateSecretKey();
+    const payerPublicKey = getPublicKey(payerKey);
+    const operatorPublicKey = getPublicKey(operatorKey);
+    const bolt11 = 'lnbc1supportinvoice';
+    const zapRequest = signZapRequestLocally(
+      {
+        buyerPublicKey: payerPublicKey,
+        sellerPublicKey: operatorPublicKey,
+        amountMsats: 5_000_000,
+        lnurl: 'lnurl1operator',
+        relays: ['wss://relay.example'],
+        customTags: [
+          ['t', OPERATOR_SUPPORT_TAG],
+          ['purpose', OPERATOR_SUPPORT_PURPOSE]
+        ]
+      },
+      bytesToHex(payerKey)
+    );
+    const receipt = finalizeEvent(
+      {
+        kind: NOSTR_ZAP_RECEIPT_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['p', operatorPublicKey],
+          ['P', payerPublicKey],
+          ['bolt11', bolt11],
+          ['description', JSON.stringify(zapRequest)]
+        ],
+        content: ''
+      },
+      operatorKey
+    ) as NostrEvent;
+
+    expect(
+      validateOperatorSupportReceipt({
+        receipt,
+        payerPublicKey,
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000,
+        bolt11
+      }).zapRequest.id
+    ).toBe(zapRequest.id);
+  });
+
+  it('rejects invalid operator support receipts', () => {
+    const payerKey = generateSecretKey();
+    const operatorKey = generateSecretKey();
+    const payerPublicKey = getPublicKey(payerKey);
+    const operatorPublicKey = getPublicKey(operatorKey);
+    const makeRequest = (customTags: string[][], amountMsats = 5_000_000, sellerPublicKey = operatorPublicKey): NostrEvent =>
+      signZapRequestLocally(
+        {
+          buyerPublicKey: payerPublicKey,
+          sellerPublicKey,
+          amountMsats,
+          lnurl: 'lnurl1operator',
+          relays: ['wss://relay.example'],
+          customTags
+        },
+        bytesToHex(payerKey)
+      );
+    const makeReceipt = (zapRequest: NostrEvent, tags: string[][] = []): NostrEvent =>
+      finalizeEvent(
+        {
+          kind: NOSTR_ZAP_RECEIPT_KIND,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [
+            ['p', operatorPublicKey],
+            ['P', payerPublicKey],
+            ['bolt11', 'lnbc1supportinvoice'],
+            ['description', JSON.stringify(zapRequest)],
+            ...tags
+          ],
+          content: ''
+        },
+        operatorKey
+      ) as NostrEvent;
+    const validTags = [
+      ['t', OPERATOR_SUPPORT_TAG],
+      ['purpose', OPERATOR_SUPPORT_PURPOSE]
+    ];
+    const validRequest = makeRequest(validTags);
+
+    expect(() =>
+      validateOperatorSupportReceipt({
+        receipt: makeReceipt(makeRequest([['t', OPERATOR_SUPPORT_TAG]])),
+        payerPublicKey,
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000
+      })
+    ).toThrow(/purpose/i);
+    expect(() =>
+      validateOperatorSupportReceipt({
+        receipt: makeReceipt(makeRequest(validTags, 4_999_000)),
+        payerPublicKey,
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000
+      })
+    ).toThrow(/minimum/i);
+    expect(() =>
+      validateOperatorSupportReceipt({
+        receipt: makeReceipt(validRequest),
+        payerPublicKey: getPublicKey(generateSecretKey()),
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000
+      })
+    ).toThrow(/payer/i);
+    expect(() =>
+      validateOperatorSupportReceipt({
+        receipt: makeReceipt(makeRequest(validTags, 5_000_000, getPublicKey(generateSecretKey()))),
+        payerPublicKey,
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000
+      })
+    ).toThrow(/operator/i);
+    expect(() =>
+      validateOperatorSupportReceipt({
+        receipt: makeReceipt(validRequest),
+        payerPublicKey,
+        operatorWalletPubkey: operatorPublicKey,
+        operatorLnurl: 'lnurl1operator',
+        minimumMsats: 5_000_000,
+        bolt11: 'lnbc1wrong'
+      })
+    ).toThrow(/invoice/i);
   });
 });

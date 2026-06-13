@@ -7,7 +7,7 @@ AgoraMesh stores structured local data and can publish public objects as Nostr e
 - `39001`: public profile.
 - `30402`: public listing as a NIP-99 classified listing.
 - `39003`: mediator profile.
-- `39004`: reputation attestation.
+- `39004`: marketplace review / reputation attestation.
 - `39005`: dispute outcome attestation.
 - `30004`: community curation list using NIP-51-style list tags.
 
@@ -30,6 +30,8 @@ All publication paths pass through a sensitive-field guard. Events containing pr
 Listings publish as NIP-99 classified listing events. Title, description, location, price, status, images, tags, and contact metadata are public relay data. Passphrase-encrypted listing publication is intentionally not part of the NIP-99 marketplace path; private order or contact encryption is deferred to a later protocol sprint.
 
 Profiles may include public Lightning metadata: `lud16`/Lightning address and `lud06`/LNURL. Listings may include public fulfillment hints, image metadata, and payment intents: method, public address or URI, and a short note. Cashu is treated as a public instruction type only, not wallet execution. Lightning LNURL/NIP-57 support signs a zap request, sends it to the seller LNURL-pay callback, and receives a BOLT11 invoice. If the buyer has explicitly connected and unlocked a NIP-47/NWC wallet, AgoraMesh can send a `pay_invoice` request to that wallet; otherwise it hands the invoice to an external wallet. Publication guards reject private or custodial wording such as seeds, private keys, Cashu secrets, private invoice memos, custody, or escrow. AgoraMesh does not hold funds, manage balances, confirm fulfillment, or provide escrow.
+
+Operator support badges are cached from validated public NIP-57 zap receipts to the build-configured operator Lightning address or LNURL-pay target. A qualifying receipt must bind the payer pubkey, operator wallet pubkey, minimum amount, resolved LNURL tag, and AgoraMesh support purpose marker. The cache is public receipt metadata only and does not mutate allowlists, synced-cache trust flags, marketplace ranking, identity verification, moderation approval, escrow, or fulfillment status.
 
 Listing images are public HTTPS references uploaded to user-configured Blossom servers before listing publication. The listing payload stores URL, SHA-256, MIME type, size, optional dimensions, optional alt text, Blossom server URL, and upload timestamp. It never stores local filenames.
 
@@ -59,7 +61,7 @@ Synced cache records include a local `hidden` flag. Hiding is private local mode
 
 If multiple synced records share the same event kind, author public key, and payload id but have different event ids or update timestamps, the UI marks them as possible conflicts. The newest-looking record is labeled as the latest conflict version, but the app does not auto-merge or auto-trust either record.
 
-Marketplace ranking, deduplication, collapsed filters, dedicated listing pages, collapsed publish options, and seller summaries are local UI behavior. Ranking prefers visible, active, trusted, local, newer, and search-matching records. Seller summaries combine public profile, reputation, allowlist, and key context without certifying identity. Curation lists can filter discovery, but they do not certify identity, truth, or safety.
+Marketplace ranking, deduplication, collapsed filters, dedicated listing pages, collapsed publish options, and seller summaries are local UI behavior. Ranking prefers visible, active, trusted, local, newer, and search-matching records. Seller summaries combine public profile, signed reviews, allowlist, and key context without certifying identity. Curation lists can filter discovery, but they do not certify identity, truth, or safety.
 
 Encrypted relay-content events are signature-checked and stay in the review queue until the user provides the shared passphrase and explicitly imports them. Encrypted listing events are rejected for NIP-99 marketplace discovery. The raw event signature is rechecked at import time rather than trusting stored review flags.
 
@@ -71,7 +73,7 @@ Live sync is optional and runs only while the app is open. It subscribes to supp
 
 Relay health tracks last connection, latency, received events, published events, last error, and consecutive failures.
 
-Publish receipts record per-relay acceptance or failure for public profiles, listings, mediator profiles, reputation attestations, dispute outcome attestations, and community curation lists.
+Publish receipts record per-relay acceptance or failure for public profiles, listings, mediator profiles, marketplace reviews, dispute outcome attestations, and community curation lists.
 
 Relay scores are local advisory values derived from relay health. They are not published and do not automatically enable or disable relays.
 
@@ -96,7 +98,7 @@ Community curation lists are public `kind: 30004` events with a `d` tag, a `titl
 
 ## Security Promises
 
-Protocol-facing security promises are intentionally narrow: no automatic relay publishing, no automatic review import, no synced public cache writes into user-owned local records, no full agreement or full dispute event kind, no custody, no automatic wallet payment, and no decrypted private-key or NWC-secret persistence outside memory. NIP-47 payment responses and NIP-57 zap receipts are payment-server/wallet attestations only; they are not escrow, delivery guarantees, identity verification, fulfillment proof, or dispute resolution.
+Protocol-facing security promises are intentionally narrow: no automatic relay publishing, no automatic review import, no synced public cache writes into user-owned local records, no full agreement or full dispute event kind, no custody, no automatic wallet payment, and no decrypted private-key or NWC-secret persistence outside memory. NIP-47 payment responses, NIP-57 zap receipts, and operator support badges are payment-server/wallet attestations only; they are not escrow, delivery guarantees, identity verification, endorsement, moderation approval, fulfillment proof, or dispute resolution.
 
 ## Encrypted Dispute Bundles
 
@@ -130,4 +132,4 @@ Public dispute outcome summaries include a signer public key and are accepted on
 
 ## Reputation
 
-Reputation uses signed contextual attestations. The signature proves the reviewer key signed a statement about a subject key and agreement hash. It does not prove the statement is true.
+Reputation uses signed public marketplace reviews on kind `39004`. The signature proves the reviewer key signed a statement about a subject key, optional listing context, optional agreement hash, score, tags, text, and timestamp. It does not prove the statement is true, that fulfillment happened, or that a legal identity was verified.

@@ -32,11 +32,15 @@ Create Listing keeps payment details out of the primary flow, but profiles can p
 
 Fulfillment labels such as local pickup, shipping, delivery, digital, and other are public discovery hints. Use approximate pickup or delivery notes and keep exact private logistics in the Trade workflow or an external channel.
 
-Seller summaries in listing details are local context from public profiles, reputation attestations, allowlists, and short keys. They do not verify legal identity or guarantee fulfillment.
+Seller summaries in listing details are local context from public profiles, signed reviews, allowlists, and short keys. They do not verify legal identity or guarantee fulfillment.
+
+Supporter badges can appear next to seller/profile context and in reputation or curation filters. They are separate from allowlist trust and review scores; applying a supporter filter only changes what you choose to view.
 
 Listing images are optional public media. Configure a Blossom media server in Settings before uploading. Do not upload receipts, faces, exact addresses, private documents, evidence files, or sensitive screenshots. If images are selected, AgoraMesh uploads them before saving and shows a visible error if the upload is blocked or rejected.
 
 Payment intents and Lightning public notes should never contain wallet seeds, private keys, private invoice memos, refund secrets, private settlement details, custody wording, or escrow wording. They are public marketplace metadata once published. NWC wallet connection secrets are encrypted locally with a separate wallet passphrase and are intentionally excluded from backups. Zap receipts are public payment-server attestations, not delivery guarantees, identity verification, dispute resolution, or fulfillment proof.
+
+If the build operator configures a support Lightning address or LNURL-pay target, your profile can show an AgoraMesh supporter badge after you send the minimum support zap and the app validates the public NIP-57 receipt. The badge is permanent in your local public receipt cache once validated, but it only means that a qualifying public payment receipt was found. It is not an endorsement, trust mark, identity verification, moderation approval, escrow, or proof that any listing was fulfilled.
 
 Community curation lists live under Marketplace More filters in the Curation group. They point to visible public marketplace records with Nostr coordinates. Publishing a list is explicit, and valid fetched public lists enter the synced public cache before appearing in discovery.
 
@@ -54,11 +58,11 @@ Disputes are opened from existing agreements. You can open a dispute from an uns
 
 ## Reputation
 
-Reputation is based on signed attestations. Treat attestations as context, not universal truth.
+Reputation is based on signed public reviews. Treat reviews as context, not universal truth.
 
-Use Create attestation to sign a factual public claim. You can select a saved agreement to prefill buyer, seller, mediator, and agreement hash context. Mutually signed agreements are labeled as stronger context, but AgoraMesh does not require them and does not publish private agreement terms.
+Use Write review to sign a factual public claim about a seller, listing, or optional agreement context. You can review a seller directly from a listing, or select a saved agreement to prefill buyer, seller, mediator, and agreement hash details. Mutually signed agreements are labeled as stronger context, but AgoraMesh does not require them and does not publish private agreement terms.
 
-Browse shows scan-friendly attestation cards with source, role, tags, signature status, short subject keys, and details behind a disclosure. Trade context groups attestations by subject key so you can compare roles, tags, trusted authors, untrusted authors, and verified signatures without treating that summary as identity verification.
+Browse shows scan-friendly review rows with source, score, role, tags, signature status, short subject keys, and details behind a disclosure. Seller trust groups reviews by subject key so you can compare roles, tags, trusted authors, untrusted authors, and verified signatures without treating that summary as identity verification.
 
 ## Relays
 

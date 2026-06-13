@@ -47,4 +47,26 @@ describe('reputation review attestations', () => {
     expect(verifyAttestation({ ...attestation, listingCoordinate: `30402:${'a'.repeat(64)}:other` })).toBe(false);
     expect(verifyAttestation({ ...attestation, text: 'Changed.' })).toBe(false);
   });
+
+  it('signs and verifies seller/listing reviews without agreement context', () => {
+    const reviewerKey = generateSecretKey();
+    const reviewerPublicKey = getPublicKey(reviewerKey);
+    const subjectPublicKey = 'a'.repeat(64);
+    const attestation = createSignedAttestation(
+      {
+        reviewerPublicKey,
+        subjectPublicKey,
+        role: 'seller',
+        score: 4,
+        listingCoordinate: `30402:${subjectPublicKey}:listing_1`,
+        tags: ['clear-communication'],
+        text: 'Good marketplace interaction.'
+      },
+      bytesToHex(reviewerKey)
+    );
+
+    expect(attestation.agreementHash).toBeUndefined();
+    expect(verifyAttestation(attestation)).toBe(true);
+    expect(verifyAttestation({ ...attestation, agreementHash: 'b'.repeat(64) })).toBe(false);
+  });
 });

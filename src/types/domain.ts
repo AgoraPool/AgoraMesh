@@ -302,7 +302,7 @@ export interface ReputationAttestation {
   id: string;
   reviewerPublicKey: string;
   subjectPublicKey: string;
-  agreementHash: string;
+  agreementHash?: string;
   role: 'buyer' | 'seller' | 'mediator';
   score?: number;
   listingId?: string;
@@ -422,6 +422,7 @@ export interface RelayScore {
 }
 
 export type LightningPaymentAttemptStatus = 'invoice-created' | 'wallet-payment-pending' | 'paid' | 'receipt-found' | 'failed';
+export type LightningPaymentPurpose = 'listing-payment' | 'operator-support';
 
 export interface NwcConnection {
   id: string;
@@ -441,6 +442,8 @@ export interface LightningPaymentAttempt {
   id: string;
   buyerPublicKey: string;
   sellerPublicKey: string;
+  purpose?: LightningPaymentPurpose;
+  badgeSubjectPublicKey?: string;
   listingId?: string;
   listingTitle?: string;
   amountSats: number;
@@ -467,6 +470,22 @@ export interface LightningPaymentAttempt {
   createdAt: string;
   updatedAt: string;
   error?: string;
+}
+
+export interface OperatorSupportReceipt {
+  id: string;
+  payerPublicKey: string;
+  operatorLnurl: string;
+  operatorWalletPubkey: string;
+  amountMsats: number;
+  minimumSats: number;
+  zapRequestId: string;
+  zapRequest: string;
+  receiptEventId: string;
+  receiptEvent: string;
+  relayUrls: string[];
+  paidAt: string;
+  validatedAt: string;
 }
 
 export interface PublishReceipt {
@@ -611,6 +630,7 @@ export interface AppBackup {
   nostrMessageThreads: NostrMessageThread[];
   nostrInboxCursors: NostrInboxCursor[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

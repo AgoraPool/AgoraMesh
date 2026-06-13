@@ -284,7 +284,7 @@ export const reputationAttestationSchema = z.object({
   id: nonEmpty,
   reviewerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   subjectPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
-  agreementHash: z.string().regex(/^[0-9a-f]{64}$/i),
+  agreementHash: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
   role: z.enum(['buyer', 'seller', 'mediator']),
   score: z.number().int().min(1).max(5).optional(),
   listingId: optionalText,
@@ -457,6 +457,8 @@ export const lightningPaymentAttemptSchema = z.object({
   id: nonEmpty,
   buyerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   sellerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  purpose: z.enum(['listing-payment', 'operator-support']).optional().default('listing-payment'),
+  badgeSubjectPublicKey: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
   listingId: optionalText,
   listingTitle: optionalText,
   amountSats: z.number().int().positive(),
@@ -485,6 +487,22 @@ export const lightningPaymentAttemptSchema = z.object({
   createdAt: nonEmpty,
   updatedAt: nonEmpty,
   error: optionalText
+});
+
+export const operatorSupportReceiptSchema = z.object({
+  id: nonEmpty,
+  payerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  operatorLnurl: nonEmpty.max(500),
+  operatorWalletPubkey: z.string().regex(/^[0-9a-f]{64}$/i),
+  amountMsats: z.number().int().positive(),
+  minimumSats: z.number().int().positive(),
+  zapRequestId: nonEmpty,
+  zapRequest: nonEmpty,
+  receiptEventId: nonEmpty,
+  receiptEvent: nonEmpty,
+  relayUrls: z.array(nonEmpty).default([]),
+  paidAt: nonEmpty,
+  validatedAt: nonEmpty
 });
 
 export const communityAllowlistEntrySchema = z.object({
@@ -574,6 +592,7 @@ export const appBackupSchema = z.object({
   nostrMessageThreads: z.array(nostrMessageThreadSchema).default([]),
   nostrInboxCursors: z.array(nostrInboxCursorSchema).default([]),
   lightningPaymentAttempts: z.array(lightningPaymentAttemptSchema).default([]),
+  operatorSupportReceipts: z.array(operatorSupportReceiptSchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

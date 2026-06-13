@@ -1,5 +1,8 @@
+import { bytesToHex } from '@noble/hashes/utils';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import type { CommunityAllowlistEntry, Listing, PublicProfile, ReputationAttestation, SyncedPublicRecord } from '../../types/domain';
+import { createSignedAttestation } from '../crypto/attestations';
 import { listingCategorySchema, listingSchema, paymentIntentSchema } from '../validation/schemas';
 import {
   categoryLabelKeys,
@@ -61,18 +64,19 @@ describe('marketplace presentation helpers', () => {
       createdAt: '2026-05-31T00:00:00.000Z',
       updatedAt: '2026-05-31T00:00:00.000Z'
     };
-    const attestation = {
-      id: 'attestation_1',
-      reviewerPublicKey: 'b'.repeat(64),
-      subjectPublicKey: listing.authorPublicKey,
-      agreementHash: 'c'.repeat(64),
-      role: 'seller',
-      tags: ['fulfilled-agreement'],
-      text: 'Completed.',
-      timestamp: 1_700_000_000,
-      signature: 'sig',
-      eventId: 'event_1'
-    } as ReputationAttestation;
+    const reviewerKey = generateSecretKey();
+    const attestation = createSignedAttestation(
+      {
+        reviewerPublicKey: getPublicKey(reviewerKey),
+        subjectPublicKey: listing.authorPublicKey,
+        score: 5,
+        listingCoordinate: `30402:${listing.authorPublicKey}:${listing.id}`,
+        role: 'seller',
+        tags: ['fulfilled-agreement'],
+        text: 'Completed.'
+      },
+      bytesToHex(reviewerKey)
+    );
     const allowlist: CommunityAllowlistEntry[] = [
       { id: 'allow_1', publicKey: listing.authorPublicKey, label: 'Known seller', note: '', createdAt: '2026-05-31T00:00:00.000Z' }
     ];

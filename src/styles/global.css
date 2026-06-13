@@ -1104,6 +1104,26 @@ dd {
   background: transparent;
 }
 
+.supporter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 0;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  padding: 0.16rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.supporter-badge.compact {
+  padding-inline: 0.35rem;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;
@@ -2476,6 +2496,91 @@ dd {
   gap: var(--space-4);
 }
 
+.dm-toolbar {
+  align-items: end;
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(14rem, 1fr) auto auto;
+}
+
+.dm-passphrase {
+  min-width: 0;
+}
+
+.dm-layout {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(14rem, 0.75fr) minmax(0, 1.25fr);
+  min-height: 34rem;
+}
+
+.dm-thread-list,
+.dm-conversation {
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+
+.dm-thread-list {
+  align-content: start;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.dm-conversation {
+  display: grid;
+  grid-template-rows: auto minmax(12rem, 1fr) auto;
+}
+
+.dm-conversation-header,
+.dm-composer {
+  padding: var(--space-3);
+}
+
+.dm-conversation-header {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.dm-message-list {
+  align-content: end;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-4);
+}
+
+.message-bubble {
+  border: 1px solid var(--line);
+  max-width: min(42rem, 88%);
+  padding: var(--space-3);
+}
+
+.message-bubble p {
+  margin-block: 0 0.4rem;
+}
+
+.message-bubble.outgoing {
+  justify-self: end;
+  background: var(--accent-muted);
+  border-color: var(--line-strong);
+}
+
+.message-bubble.incoming {
+  justify-self: start;
+  background: var(--surface);
+}
+
+.dm-composer {
+  border-top: 1px solid var(--line);
+}
+
+.dm-composer .nostr-contact > button {
+  display: none;
+}
+
 .nostr-inbox .compact-split {
   grid-template-columns: minmax(14rem, 0.8fr) minmax(0, 1.2fr);
   gap: var(--space-4);
@@ -2564,6 +2669,19 @@ dd {
   .identity-summary {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .dm-toolbar,
+  .dm-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dm-conversation {
+    min-height: 28rem;
+  }
+
+  .message-bubble {
+    max-width: 100%;
   }
 
   .marketplace-toolbar {

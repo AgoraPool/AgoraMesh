@@ -413,7 +413,7 @@ export function signReputation(attestation: ReputationAttestation, privateKeyHex
   const tags: string[][] = [
     ['d', attestation.id],
     ['p', attestation.subjectPublicKey],
-    ['agreement', attestation.agreementHash],
+    ...(attestation.agreementHash ? [['agreement', attestation.agreementHash]] : []),
     ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
     ...(attestation.score ? [['score', String(attestation.score)]] : [])
   ];
@@ -587,7 +587,7 @@ function validateAgoraEventTags(event: NostrEvent, payload: unknown): void {
     const attestation = reputationAttestationSchema.parse(payload);
     requireTag(event, 'd', attestation.id);
     requireTag(event, 'p', attestation.subjectPublicKey);
-    requireTag(event, 'agreement', attestation.agreementHash);
+    requireOptionalTag(event, 'agreement', attestation.agreementHash);
     requireOptionalTag(event, 'a', attestation.listingCoordinate);
     requireOptionalTag(event, 'score', attestation.score ? String(attestation.score) : undefined);
   }

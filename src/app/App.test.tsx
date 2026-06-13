@@ -220,11 +220,11 @@ describe('production readiness UI', () => {
     renderAppAt('#reputation');
 
     expect(await screen.findByRole('tablist', { name: 'Marketplace reviews' })).toBeInTheDocument();
-    expect(await screen.findByRole('tab', { name: 'Create review' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('tab', { name: 'Write review' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Browse reviews' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Seller summaries' })).toBeInTheDocument();
-    expect(screen.getByText(/Create and review signed public trade feedback/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create signed review' })).toBeDisabled();
+    expect(screen.getByRole('tab', { name: 'Seller trust' })).toBeInTheDocument();
+    expect(screen.getByText(/Write and browse signed public marketplace reviews/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save signed review' })).toBeDisabled();
     expect(screen.getByText('Create an identity before using this action.')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));

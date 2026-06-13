@@ -98,7 +98,7 @@ export function reputationReviewKey(attestation: ReputationAttestation): string 
   return [
     attestation.reviewerPublicKey.toLowerCase(),
     attestation.subjectPublicKey.toLowerCase(),
-    attestation.listingCoordinate || attestation.listingId || attestation.agreementHash
+    attestation.listingCoordinate || attestation.listingId || attestation.agreementHash || 'seller'
   ].join(':');
 }
 
@@ -124,7 +124,7 @@ export function filterReputationRows(rows: ReputationRow[], filter: ReputationFi
     const haystack = [
       row.attestation.subjectPublicKey,
       row.attestation.reviewerPublicKey,
-      row.attestation.agreementHash,
+      row.attestation.agreementHash ?? '',
       row.attestation.listingId ?? '',
       row.attestation.listingTitle ?? '',
       row.attestation.listingCoordinate ?? '',

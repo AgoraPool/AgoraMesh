@@ -7,7 +7,7 @@
 - Agreement builder.
 - Mediator profiles.
 - Local dispute cases and JSON bundles.
-- Signed reputation attestations.
+- Signed marketplace reviews.
 - Minimal Nostr publish/sync.
 - English and Czech UI.
 - Static and self-hosted deployment docs.
@@ -76,6 +76,8 @@
 - v0.35.0 Lightning LNURL and NIP-57 payment handoff with public seller payment metadata, signed zap requests, external BOLT11 invoice handoff, explicit zap receipt checks, and metadata-only local payment attempts.
 - v0.36.0 NWC Lightning execution with encrypted local NIP-47 wallet connections, explicit wallet unlock/test/disconnect controls, `pay_invoice` handoff after LNURL invoice generation, paid/failed metadata updates, duplicate-payment guardrails, and no wallet-secret backups.
 - v0.37.0 seller trust and reputation reviews with scored `39004` attestations, listing/agreement context, verified newest-wins aggregation, post-trade review prompts, trusted-reviewer cues, and clearer seller summaries.
+- v0.38.0 native Inbox and marketplace reviews with a simpler DM layout, hidden protocol diagnostics, seller/listing-first reviews, optional agreement context, and direct Review seller actions.
+- v0.39.0 operator support zap badges with build-configured LNURL support payments, validated public NIP-57 receipt caching, profile/seller/reputation/curation badge display, support filters, and no trust or allowlist mutation.
 
 ## Not Planned For MVP
 

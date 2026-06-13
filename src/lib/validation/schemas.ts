@@ -98,6 +98,8 @@ export const publicProfileSchema = z.object({
     })
     .optional()
     .or(z.literal('')),
+  lightningAddress: z.string().trim().max(120).optional().or(z.literal('')),
+  lnurl: z.string().trim().max(500).optional().or(z.literal('')),
   bio: z.string().trim().max(1000),
   region: z.string().trim().max(120),
   languages: z.array(nonEmpty).max(12),
@@ -429,6 +431,58 @@ export const nostrInboxCursorSchema = z.object({
   lastFetchedAt: nonEmpty
 });
 
+export const nwcConnectionSchema = z.object({
+  id: nonEmpty,
+  label: nonEmpty.max(120),
+  walletPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  clientPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  relayUrls: z.array(
+    z.string().url().refine((value) => value.startsWith('wss://'), {
+      message: 'NWC relay must use wss://'
+    })
+  ).min(1),
+  encryptedSecret: encryptedSecretSchema,
+  lud16: optionalText,
+  createdAt: nonEmpty,
+  updatedAt: nonEmpty,
+  lastConnectedAt: optionalText,
+  lastError: optionalText
+});
+
+export const lightningPaymentAttemptSchema = z.object({
+  id: nonEmpty,
+  buyerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  sellerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  listingId: optionalText,
+  listingTitle: optionalText,
+  amountSats: z.number().int().positive(),
+  amountMsats: z.number().int().positive(),
+  lnurlSource: nonEmpty.max(500),
+  callbackUrl: z.string().url().refine((value) => value.startsWith('https://'), {
+    message: 'LNURL callback must use https://'
+  }),
+  sellerWalletPubkey: z.string().regex(/^[0-9a-f]{64}$/i),
+  zapRequestId: nonEmpty,
+  zapRequest: nonEmpty,
+  bolt11: nonEmpty,
+  paymentHash: optionalText,
+  nwcConnectionId: optionalText,
+  nwcRequestEventId: optionalText,
+  nwcResponseEventId: optionalText,
+  nwcRelayUrl: optionalText,
+  nwcResult: optionalText,
+  preimage: optionalText,
+  feesPaidMsats: z.number().int().nonnegative().optional(),
+  statusDetail: optionalText,
+  receiptEventId: optionalText,
+  receiptEvent: optionalText,
+  receiptRelayUrls: z.array(nonEmpty).default([]),
+  status: z.enum(['invoice-created', 'wallet-payment-pending', 'paid', 'receipt-found', 'failed']),
+  createdAt: nonEmpty,
+  updatedAt: nonEmpty,
+  error: optionalText
+});
+
 export const communityAllowlistEntrySchema = z.object({
   id: nonEmpty,
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i),
@@ -515,6 +569,7 @@ export const appBackupSchema = z.object({
   nostrMessages: z.array(nostrMessageRecordSchema).default([]),
   nostrMessageThreads: z.array(nostrMessageThreadSchema).default([]),
   nostrInboxCursors: z.array(nostrInboxCursorSchema).default([]),
+  lightningPaymentAttempts: z.array(lightningPaymentAttemptSchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

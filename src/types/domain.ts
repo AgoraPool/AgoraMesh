@@ -131,6 +131,8 @@ export interface NostrProfileMetadata {
   displayName?: string;
   about?: string;
   picture?: string;
+  lud06?: string;
+  lud16?: string;
 }
 
 interface BaseIdentityRecord {
@@ -158,6 +160,8 @@ export interface PublicProfile {
   displayName: string;
   publicKey: string;
   avatarUrl?: string;
+  lightningAddress?: string;
+  lnurl?: string;
   bio: string;
   region: string;
   languages: string[];
@@ -413,6 +417,54 @@ export interface RelayScore {
   reasons: string[];
 }
 
+export type LightningPaymentAttemptStatus = 'invoice-created' | 'wallet-payment-pending' | 'paid' | 'receipt-found' | 'failed';
+
+export interface NwcConnection {
+  id: string;
+  label: string;
+  walletPublicKey: string;
+  clientPublicKey: string;
+  relayUrls: string[];
+  encryptedSecret: EncryptedSecret;
+  lud16?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastConnectedAt?: string;
+  lastError?: string;
+}
+
+export interface LightningPaymentAttempt {
+  id: string;
+  buyerPublicKey: string;
+  sellerPublicKey: string;
+  listingId?: string;
+  listingTitle?: string;
+  amountSats: number;
+  amountMsats: number;
+  lnurlSource: string;
+  callbackUrl: string;
+  sellerWalletPubkey: string;
+  zapRequestId: string;
+  zapRequest: string;
+  bolt11: string;
+  paymentHash?: string;
+  nwcConnectionId?: string;
+  nwcRequestEventId?: string;
+  nwcResponseEventId?: string;
+  nwcRelayUrl?: string;
+  nwcResult?: string;
+  preimage?: string;
+  feesPaidMsats?: number;
+  statusDetail?: string;
+  receiptEventId?: string;
+  receiptEvent?: string;
+  receiptRelayUrls: string[];
+  status: LightningPaymentAttemptStatus;
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
+}
+
 export interface PublishReceipt {
   id: string;
   objectType: PublishObjectType;
@@ -554,6 +606,7 @@ export interface AppBackup {
   nostrMessages: NostrMessageRecord[];
   nostrMessageThreads: NostrMessageThread[];
   nostrInboxCursors: NostrInboxCursor[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

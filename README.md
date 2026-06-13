@@ -97,7 +97,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.34.0`.
+Current app version: `0.36.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.34.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.36.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -124,11 +124,11 @@ For release candidates, complete [the release candidate checklist](docs/release-
 
 ## Limitations
 
-- This MVP does not include escrow, wallets, internal chat, payment processing, moderation AI, ActivityPub, or a backend database.
+- This MVP does not include escrow, custodial payment processing, moderation AI, ActivityPub, or a backend database.
 - Relay sync is public-data-only and explicit fetch-before-cache.
 - Public-first means public discovery and explicit public publishing, not automatic publishing or automatic trust.
 - Optional browser signer support can act as the active AgoraMesh identity and sign public events without storing extension private keys in AgoraMesh.
-- Listing payment intents, including Cashu instructions, are public instructions only; AgoraMesh does not execute payments, connect wallets, confirm settlement, or provide escrow.
+- Listing payment intents, including Cashu instructions, are public instructions only. Lightning LNURL/NIP-57 support creates a signed zap request and BOLT11 invoice. With an unlocked NIP-47/NWC wallet connection, AgoraMesh can send `pay_invoice`; otherwise it hands the invoice to the user's external wallet. AgoraMesh does not hold funds, confirm fulfillment, or provide escrow.
 - Fulfillment labels such as local pickup, shipping, delivery, digital, and other are public discovery metadata when published.
 - Listing images are public Blossom uploads. AgoraMesh stores only public HTTPS image metadata and does not provide a media backend.
 - Seller context is advisory and local. Signatures prove event authorship only, not legal identity or fulfillment.
@@ -149,6 +149,8 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.32.0 Browse and Settings cleanup moves advanced filtering into grouped presets and hides the old review queue under diagnostics.
 - The v0.33.0 Nostr contact pass adds first-class Nostr contacts, explicit encrypted NIP-17/NIP-44 intro messages, and plaintext-free outbox receipts.
 - The v0.34.0 threaded inbox pass adds explicit NIP-17 fetching, passphrase-protected readable message cache, lightweight threads, and primary Inbox navigation.
+- The v0.35.0 Lightning pass adds public seller LNURL metadata, signed NIP-57 zap request creation, external invoice handoff, explicit receipt checks, and metadata-only local payment attempts.
+- The v0.36.0 NWC pass adds encrypted local NIP-47 wallet connection storage, wallet testing, explicit `pay_invoice` execution, duplicate-payment guardrails, and backup exclusion for wallet secrets.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

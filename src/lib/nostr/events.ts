@@ -55,6 +55,7 @@ type CacheablePayload =
   | CommunityCurationList;
 
 const paymentPreferences = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'] as const;
+const paymentIntentMethods = ['bitcoin', 'lightning', 'cashu', 'monero', 'bank', 'cash', 'other'] as const;
 const contactKinds = ['matrix', 'simplex', 'session', 'email', 'nostr', 'custom'] as const;
 const fulfillmentTypes = ['local-pickup', 'shipping', 'delivery', 'digital', 'other'] as const;
 const imageMimeTypes = ['image/jpeg', 'image/png', 'image/webp'] as const;
@@ -116,6 +117,7 @@ function isUnknownArray(value: unknown): value is unknown[] {
 
 export function publicProfilePayload(profile: PublicProfile): PublicProfile {
   const parsed = publicProfileSchema.parse(profile);
+  assertPublicPaymentIntentText(parsed.lightningAddress ?? '', parsed.lnurl ?? '');
   const payload = {
     ...parsed,
     publicVisibility: true
@@ -176,6 +178,7 @@ function nip99ListingTags(listing: Listing): string[][] {
     ['expires_at', listing.expiresAt],
     ['contact', listing.contactMethod.kind, listing.contactMethod.value],
     ...listing.paymentPreferences.map((entry) => ['payment', entry]),
+    ...(listing.paymentIntents ?? []).map((intent) => ['payment_intent', intent.method, intent.value, intent.note]),
     ...(listing.fulfillmentType ? [['fulfillment', listing.fulfillmentType]] : []),
     ...(listing.fulfillmentNotes ? [['fulfillment_note', listing.fulfillmentNotes]] : []),
     ...(listing.mediatorPreference ? [['mediator', listing.mediatorPreference]] : []),
@@ -296,6 +299,17 @@ function parseNip99Listing(event: NostrEvent): Listing {
   const paymentTags = tagValues(event, 'payment').filter((tag): tag is (typeof paymentPreferences)[number] =>
     paymentPreferences.includes(tag as (typeof paymentPreferences)[number])
   );
+  const paymentIntents = event.tags
+    .filter((tag) => tag[0] === 'payment_intent')
+    .map((tag, index) => ({
+      id: `payment_${event.id}_${index}`,
+      method: paymentIntentMethods.includes(tag[1] as (typeof paymentIntentMethods)[number])
+        ? (tag[1] as (typeof paymentIntentMethods)[number])
+        : 'other',
+      value: tag[2] ?? '',
+      note: tag[3] ?? ''
+    }))
+    .filter((intent) => intent.value);
   const contactKind = contactKinds.includes(contactTag[1] as (typeof contactKinds)[number]) ? contactTag[1] : 'custom';
   const fulfillmentTag = firstTag(event, 'fulfillment');
   const fulfillmentType = fulfillmentTypes.includes(fulfillmentTag as (typeof fulfillmentTypes)[number])
@@ -319,6 +333,7 @@ function parseNip99Listing(event: NostrEvent): Listing {
     },
     publishedAt: isoFromUnixTag(firstTag(event, 'published_at'), event.created_at),
     paymentPreferences: paymentTags.length > 0 ? paymentTags : ['other'],
+    paymentIntents,
     images: nip99ListingImages(event),
     fulfillmentType,
     fulfillmentNotes: firstTag(event, 'fulfillment_note'),
@@ -477,7 +492,9 @@ export function profileFromNostrMetadata(metadata: unknown): NostrProfileMetadat
     name: typeof record.name === 'string' ? record.name.slice(0, 80) : undefined,
     displayName: typeof record.display_name === 'string' ? record.display_name.slice(0, 80) : typeof record.displayName === 'string' ? record.displayName.slice(0, 80) : undefined,
     about: typeof record.about === 'string' ? record.about.slice(0, 500) : undefined,
-    picture: typeof record.picture === 'string' ? record.picture.slice(0, 500) : undefined
+    picture: typeof record.picture === 'string' ? record.picture.slice(0, 500) : undefined,
+    lud06: typeof record.lud06 === 'string' ? record.lud06.slice(0, 500) : undefined,
+    lud16: typeof record.lud16 === 'string' ? record.lud16.slice(0, 120) : undefined
   };
 }
 
@@ -487,6 +504,8 @@ export function publicProfileFromNostrMetadata(metadata: NostrProfileMetadata, i
     displayName: sanitizeMetadataText(metadata.displayName ?? metadata.name ?? identity.displayName, 80),
     publicKey: identity.publicKey,
     avatarUrl: picture.startsWith('https://') ? picture : '',
+    lnurl: sanitizeMetadataText(metadata.lud06 ?? '', 500),
+    lightningAddress: sanitizeMetadataText(metadata.lud16 ?? '', 120),
     bio: sanitizeMetadataText(metadata.about ?? '', 500)
   };
 }

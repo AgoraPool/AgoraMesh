@@ -17,6 +17,7 @@ import {
   Pencil,
   PlusCircle,
   Radio,
+  ReceiptText,
   Scale,
   Search,
   Settings as SettingsIcon,
@@ -109,6 +110,15 @@ import {
   type NostrIntroContext,
   type UnwrappedNostrMessage
 } from '../lib/nostr/messages';
+import { fetchLnurlPayMetadata, lnurlTagForPayUrl, requestLnurlInvoice } from '../lib/payments/lnurl';
+import { parseNwcUri, payNwcInvoice, requestNwcInfo, type NwcRequestResult } from '../lib/nostr/nwc';
+import {
+  fetchZapReceiptsFromRelays,
+  signZapRequestLocally,
+  signZapRequestWithExtension,
+  validateZapReceipt,
+  type ZapRequestArgs
+} from '../lib/nostr/zaps';
 import {
   connectNostrSigner,
   decryptWithNostrSigner,
@@ -175,12 +185,14 @@ import type {
   ListingStatus,
   ListingType,
   ListingVisibility,
+  LightningPaymentAttempt,
   MediatorProfile,
   NostrContactReceipt,
   NostrContactReceiptStatus,
   NostrInboxCursor,
   NostrMessageRecord,
   NostrMessageThread,
+  NwcConnection,
   NostrSignerState,
   NostrReviewItem,
   PaymentIntent,
@@ -233,6 +245,18 @@ type NostrContactTarget = {
   contextType: NostrContactReceipt['contextType'];
   contextId?: string;
   contextTitle?: string;
+};
+type LightningPaymentRequest = {
+  listing: Listing;
+  sellerProfile?: PublicProfile;
+  lnurlSource: string;
+  amountSats: number;
+  publicNote: string;
+};
+type SaveNwcConnectionRequest = {
+  uri: string;
+  passphrase: string;
+  label?: string;
 };
 type SendNostrContactIntroArgs = NostrContactTarget & {
   message: string;
@@ -485,6 +509,44 @@ function listingRouteForRef(ref: ListingSourceRef): ListingRoute {
     : `listing/local/${encodeURIComponent(ref.id)}`;
 }
 
+function stringResultField(result: Record<string, unknown> | undefined, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = result?.[name];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function numberResultField(result: Record<string, unknown> | undefined, ...names: string[]): number | undefined {
+  for (const name of names) {
+    const value = result?.[name];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.floor(value);
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+    }
+  }
+  return undefined;
+}
+
+function paidAttemptFromNwcResult(attempt: LightningPaymentAttempt, result: NwcRequestResult): LightningPaymentAttempt {
+  const walletResult = result.payload.result;
+  return {
+    ...attempt,
+    status: 'paid',
+    nwcRequestEventId: result.request.id,
+    nwcResponseEventId: result.response.id,
+    nwcRelayUrl: result.relayUrl,
+    nwcResult: JSON.stringify(result.payload),
+    preimage: stringResultField(walletResult, 'preimage', 'payment_preimage'),
+    paymentHash: stringResultField(walletResult, 'payment_hash', 'paymentHash') ?? attempt.paymentHash,
+    feesPaidMsats: numberResultField(walletResult, 'fees_paid', 'fees_paid_msat', 'feesPaidMsats'),
+    statusDetail: stringResultField(walletResult, 'message'),
+    error: undefined,
+    updatedAt: nowIso()
+  };
+}
+
 function summarizeListingReceipts(listing: Listing, publishReceipts: PublishReceipt[]): PublishReceiptSummary {
   const receipts = publishReceipts.filter((receipt) => receipt.objectType === 'listing' && receipt.objectId === listing.id);
   return {
@@ -550,6 +612,9 @@ export function App(): ReactNode {
   const [nostrMessages, setNostrMessages] = useState<NostrMessageRecord[]>([]);
   const [nostrMessageThreads, setNostrMessageThreads] = useState<NostrMessageThread[]>([]);
   const [nostrInboxCursors, setNostrInboxCursors] = useState<NostrInboxCursor[]>([]);
+  const [lightningPaymentAttempts, setLightningPaymentAttempts] = useState<LightningPaymentAttempt[]>([]);
+  const [nwcConnections, setNwcConnections] = useState<NwcConnection[]>([]);
+  const [unlockedNwcSecrets, setUnlockedNwcSecrets] = useState<Record<string, string>>({});
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
   const [syncSettings, setSyncSettings] = useState<SyncSettings>(defaultSyncSettings);
   const [blossomServers, setBlossomServers] = useState<BlossomServerConfig[]>([]);
@@ -630,6 +695,8 @@ export function App(): ReactNode {
     setNostrMessages((await db.nostrMessages.toArray()).sort((left, right) => right.messageCreatedAt.localeCompare(left.messageCreatedAt)));
     setNostrMessageThreads((await db.nostrMessageThreads.toArray()).sort((left, right) => right.lastMessageAt.localeCompare(left.lastMessageAt)));
     setNostrInboxCursors(await db.nostrInboxCursors.toArray());
+    setLightningPaymentAttempts((await db.lightningPaymentAttempts.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    setNwcConnections((await db.nwcConnections.toArray()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
     setBlossomServers(await db.blossomServers.toArray());
@@ -1187,6 +1254,216 @@ export function App(): ReactNode {
     return summary;
   };
 
+  const createLightningPaymentAttempt = async (request: LightningPaymentRequest): Promise<LightningPaymentAttempt> => {
+    if (!identity) throw new Error(t('payment.identityRequired'));
+    const enabledRelays = relays.filter((relay) => relay.enabled);
+    if (enabledRelays.length === 0) throw new Error(t('nostrContact.relaysRequired'));
+    if (!Number.isInteger(request.amountSats) || request.amountSats <= 0) throw new Error(t('payment.amountRequired'));
+    const buyerPublicKey = identity.publicKey.toLowerCase();
+    const sellerPublicKey = request.listing.authorPublicKey.toLowerCase();
+    const amountMsats = request.amountSats * 1000;
+    const metadata = await fetchLnurlPayMetadata(request.lnurlSource);
+    const lnurlTag = lnurlTagForPayUrl(request.lnurlSource);
+    const zapRecipientPublicKey = metadata.nostrPubkey.toLowerCase();
+    const listingCoordinate = nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, sellerPublicKey, request.listing.id);
+    const zapArgs: ZapRequestArgs = {
+      buyerPublicKey,
+      sellerPublicKey: zapRecipientPublicKey,
+      amountMsats,
+      lnurl: lnurlTag,
+      relays: enabledRelays.map((relay) => relay.url),
+      content: sanitizePlainText(request.publicNote),
+      listingCoordinate
+    };
+    let zapRequest: NostrEvent;
+    if (identityCanUseLocalUnlock(identity) && privateKeyHex) {
+      zapRequest = signZapRequestLocally(zapArgs, privateKeyHex);
+    } else {
+      const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
+      if (!signer.connected || signer.publicKey?.toLowerCase() !== buyerPublicKey) throw new Error(t('payment.signerRequired'));
+      zapRequest = await signZapRequestWithExtension(zapArgs, (event) => signWithNostrSigner(event, buyerPublicKey));
+    }
+    const invoice = await requestLnurlInvoice(metadata, amountMsats, JSON.stringify(zapRequest));
+    const at = nowIso();
+    const attempt: LightningPaymentAttempt = {
+      id: newId('lightning_payment'),
+      buyerPublicKey,
+      sellerPublicKey,
+      listingId: request.listing.id,
+      listingTitle: request.listing.title,
+      amountSats: request.amountSats,
+      amountMsats,
+      lnurlSource: request.lnurlSource,
+      callbackUrl: metadata.callback,
+      sellerWalletPubkey: metadata.nostrPubkey,
+      zapRequestId: zapRequest.id,
+      zapRequest: JSON.stringify(zapRequest),
+      bolt11: invoice.bolt11,
+      receiptRelayUrls: [],
+      status: 'invoice-created',
+      createdAt: at,
+      updatedAt: at
+    };
+    await db.lightningPaymentAttempts.put(attempt);
+    await reload();
+    return attempt;
+  };
+
+  const checkLightningPaymentReceipt = async (attempt: LightningPaymentAttempt): Promise<LightningPaymentAttempt> => {
+    const zapRequest = parseNostrEvent(JSON.parse(attempt.zapRequest));
+    const since = Math.max(0, Math.floor(new Date(attempt.createdAt).getTime() / 1000) - 600);
+    const results = await fetchZapReceiptsFromRelays(relays, attempt.sellerWalletPubkey, since);
+    const receiptRelayUrls: string[] = [];
+    for (const result of results) {
+      for (const event of result.events) {
+        try {
+          const receipt = validateZapReceipt({
+            receipt: event,
+            zapRequest,
+            bolt11: attempt.bolt11,
+            sellerWalletPubkey: attempt.sellerWalletPubkey
+          });
+          receiptRelayUrls.push(result.relayUrl);
+          const updated: LightningPaymentAttempt = {
+            ...attempt,
+            receiptEventId: receipt.id,
+            receiptEvent: JSON.stringify(receipt),
+            receiptRelayUrls,
+            status: 'receipt-found',
+            updatedAt: nowIso(),
+            error: undefined
+          };
+          await db.lightningPaymentAttempts.put(updated);
+          await reload();
+          return updated;
+        } catch {
+          // Keep scanning for a matching, validated receipt.
+        }
+      }
+    }
+    const updated: LightningPaymentAttempt = {
+      ...attempt,
+      receiptRelayUrls: results.filter((result) => result.ok).map((result) => result.relayUrl),
+      updatedAt: nowIso(),
+      error: t('payment.receiptNotFound')
+    };
+    await db.lightningPaymentAttempts.put(updated);
+    await reload();
+    return updated;
+  };
+
+  const saveNwcConnection = async ({ uri, passphrase, label }: SaveNwcConnectionRequest): Promise<NwcConnection> => {
+    const parsed = parseNwcUri(uri);
+    const at = nowIso();
+    const connection: NwcConnection = {
+      id: 'nwc_default',
+      label: label?.trim() || parsed.lud16 || `${shortPublicKey(parsed.walletPublicKey)} wallet`,
+      walletPublicKey: parsed.walletPublicKey,
+      clientPublicKey: parsed.clientPublicKey,
+      relayUrls: parsed.relayUrls,
+      encryptedSecret: await encryptLocalSecret(parsed.clientSecret, passphrase),
+      lud16: parsed.lud16,
+      createdAt: nwcConnections.find((entry) => entry.id === 'nwc_default')?.createdAt ?? at,
+      updatedAt: at,
+      lastError: undefined
+    };
+    await db.transaction('rw', db.nwcConnections, async () => {
+      await db.nwcConnections.clear();
+      await db.nwcConnections.put(connection);
+    });
+    setUnlockedNwcSecrets({ [connection.id]: parsed.clientSecret });
+    await reload();
+    showNotice(t('nwc.saved'));
+    return connection;
+  };
+
+  const unlockNwcConnection = async (connection: NwcConnection, passphrase: string): Promise<void> => {
+    const secret = await decryptLocalSecret(connection.encryptedSecret, passphrase);
+    const parsed = parseNwcUri(`nostr+walletconnect://${connection.walletPublicKey}?relay=${encodeURIComponent(connection.relayUrls[0])}&secret=${secret}`);
+    if (parsed.clientPublicKey.toLowerCase() !== connection.clientPublicKey.toLowerCase()) {
+      throw new Error(t('nwc.unlockFailed'));
+    }
+    setUnlockedNwcSecrets((current) => ({ ...current, [connection.id]: secret }));
+    showNotice(t('nwc.unlocked'));
+  };
+
+  const lockNwcConnection = (connectionId: string): void => {
+    setUnlockedNwcSecrets((current) => {
+      const next = { ...current };
+      delete next[connectionId];
+      return next;
+    });
+    showNotice(t('nwc.locked'));
+  };
+
+  const disconnectNwcConnection = async (connectionId: string): Promise<void> => {
+    await db.nwcConnections.delete(connectionId);
+    setUnlockedNwcSecrets((current) => {
+      const next = { ...current };
+      delete next[connectionId];
+      return next;
+    });
+    await reload();
+    showNotice(t('nwc.disconnected'));
+  };
+
+  const testNwcConnection = async (connection: NwcConnection): Promise<void> => {
+    const secret = unlockedNwcSecrets[connection.id];
+    if (!secret) throw new Error(t('nwc.unlockRequired'));
+    try {
+      await requestNwcInfo(connection, secret);
+      await db.nwcConnections.put({ ...connection, lastConnectedAt: nowIso(), lastError: undefined, updatedAt: nowIso() });
+      await reload();
+      showNotice(t('nwc.testSuccess'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('nwc.testFailed');
+      await db.nwcConnections.put({ ...connection, lastError: message, updatedAt: nowIso() });
+      await reload();
+      throw new Error(message);
+    }
+  };
+
+  const payLightningAttemptWithNwc = async (attempt: LightningPaymentAttempt, connectionId: string): Promise<LightningPaymentAttempt> => {
+    const connection = nwcConnections.find((entry) => entry.id === connectionId);
+    if (!connection) throw new Error(t('nwc.noWallet'));
+    const secret = unlockedNwcSecrets[connection.id];
+    if (!secret) throw new Error(t('nwc.unlockRequired'));
+    if ((attempt.status === 'paid' || attempt.status === 'receipt-found') && attempt.nwcRequestEventId) return attempt;
+    const pending: LightningPaymentAttempt = {
+      ...attempt,
+      nwcConnectionId: connection.id,
+      nwcRelayUrl: connection.relayUrls[0],
+      status: 'wallet-payment-pending',
+      statusDetail: t('nwc.waitingForWallet'),
+      error: undefined,
+      updatedAt: nowIso()
+    };
+    await db.lightningPaymentAttempts.put(pending);
+    setLightningPaymentAttempts((current) => [pending, ...current.filter((entry) => entry.id !== pending.id)]);
+    try {
+      const result = await payNwcInvoice(connection, secret, attempt.bolt11);
+      const paid = paidAttemptFromNwcResult(pending, result);
+      await db.lightningPaymentAttempts.put(paid);
+      await db.nwcConnections.put({ ...connection, lastConnectedAt: nowIso(), lastError: undefined, updatedAt: nowIso() });
+      await reload();
+      showNotice(t('nwc.paymentPaid'));
+      return paid;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('nwc.paymentFailed');
+      const failed: LightningPaymentAttempt = {
+        ...pending,
+        status: 'failed',
+        error: message,
+        statusDetail: message,
+        updatedAt: nowIso()
+      };
+      await db.lightningPaymentAttempts.put(failed);
+      await db.nwcConnections.put({ ...connection, lastError: message, updatedAt: nowIso() });
+      await reload();
+      throw new Error(message);
+    }
+  };
+
   const updateNostrThread = async (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }): Promise<void> => {
     const messages = await db.nostrMessages.where('threadKey').equals(thread.threadKey).toArray();
     await db.nostrMessages.bulkPut(messages.map((message) => ({ ...message, ...changes })));
@@ -1365,6 +1642,9 @@ export function App(): ReactNode {
             nostrSigner={nostrSigner}
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
+            lightningPaymentAttempts={lightningPaymentAttempts}
+            nwcConnections={nwcConnections}
+            unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             relays={relays}
             syncSettings={syncSettings}
             communityLists={communityLists}
@@ -1397,6 +1677,11 @@ export function App(): ReactNode {
               )
             }
             onSendNostrIntro={sendNostrContactIntro}
+            onCreateLightningPaymentAttempt={createLightningPaymentAttempt}
+            onCheckLightningPaymentReceipt={checkLightningPaymentReceipt}
+            onSaveNwcConnection={saveNwcConnection}
+            onUnlockNwcConnection={unlockNwcConnection}
+            onPayLightningAttemptWithNwc={payLightningAttemptWithNwc}
             onStartTrade={(listingRef) => {
               setTradeListingRef(listingRef);
               go('trade');
@@ -1594,6 +1879,9 @@ export function App(): ReactNode {
             relayHealth={relayHealth}
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
+            lightningPaymentAttempts={lightningPaymentAttempts}
+            nwcConnections={nwcConnections}
+            unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             nostrMessages={nostrMessages}
             nostrMessageThreads={nostrMessageThreads}
             nostrInboxCursors={nostrInboxCursors}
@@ -1619,6 +1907,11 @@ export function App(): ReactNode {
             onFetchNostrInbox={fetchNostrInbox}
             onNostrThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
             onSendNostrIntro={sendNostrContactIntro}
+            onSaveNwcConnection={saveNwcConnection}
+            onUnlockNwcConnection={unlockNwcConnection}
+            onLockNwcConnection={lockNwcConnection}
+            onDisconnectNwcConnection={(connectionId) => void disconnectNwcConnection(connectionId)}
+            onTestNwcConnection={testNwcConnection}
             onChanged={(message = t('common.created'), next) => {
               showNotice(message, next);
               void reload();
@@ -1974,6 +2267,410 @@ function ListingImageGallery({ images = [], title }: { images?: ListingImage[]; 
   );
 }
 
+function listingLightningSource(listing: Listing, sellerProfile?: PublicProfile): string {
+  return (
+    listing.paymentIntents?.find((intent) => intent.method === 'lightning' && intent.value.trim())?.value.trim() ||
+    sellerProfile?.lightningAddress?.trim() ||
+    sellerProfile?.lnurl?.trim() ||
+    ''
+  );
+}
+
+function defaultLightningAmountSats(listing: Listing): string {
+  const amount = Number(listing.price.amount);
+  const currency = listing.price.currency.toUpperCase();
+  if (Number.isFinite(amount) && amount > 0 && ['SAT', 'SATS', 'MSAT', 'MSATS'].includes(currency)) {
+    return String(currency.startsWith('MSAT') ? Math.max(1, Math.ceil(amount / 1000)) : Math.ceil(amount));
+  }
+  return '100';
+}
+
+function LightningPaymentPanel({
+  listing,
+  sellerProfile,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  attempts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
+  onConnectSigner,
+  onCreatePaymentAttempt,
+  onCheckReceipt,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onPayWithNwc
+}: {
+  listing: Listing;
+  sellerProfile?: PublicProfile;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  attempts: LightningPaymentAttempt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
+  onConnectSigner: () => void;
+  onCreatePaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onPayWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const source = listingLightningSource(listing, sellerProfile);
+  const [amountSats, setAmountSats] = useState(defaultLightningAmountSats(listing));
+  const [publicNote, setPublicNote] = useState('');
+  const [walletUri, setWalletUri] = useState('');
+  const [walletPassphrase, setWalletPassphrase] = useState('');
+  const [showWalletConnect, setShowWalletConnect] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState('');
+  const [activeAttempt, setActiveAttempt] = useState<LightningPaymentAttempt | undefined>();
+  const onCheckReceiptRef = useRef(onCheckReceipt);
+  const activeAttemptRef = useRef(activeAttempt);
+  useEffect(() => {
+    onCheckReceiptRef.current = onCheckReceipt;
+  }, [onCheckReceipt]);
+  useEffect(() => {
+    activeAttemptRef.current = activeAttempt;
+  }, [activeAttempt]);
+  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+  const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+  const canUseSigner = Boolean(identity && nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase());
+  const listingAttempts = attempts.filter((attempt) => attempt.listingId === listing.id);
+  const visibleAttempt = activeAttempt ?? listingAttempts[0];
+  const walletConnection = nwcConnections[0];
+  const walletUnlocked = Boolean(walletConnection && unlockedNwcConnectionIds.includes(walletConnection.id));
+  const watchedAttemptId = activeAttempt?.id;
+  const watchedAttemptStatus = activeAttempt?.status;
+  const canGenerate = Boolean(identity && enabledRelayCount > 0 && Number(amountSats) > 0 && (canUseLocal || canUseSigner));
+  const canPayWithWallet = Boolean(source && canGenerate && walletConnection && walletUnlocked);
+  const duplicatePaymentSent = Boolean(visibleAttempt?.nwcRequestEventId && visibleAttempt.status !== 'failed');
+  const generate = async (): Promise<LightningPaymentAttempt> => {
+    setError('');
+    setWorking(true);
+    try {
+      const attempt = await onCreatePaymentAttempt({
+        listing,
+        sellerProfile,
+        lnurlSource: source,
+        amountSats: Math.floor(Number(amountSats)),
+        publicNote
+      });
+      setActiveAttempt(attempt);
+      return attempt;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('payment.invoiceFailed'));
+      throw err;
+    } finally {
+      setWorking(false);
+    }
+  };
+  const connectWallet = async (): Promise<void> => {
+    setError('');
+    setWorking(true);
+    try {
+      await onSaveNwcConnection({ uri: walletUri, passphrase: walletPassphrase });
+      setWalletUri('');
+      setShowWalletConnect(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.invalidUri'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const unlockWallet = async (): Promise<void> => {
+    if (!walletConnection) return;
+    setError('');
+    setWorking(true);
+    try {
+      await onUnlockNwcConnection(walletConnection, walletPassphrase);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.unlockFailed'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const pay = async (): Promise<void> => {
+    setError('');
+    if (!walletConnection) {
+      setShowWalletConnect(true);
+      return;
+    }
+    if (!walletUnlocked) {
+      setError(t('nwc.unlockRequired'));
+      return;
+    }
+    if (duplicatePaymentSent) {
+      setError(t('nwc.duplicateWarning'));
+      return;
+    }
+    setWorking(true);
+    try {
+      const attempt =
+        visibleAttempt && (visibleAttempt.status === 'invoice-created' || visibleAttempt.status === 'failed') ? visibleAttempt : await generate();
+      setActiveAttempt(await onPayWithNwc(attempt, walletConnection.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('nwc.paymentFailed'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const check = async (attempt: LightningPaymentAttempt): Promise<void> => {
+    setError('');
+    setWorking(true);
+    try {
+      setActiveAttempt(await onCheckReceipt(attempt));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('payment.receiptCheckFailed'));
+    } finally {
+      setWorking(false);
+    }
+  };
+  useEffect(() => {
+    const watchedAttempt = activeAttemptRef.current;
+    if (!watchedAttempt || watchedAttempt.status !== 'invoice-created') return;
+    let cancelled = false;
+    let checks = 0;
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const tick = (): void => {
+      if (cancelled || checks >= 5) return;
+      checks += 1;
+      void onCheckReceiptRef.current(watchedAttempt)
+        .then((updated) => {
+          if (cancelled) return;
+          setActiveAttempt(updated);
+          if (updated.status === 'invoice-created' && checks < 5) {
+            timer = globalThis.setTimeout(tick, 12000);
+          }
+        })
+        .catch(() => {
+          if (!cancelled && checks < 5) timer = globalThis.setTimeout(tick, 12000);
+        });
+    };
+    timer = globalThis.setTimeout(tick, 12000);
+    return () => {
+      cancelled = true;
+      if (timer) globalThis.clearTimeout(timer);
+    };
+  }, [watchedAttemptId, watchedAttemptStatus]);
+  if (!source) return null;
+  return (
+    <section className="lightning-payment-panel">
+      <div className="row">
+        <ReceiptText size={16} aria-hidden="true" />
+        <strong>{t('payment.lightningTitle')}</strong>
+      </div>
+      <p className="muted">{walletConnection ? t('nwc.confirmationWarning') : t('nwc.noWalletInline')}</p>
+      <label>
+        {t('payment.amountSats')}
+        <input inputMode="numeric" min="1" type="number" value={amountSats} onChange={(event) => setAmountSats(event.target.value)} />
+      </label>
+      <label>
+        {t('payment.publicNote')}
+        <input maxLength={240} placeholder={t('payment.publicNotePlaceholder')} value={publicNote} onChange={(event) => setPublicNote(event.target.value)} />
+      </label>
+      {!identity ? <p className="warning compact-warning">{t('payment.identityRequired')}</p> : null}
+      {identity && enabledRelayCount === 0 ? <p className="warning compact-warning">{t('nostrContact.relaysRequired')}</p> : null}
+      {identity && !canUseLocal && !canUseSigner ? <p className="warning compact-warning">{t('payment.signerRequired')}</p> : null}
+      {walletConnection && !walletUnlocked ? <p className="warning compact-warning">{t('nwc.unlockRequired')}</p> : null}
+      {error ? <p className="warning" role="alert">{error}</p> : null}
+      {showWalletConnect || !walletConnection ? (
+        <div className="inline-card">
+          <strong>{t('nwc.title')}</strong>
+          <label>
+            {t('nwc.uri')}
+            <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
+          </label>
+          <label>
+            {t('nwc.passphrase')}
+            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+          </label>
+          <p className="muted">{t('nwc.notBackedUp')}</p>
+          <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
+            {t('nwc.connect')}
+          </button>
+        </div>
+      ) : !walletUnlocked ? (
+        <div className="inline-card">
+          <strong>{walletConnection.label}</strong>
+          <label>
+            {t('nwc.passphrase')}
+            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+          </label>
+          <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
+            {t('nwc.unlock')}
+          </button>
+        </div>
+      ) : (
+        <p className="ok compact-warning">{t('nwc.connected')}</p>
+      )}
+      <div className="actions small">
+        {identity && !canUseLocal && !canUseSigner ? (
+          <button className="subtle" onClick={onConnectSigner} type="button">
+            <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+          </button>
+        ) : null}
+        <button disabled={!canPayWithWallet || working || duplicatePaymentSent} onClick={() => void pay()} type="button">
+          {working
+            ? t('payment.working')
+            : visibleAttempt?.status === 'failed'
+              ? t('nwc.retryPayment')
+              : visibleAttempt?.status === 'paid'
+                ? t('nwc.paymentPaid')
+                : t('nwc.pay')}
+        </button>
+      </div>
+      {visibleAttempt ? (
+        <article className="inline-card">
+          <div className="row between">
+            <strong>{t(`payment.status.${visibleAttempt.status}`)}</strong>
+            {visibleAttempt.status === 'failed' && visibleAttempt.nwcConnectionId ? <span className="warning mini">{t('nwc.retryWarning')}</span> : null}
+          </div>
+          {visibleAttempt.error ? <p className="muted">{visibleAttempt.error}</p> : null}
+          {visibleAttempt.statusDetail ? <p className="muted">{visibleAttempt.statusDetail}</p> : null}
+        </article>
+      ) : null}
+      <DisclosurePanel title={t('payment.details')}>
+        <SafetyNotice>{t('payment.metadataWarning')}</SafetyNotice>
+        <p className="key">{source}</p>
+        {visibleAttempt ? (
+          <div className="actions small">
+            <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
+              {t('payment.copyInvoice')}
+            </button>
+            <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
+              {t('payment.openInvoice')}
+            </button>
+            <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
+              {t('payment.checkReceipt')}
+            </button>
+          </div>
+        ) : (
+          <button disabled={!canGenerate || working} onClick={() => void generate()} type="button">
+            {working ? t('payment.working') : t('payment.generateInvoice')}
+          </button>
+        )}
+        {visibleAttempt?.nwcRequestEventId ? <p className="key">{visibleAttempt.nwcRequestEventId}</p> : null}
+        {visibleAttempt?.nwcResponseEventId ? <p className="key">{visibleAttempt.nwcResponseEventId}</p> : null}
+        {listingAttempts.slice(0, 3).map((attempt) => (
+          <p className="muted" key={attempt.id}>
+            {attempt.createdAt} · {attempt.amountSats} sats · {t(`payment.status.${attempt.status}`)}
+          </p>
+        ))}
+      </DisclosurePanel>
+    </section>
+  );
+}
+
+function NwcWalletPanel({
+  connections,
+  unlockedConnectionIds,
+  onSave,
+  onUnlock,
+  onLock,
+  onDisconnect,
+  onTest
+}: {
+  connections: NwcConnection[];
+  unlockedConnectionIds: string[];
+  onSave: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlock: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onLock: (connectionId: string) => void;
+  onDisconnect: (connectionId: string) => void;
+  onTest: (connection: NwcConnection) => Promise<void>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [uri, setUri] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+  const [message, setMessage] = useState('');
+  const [working, setWorking] = useState(false);
+  const connection = connections[0];
+  const unlocked = Boolean(connection && unlockedConnectionIds.includes(connection.id));
+  const run = async (action: () => Promise<void>, fallback: string): Promise<void> => {
+    setMessage('');
+    setWorking(true);
+    try {
+      await action();
+      setMessage('');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : fallback);
+    } finally {
+      setWorking(false);
+    }
+  };
+  return (
+    <DisclosurePanel title={t('nwc.title')} defaultOpen>
+      <p className="muted">{t('nwc.body')}</p>
+      {connection ? (
+        <article className="inline-card">
+          <div className="row between">
+            <strong>{connection.label}</strong>
+            <span className={unlocked ? 'ok mini' : 'warning mini'}>{unlocked ? t('nwc.unlocked') : t('nwc.locked')}</span>
+          </div>
+          <p className="key">{connection.walletPublicKey}</p>
+          <p className="muted">
+            {connection.relayUrls.join(', ')}
+            {connection.lastConnectedAt ? ` · ${connection.lastConnectedAt}` : ''}
+          </p>
+          {connection.lastError ? <p className="warning">{connection.lastError}</p> : null}
+          {!unlocked ? (
+            <label>
+              {t('nwc.passphrase')}
+              <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} />
+            </label>
+          ) : null}
+          {message ? <p className="warning" role="alert">{message}</p> : null}
+          <div className="actions small">
+            {!unlocked ? (
+              <button disabled={working || passphrase.length < 10} onClick={() => void run(() => onUnlock(connection, passphrase), t('nwc.unlockFailed'))} type="button">
+                {t('nwc.unlock')}
+              </button>
+            ) : (
+              <button className="subtle" onClick={() => onLock(connection.id)} type="button">
+                {t('nwc.lock')}
+              </button>
+            )}
+            <button className="subtle" disabled={working || !unlocked} onClick={() => void run(() => onTest(connection), t('nwc.testFailed'))} type="button">
+              {t('nwc.test')}
+            </button>
+            <button className="danger" disabled={working} onClick={() => onDisconnect(connection.id)} type="button">
+              {t('nwc.disconnect')}
+            </button>
+          </div>
+        </article>
+      ) : (
+        <div className="inline-card">
+          <label>
+            {t('nwc.uri')}
+            <input placeholder={t('nwc.uriPlaceholder')} value={uri} onChange={(event) => setUri(event.target.value)} />
+          </label>
+          <label>
+            {t('nwc.passphrase')}
+            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} />
+          </label>
+          <p className="muted">{t('nwc.notBackedUp')}</p>
+          {message ? <p className="warning" role="alert">{message}</p> : null}
+          <button
+            disabled={working || !uri.trim() || passphrase.length < 10}
+            onClick={() =>
+              void run(async () => {
+                await onSave({ uri, passphrase });
+                setUri('');
+              }, t('nwc.invalidUri'))
+            }
+            type="button"
+          >
+            {t('nwc.connect')}
+          </button>
+        </div>
+      )}
+    </DisclosurePanel>
+  );
+}
+
 function NostrContactPanel({
   target,
   identity,
@@ -2153,6 +2850,9 @@ function ListingPage({
   nostrSigner,
   publishReceipts,
   nostrContactReceipts,
+  lightningPaymentAttempts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
   relays,
   syncSettings,
   communityLists,
@@ -2164,6 +2864,11 @@ function ListingPage({
   onListingSaved,
   onPublish,
   onSendNostrIntro,
+  onCreateLightningPaymentAttempt,
+  onCheckLightningPaymentReceipt,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onPayLightningAttemptWithNwc,
   onStartTrade,
   onToggleHidden
 }: {
@@ -2181,6 +2886,9 @@ function ListingPage({
   nostrSigner: NostrSignerState;
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
   relays: RelayConfig[];
   syncSettings: SyncSettings;
   communityLists: CommunityCurationList[];
@@ -2192,6 +2900,11 @@ function ListingPage({
   onListingSaved: (listing: Listing) => void;
   onPublish: (listing: Listing) => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onPayLightningAttemptWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
   onStartTrade: (listingRef: ListingSourceRef) => void;
   onToggleHidden: (record: SyncedPublicRecord<Listing>, hidden: boolean) => void;
 }): ReactNode {
@@ -2218,6 +2931,10 @@ function ListingPage({
       ? { source: 'local', id: listing.id, listing }
       : { source: 'synced', id: listing.id, recordId: syncedRecord?.id, listing };
   const sellerSummary = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, attestations, syncedAttestations, allowlist);
+  const sellerProfile =
+    profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
+      ? profile
+      : syncedProfiles.find((record) => record.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
   const canPublish = relays.some((relay) => relay.enabled);
@@ -2308,6 +3025,23 @@ function ListingPage({
           </section>
         </article>
         <aside className="panel listing-actions">
+          <LightningPaymentPanel
+            listing={listing}
+            sellerProfile={sellerProfile}
+            identity={identity}
+            privateKeyHex={privateKeyHex}
+            nostrSigner={nostrSigner}
+            relays={relays}
+            attempts={lightningPaymentAttempts}
+            nwcConnections={nwcConnections}
+            unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+            onConnectSigner={onConnectSigner}
+            onCreatePaymentAttempt={onCreateLightningPaymentAttempt}
+            onCheckReceipt={onCheckLightningPaymentReceipt}
+            onSaveNwcConnection={onSaveNwcConnection}
+            onUnlockNwcConnection={onUnlockNwcConnection}
+            onPayWithNwc={onPayLightningAttemptWithNwc}
+          />
           {nostrContact ? (
             <NostrContactPanel
               target={{
@@ -3091,6 +3825,9 @@ function ListingCreatePanel({
     priceCurrency: initialListing?.price.currency ?? 'FREE',
     priceFrequency: initialListing?.price.frequency ?? '',
     priceNote: initialListing?.price.note ?? '',
+    paymentPreferences: initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]),
+    lightningPayment: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.value ?? '',
+    lightningPaymentNote: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.note ?? '',
     barterAccepted: initialListing?.barterAccepted ?? false,
     tags: initialListing?.tags.join(', ') ?? '',
     contactKind: (initialListing?.contactMethod.kind ?? profile?.contactMethods?.[0]?.kind ?? 'matrix') as ContactKind,
@@ -3200,6 +3937,13 @@ function ListingCreatePanel({
     setImageDrafts((current) => current.map((draft) => (draft.id === id ? { ...draft, altText } : draft)));
   };
 
+  const togglePaymentPreference = (preference: PaymentPreference, checked: boolean): void => {
+    const next = checked
+      ? Array.from(new Set([...form.paymentPreferences, preference]))
+      : form.paymentPreferences.filter((entry) => entry !== preference);
+    setForm({ ...form, paymentPreferences: next.length > 0 ? next : ['other'] });
+  };
+
   const uploadListingImages = async (): Promise<Map<string, ListingImage>> => {
     if (!authorPublicKey || newImageDrafts.length === 0) return new Map();
     if (!enabledBlossomServer) {
@@ -3246,6 +3990,27 @@ function ListingCreatePanel({
       }
       const at = nowIso();
       const uploadedImages = await uploadListingImages();
+      const existingNonLightningPaymentIntents = initialListing?.paymentIntents?.filter((intent) => intent.method !== 'lightning') ?? [];
+      const lightningPaymentValue = sanitizePlainText(form.lightningPayment);
+      const lightningPaymentNote = sanitizePlainText(form.lightningPaymentNote);
+      const paymentPreferences = Array.from(
+        new Set<PaymentPreference>([
+          ...form.paymentPreferences,
+          ...(lightningPaymentValue ? (['lightning'] as PaymentPreference[]) : []),
+          ...(form.barterAccepted ? (['barter'] as PaymentPreference[]) : [])
+        ])
+      );
+      const paymentIntents = lightningPaymentValue
+        ? [
+            ...existingNonLightningPaymentIntents,
+            {
+              id: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.id ?? newId('payment'),
+              method: 'lightning' as const,
+              value: lightningPaymentValue,
+              note: lightningPaymentNote
+            }
+          ]
+        : existingNonLightningPaymentIntents;
       const images = imageDrafts
         .map((draft): ListingImage | undefined => {
           if (draft.kind === 'existing') {
@@ -3269,8 +4034,8 @@ function ListingCreatePanel({
           frequency: sanitizePlainText(form.priceFrequency) || undefined,
           note: sanitizePlainText(form.priceNote) || undefined
         },
-        paymentPreferences: initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]),
-        paymentIntents: initialListing?.paymentIntents ?? [],
+        paymentPreferences: paymentPreferences.length > 0 ? paymentPreferences : (['other'] as PaymentPreference[]),
+        paymentIntents,
         images,
         ...(initialListing?.fulfillmentType !== undefined ? { fulfillmentType: initialListing.fulfillmentType } : {}),
         ...(initialListing?.fulfillmentNotes !== undefined ? { fulfillmentNotes: initialListing.fulfillmentNotes } : {}),
@@ -3553,6 +4318,22 @@ function ListingCreatePanel({
               />
               {t('listing.barter')}
             </label>
+            <div className="chip-fieldset" role="group" aria-label={t('listing.paymentOptions')}>
+              <span>{t('listing.paymentOptions')}</span>
+              <div className="chip-row">
+                {(['cash', 'barter', 'other'] as PaymentPreference[]).map((preference) => (
+                  <label className="chip-checkbox" key={preference}>
+                    <input
+                      type="checkbox"
+                      checked={form.paymentPreferences.includes(preference)}
+                      onChange={(event) => togglePaymentPreference(preference, event.target.checked)}
+                    />
+                    {paymentBadgeLabel(preference, t)}
+                  </label>
+                ))}
+              </div>
+              <FieldHint>{t('listing.paymentOptionsHelp')}</FieldHint>
+            </div>
             <label>
               {t('agreement.mediator')}
               <input
@@ -3561,6 +4342,25 @@ function ListingCreatePanel({
                 onChange={(event) => setForm({ ...form, mediatorPreference: event.target.value })}
               />
             </label>
+            <div className="listing-form-row two-up">
+              <label>
+                {t('listing.lightningOverride')}
+                <input
+                  placeholder={t('placeholder.lightningAddress')}
+                  value={form.lightningPayment}
+                  onChange={(event) => setForm({ ...form, lightningPayment: event.target.value })}
+                />
+              </label>
+              <label>
+                {t('listing.paymentIntentNote')}
+                <input
+                  placeholder={t('placeholder.paymentIntentNote')}
+                  value={form.lightningPaymentNote}
+                  onChange={(event) => setForm({ ...form, lightningPaymentNote: event.target.value })}
+                />
+              </label>
+            </div>
+            <FieldHint>{t('listing.lightningOverrideHelp')}</FieldHint>
           </fieldset>
         </DisclosurePanel>
         <button disabled={!authorCanSave || saving} title={!authorCanSave ? t('a11y.identityRequired') : undefined} type="submit">
@@ -3625,6 +4425,8 @@ function ProfilePage({
   const [form, setForm] = useState({
     bio: profile?.bio ?? '',
     avatarUrl: profile?.avatarUrl ?? '',
+    lightningAddress: profile?.lightningAddress ?? '',
+    lnurl: profile?.lnurl ?? '',
     region: profile?.region ?? '',
     languages: profile?.languages?.join(', ') ?? 'en, cs',
     contactKind: (profile?.contactMethods?.[0]?.kind ?? 'matrix') as ContactKind,
@@ -3651,6 +4453,8 @@ function ProfilePage({
     setForm({
       bio: profile?.bio ?? '',
       avatarUrl: profile?.avatarUrl ?? '',
+      lightningAddress: profile?.lightningAddress ?? '',
+      lnurl: profile?.lnurl ?? '',
       region: profile?.region ?? '',
       languages: profile?.languages?.join(', ') ?? 'en, cs',
       contactKind: (profile?.contactMethods?.[0]?.kind ?? 'matrix') as ContactKind,
@@ -3729,7 +4533,9 @@ function ProfilePage({
     setForm((current) => ({
       ...current,
       bio: prefill.bio ?? current.bio,
-      avatarUrl: prefill.avatarUrl ?? current.avatarUrl
+      avatarUrl: prefill.avatarUrl ?? current.avatarUrl,
+      lightningAddress: prefill.lightningAddress ?? current.lightningAddress,
+      lnurl: prefill.lnurl ?? current.lnurl
     }));
     setMetadataMessage(t('identity.metadataImported'));
   };
@@ -3786,6 +4592,8 @@ function ProfilePage({
         displayName: sanitizePlainText(name || identity.displayName),
         publicKey: identity.publicKey,
         avatarUrl,
+        lightningAddress: sanitizePlainText(form.lightningAddress),
+        lnurl: sanitizePlainText(form.lnurl),
         bio: sanitizePlainText(form.bio),
         region: sanitizePlainText(form.region),
         languages: splitList(form.languages),
@@ -4075,6 +4883,21 @@ function ProfilePage({
               <input accept="image/jpeg,image/png,image/webp" type="file" onChange={selectAvatarFile} />
               <FieldHint>{enabledBlossomServer ? t('profile.avatarUploadHelp') : t('profile.avatarNoBlossomServer')}</FieldHint>
             </label>
+            <div className="two">
+              <label>
+                {t('profile.lightningAddress')}
+                <input
+                  placeholder={t('placeholder.lightningAddress')}
+                  value={form.lightningAddress}
+                  onChange={(event) => setForm({ ...form, lightningAddress: event.target.value })}
+                />
+              </label>
+              <label>
+                {t('profile.lnurl')}
+                <input placeholder={t('placeholder.lnurl')} value={form.lnurl} onChange={(event) => setForm({ ...form, lnurl: event.target.value })} />
+              </label>
+            </div>
+            <FieldHint>{t('profile.lightningHelp')}</FieldHint>
             {avatarFile && !privateKeyHex && !(nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity?.publicKey.toLowerCase()) ? (
               <ActionHint>
                 {t('profile.avatarSignerRequired')}{' '}
@@ -4199,12 +5022,9 @@ function ProfilePage({
             </button>
             {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
             {profile?.publicVisibility ? (
-              <DisclosurePanel title={t('ui.whyMatters')}>
-                <SafetyNotice>{t('safety.publicPublish')}</SafetyNotice>
-                <button onClick={() => onPublish(profile)} type="button">
-                  <Radio size={16} /> {t('common.publish')}
-                </button>
-              </DisclosurePanel>
+              <button onClick={() => onPublish(profile)} type="button">
+                <Radio size={16} /> {t('common.publish')}
+              </button>
             ) : null}
           </form>
         ) : null}
@@ -6048,6 +6868,9 @@ function SettingsPage({
   relayHealth,
   publishReceipts,
   nostrContactReceipts,
+  lightningPaymentAttempts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
   nostrMessages,
   nostrMessageThreads,
   nostrInboxCursors,
@@ -6073,6 +6896,11 @@ function SettingsPage({
   onFetchNostrInbox,
   onNostrThreadChange,
   onSendNostrIntro,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onLockNwcConnection,
+  onDisconnectNwcConnection,
+  onTestNwcConnection,
   onChanged
 }: {
   listings: Listing[];
@@ -6081,6 +6909,9 @@ function SettingsPage({
   relayHealth: RelayHealth[];
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
   nostrMessages: NostrMessageRecord[];
   nostrMessageThreads: NostrMessageThread[];
   nostrInboxCursors: NostrInboxCursor[];
@@ -6109,6 +6940,11 @@ function SettingsPage({
   onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
   onNostrThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onLockNwcConnection: (connectionId: string) => void;
+  onDisconnectNwcConnection: (connectionId: string) => void;
+  onTestNwcConnection: (connection: NwcConnection) => Promise<void>;
   onChanged: (message?: string, next?: NextStep) => void;
 }): ReactNode {
   const { t } = useI18n();
@@ -7086,6 +7922,42 @@ function SettingsPage({
                   </article>
                 ))}
                 {nostrContactReceipts.length === 0 ? <EmptyState title={t('nostrContact.noReceiptsTitle')} body={t('nostrContact.noReceiptsBody')} /> : null}
+              </div>
+            </DisclosurePanel>
+            <NwcWalletPanel
+              connections={nwcConnections}
+              unlockedConnectionIds={unlockedNwcConnectionIds}
+              onSave={onSaveNwcConnection}
+              onUnlock={onUnlockNwcConnection}
+              onLock={onLockNwcConnection}
+              onDisconnect={onDisconnectNwcConnection}
+              onTest={onTestNwcConnection}
+            />
+            <DisclosurePanel title={t('payment.attempts')}>
+              <div className="card-grid single">
+                {lightningPaymentAttempts.slice(0, 12).map((attempt) => (
+                  <article className="card compact" key={attempt.id}>
+                    <div className="row between">
+                      <span className="pill">{t(`payment.status.${attempt.status}`)}</span>
+                      <span className="muted">{attempt.amountSats} sats</span>
+                    </div>
+                    <p className="muted">
+                      {attempt.listingTitle || attempt.listingId || t('common.none')} · {attempt.createdAt}
+                    </p>
+                    <p className="key">{attempt.bolt11}</p>
+                    <p className="muted">
+                      {t('sync.published')}: {attempt.receiptRelayUrls.length} · {attempt.error || t('common.none')}
+                    </p>
+                    {attempt.nwcRequestEventId ? (
+                      <p className="muted">
+                        NWC: {attempt.nwcRelayUrl || t('common.none')} · {attempt.feesPaidMsats ?? 0} msats fee
+                      </p>
+                    ) : null}
+                    {attempt.receiptEventId ? <p className="key">{attempt.receiptEventId}</p> : null}
+                    {attempt.nwcResponseEventId ? <p className="key">{attempt.nwcResponseEventId}</p> : null}
+                  </article>
+                ))}
+                {lightningPaymentAttempts.length === 0 ? <EmptyState title={t('payment.noAttemptsTitle')} body={t('payment.noAttemptsBody')} /> : null}
               </div>
             </DisclosurePanel>
             <DisclosurePanel key={shouldOpenAdvancedReview ? 'review-route-open' : 'review-route-closed'} title={t('settings.advancedReviewQueue')} defaultOpen={shouldOpenAdvancedReview}>

@@ -105,7 +105,7 @@ describe('Nostr event serialization', () => {
       status: 'active',
       price: { amount: '1000', currency: 'CZK' },
       paymentPreferences: ['lightning', 'cashu'],
-      paymentIntents: [{ id: 'payment_1', method: 'cashu', value: 'cashuAexample', note: 'Public token instruction' }],
+      paymentIntents: [{ id: 'payment_1', method: 'lightning', value: 'seller@example.com', note: 'Public invoice handoff' }],
       fulfillmentType: 'local-pickup',
       fulfillmentNotes: 'Public meetup area.',
       barterAccepted: false,
@@ -118,9 +118,14 @@ describe('Nostr event serialization', () => {
     };
 
     expect(publicListingPayload(listing)).toMatchObject({
-      paymentIntents: [{ method: 'cashu', value: 'cashuAexample' }],
+      paymentIntents: [{ method: 'lightning', value: 'seller@example.com' }],
       fulfillmentType: 'local-pickup',
       fulfillmentNotes: 'Public meetup area.'
+    });
+    const event = signListing(listing, bytesToHex(privateKey));
+    expect(event.tags).toContainEqual(['payment_intent', 'lightning', 'seller@example.com', 'Public invoice handoff']);
+    expect(parseAgoraEventPayload(event)).toMatchObject({
+      paymentIntents: [{ method: 'lightning', value: 'seller@example.com', note: 'Public invoice handoff' }]
     });
     expect(() =>
       publicListingPayload({
@@ -202,6 +207,8 @@ describe('Nostr event serialization', () => {
         display_name: 'Alice Nostr',
         about: 'Public profile text',
         picture: 'https://example.test/avatar.png',
+        lud16: 'alice@example.test',
+        lud06: 'LNURL1DP68GURN8GHJ7MRWW4EXCTNDD9HX7UM5D9HK2MR99E3K7MF0D3H82UNVWQHKZMNV9EJX2UN9WQHKXUN0D3SHJTNHV4KXJCTWVSQ',
         secret: 'ignored'
       })
     );
@@ -210,6 +217,8 @@ describe('Nostr event serialization', () => {
       displayName: 'Alice Nostr',
       publicKey: 'a'.repeat(64),
       avatarUrl: 'https://example.test/avatar.png',
+      lightningAddress: 'alice@example.test',
+      lnurl: 'LNURL1DP68GURN8GHJ7MRWW4EXCTNDD9HX7UM5D9HK2MR99E3K7MF0D3H82UNVWQHKZMNV9EJX2UN9WQHKXUN0D3SHJTNHV4KXJCTWVSQ',
       bio: 'Public profile text'
     });
   });

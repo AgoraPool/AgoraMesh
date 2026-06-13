@@ -29,8 +29,8 @@ Use this checklist before publishing a v1 release candidate. A release candidate
 - Create a signed annotated tag only after automated and manual gates pass:
 
 ```bash
-git tag -s v0.34.0-rc.1 -m "AgoraMesh v0.34.0 RC 1"
-git push origin v0.34.0-rc.1
+git tag -s v0.36.0-rc.1 -m "AgoraMesh v0.36.0 RC 1"
+git push origin v0.36.0-rc.1
 ```
 
 - Attach verified artifacts manually if creating a GitHub Release.
@@ -40,7 +40,7 @@ git push origin v0.34.0-rc.1
 ## Deferred Post-RC Work
 
 - Private Nostr trade coordination protocol design.
-- NIP-47 and NIP-57 non-custodial payment investigations.
+- WebLN wallet execution, NWC background polling, and automated payment confirmation.
 - Deeper spam/moderation triage.
 - Relay score tuning from real-world usage.
 - Conflict merge and explicit version-selection UX.

@@ -28,7 +28,7 @@ Empty-state panels explain what to do when a view has no matching local or synce
 
 After saving a profile, listing, relay, or cache/diagnostic item, AgoraMesh shows action-specific feedback and a small next-step prompt. These prompts are navigation aids; they do not automate publishing, importing, or trust decisions.
 
-Create Listing no longer asks for payment preferences or fulfillment details. Existing or imported payment intents may still appear on item pages as public instructions: a payment URI, address, public handle, Cashu instruction, or note. AgoraMesh does not connect wallets, execute payment, confirm settlement, hold funds, or provide escrow.
+Create Listing keeps payment details out of the primary flow, but profiles can publish a Lightning address/LNURL and listings can override it when needed. Existing or imported payment intents may still appear on item pages as public instructions: a payment URI, address, public handle, Cashu instruction, or note. Lightning payments use LNURL/NIP-57 invoice creation: AgoraMesh creates a signed zap request and BOLT11 invoice. If you connect and unlock a NIP-47/NWC wallet, AgoraMesh can send an explicit `pay_invoice` request; otherwise it shows the invoice for your external wallet. AgoraMesh does not confirm fulfillment, hold funds, or provide escrow.
 
 Fulfillment labels such as local pickup, shipping, delivery, digital, and other are public discovery hints. Use approximate pickup or delivery notes and keep exact private logistics in the Trade workflow or an external channel.
 
@@ -36,7 +36,7 @@ Seller summaries in listing details are local context from public profiles, repu
 
 Listing images are optional public media. Configure a Blossom media server in Settings before uploading. Do not upload receipts, faces, exact addresses, private documents, evidence files, or sensitive screenshots. If images are selected, AgoraMesh uploads them before saving and shows a visible error if the upload is blocked or rejected.
 
-Payment intents should never contain wallet seeds, private keys, private invoice memos, refund secrets, private settlement details, custody wording, or escrow wording. They are public marketplace metadata once published.
+Payment intents and Lightning public notes should never contain wallet seeds, private keys, private invoice memos, refund secrets, private settlement details, custody wording, or escrow wording. They are public marketplace metadata once published. NWC wallet connection secrets are encrypted locally with a separate wallet passphrase and are intentionally excluded from backups. Zap receipts are public payment-server attestations, not delivery guarantees, identity verification, dispute resolution, or fulfillment proof.
 
 Community curation lists live under Marketplace More filters in the Curation group. They point to visible public marketplace records with Nostr coordinates. Publishing a list is explicit, and valid fetched public lists enter the synced public cache before appearing in discovery.
 

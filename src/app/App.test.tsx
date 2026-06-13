@@ -846,7 +846,7 @@ describe('production readiness UI', () => {
     expect(await screen.findByRole('tab', { name: 'Create listing' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByLabelText('Visibility')).toHaveValue('public');
     expect(screen.getByLabelText('Expiration date')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Payment')).not.toBeInTheDocument();
+    expect(screen.queryByText('Other payment options')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Listing images')).toBeInTheDocument();
     expect(screen.getByLabelText('Tags')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More details' }));
@@ -854,7 +854,10 @@ describe('production readiness UI', () => {
     expect(screen.queryByRole('group', { name: 'Payment' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Fulfillment')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Fulfillment notes')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Cash')).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Other payment options' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Cash')).toBeInTheDocument();
+    expect(screen.getByLabelText('Barter')).toBeInTheDocument();
+    expect(screen.getByLabelText('Other')).toBeInTheDocument();
     expect(screen.queryByLabelText('Payment method')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Payment address or URI')).not.toBeInTheDocument();
   });

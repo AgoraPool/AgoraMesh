@@ -945,6 +945,43 @@ h3 {
   scrollbar-width: thin;
 }
 
+.chip-fieldset {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.chip-fieldset > span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: auto;
+  min-height: 2.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.35rem 0.6rem;
+  background: transparent;
+}
+
+.chip-checkbox:has(input:checked) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.chip-checkbox input {
+  width: auto;
+}
+
 .filter-chip {
   min-height: 2.25rem;
   border-color: var(--line);
@@ -1588,6 +1625,28 @@ dd {
 .inline-card p,
 .payment-intents h4 {
   margin: 0;
+}
+
+.lightning-payment-panel {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: clamp(0.85rem, 2vw, 1rem);
+}
+
+.lightning-payment-panel label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.lightning-payment-panel .inline-card {
+  background: var(--surface);
+}
+
+.lightning-payment-panel .key {
+  max-height: 9rem;
+  overflow: auto;
 }
 
 .receipt-summary {

@@ -29,7 +29,7 @@ All publication paths pass through a sensitive-field guard. Events containing pr
 
 Listings publish as NIP-99 classified listing events. Title, description, location, price, status, images, tags, and contact metadata are public relay data. Passphrase-encrypted listing publication is intentionally not part of the NIP-99 marketplace path; private order or contact encryption is deferred to a later protocol sprint.
 
-Listings may include public fulfillment hints, image metadata, and payment intents: method, public address or URI, and a short note. Cashu is treated as a public instruction type only, not wallet execution. Publication guards reject private or custodial wording such as seeds, private keys, Cashu secrets, private invoice memos, custody, or escrow. AgoraMesh does not connect wallets, execute payments, confirm settlement, or provide escrow.
+Profiles may include public Lightning metadata: `lud16`/Lightning address and `lud06`/LNURL. Listings may include public fulfillment hints, image metadata, and payment intents: method, public address or URI, and a short note. Cashu is treated as a public instruction type only, not wallet execution. Lightning LNURL/NIP-57 support signs a zap request, sends it to the seller LNURL-pay callback, and receives a BOLT11 invoice. If the buyer has explicitly connected and unlocked a NIP-47/NWC wallet, AgoraMesh can send a `pay_invoice` request to that wallet; otherwise it hands the invoice to an external wallet. Publication guards reject private or custodial wording such as seeds, private keys, Cashu secrets, private invoice memos, custody, or escrow. AgoraMesh does not hold funds, manage balances, confirm fulfillment, or provide escrow.
 
 Listing images are public HTTPS references uploaded to user-configured Blossom servers before listing publication. The listing payload stores URL, SHA-256, MIME type, size, optional dimensions, optional alt text, Blossom server URL, and upload timestamp. It never stores local filenames.
 
@@ -96,7 +96,7 @@ Community curation lists are public `kind: 30004` events with a `d` tag, a `titl
 
 ## Security Promises
 
-Protocol-facing security promises are intentionally narrow: no automatic relay publishing, no automatic review import, no synced public cache writes into user-owned local records, no full agreement or full dispute event kind, no custody or wallet execution, and no decrypted private-key persistence outside memory.
+Protocol-facing security promises are intentionally narrow: no automatic relay publishing, no automatic review import, no synced public cache writes into user-owned local records, no full agreement or full dispute event kind, no custody, no automatic wallet payment, and no decrypted private-key or NWC-secret persistence outside memory. NIP-47 payment responses and NIP-57 zap receipts are payment-server/wallet attestations only; they are not escrow, delivery guarantees, identity verification, fulfillment proof, or dispute resolution.
 
 ## Encrypted Dispute Bundles
 

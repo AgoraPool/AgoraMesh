@@ -18,7 +18,7 @@ Briefly describe the release-candidate purpose and the main changes since the pr
 
 ### Known Limitations
 
-- No escrow, wallet execution, payment confirmation, backend, internal chat, AI moderation, or private Nostr trade messaging.
+- No escrow, custody, automatic wallet payment, wallet balance management, backend, internal chat, AI moderation, or private Nostr trade messaging.
 - Public relay metadata can be correlated.
 - Blossom images are public media uploads.
 - Payment intents are public instructions only.

@@ -1,5 +1,15 @@
 import { db, deleteLocalData, exportAllData, importAllData } from './db';
-import type { AgreementAcceptanceReceipt, CommunityCurationList, IdentityRecord, Listing, MediatorProfile, PublicProfile, SyncedPublicRecord } from '../../types/domain';
+import type {
+  AgreementAcceptanceReceipt,
+  CommunityCurationList,
+  IdentityRecord,
+  LightningPaymentAttempt,
+  Listing,
+  MediatorProfile,
+  NwcConnection,
+  PublicProfile,
+  SyncedPublicRecord
+} from '../../types/domain';
 import { bytesToHex } from '@noble/hashes/utils';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { importablePayloadFromReviewItem, reviewItemFromEvent, signCommunityCurationList, syncedRecordFromReviewItem } from '../nostr/events';
@@ -179,5 +189,67 @@ describe('import/export round trip', () => {
 
     await expect(db.identity.get('identity_extension')).resolves.toMatchObject({ keySource: 'nostr-extension', publicKey: 'b'.repeat(64) });
     expect(JSON.stringify(backup.identity)).not.toContain('encryptedPrivateKey');
+  });
+
+  it('exports and imports Lightning payment attempt metadata only', async () => {
+    const attempt: LightningPaymentAttempt = {
+      id: 'lightning_payment_roundtrip',
+      buyerPublicKey: 'a'.repeat(64),
+      sellerPublicKey: 'b'.repeat(64),
+      listingId: 'listing_1',
+      listingTitle: 'Coffee beans',
+      amountSats: 21,
+      amountMsats: 21000,
+      lnurlSource: 'seller@example.com',
+      callbackUrl: 'https://pay.example/callback',
+      sellerWalletPubkey: 'c'.repeat(64),
+      zapRequestId: 'zap_request_1',
+      zapRequest: '{"kind":9734}',
+      bolt11: 'lnbc1exampleinvoice',
+      receiptRelayUrls: [],
+      status: 'invoice-created',
+      createdAt: '2026-06-12T00:00:00.000Z',
+      updatedAt: '2026-06-12T00:00:00.000Z'
+    };
+
+    await db.lightningPaymentAttempts.put(attempt);
+    const backup = await exportAllData();
+    await deleteLocalData();
+    await importAllData(backup);
+
+    await expect(db.lightningPaymentAttempts.get('lightning_payment_roundtrip')).resolves.toMatchObject({
+      amountSats: 21,
+      bolt11: 'lnbc1exampleinvoice'
+    });
+    expect(JSON.stringify(backup.lightningPaymentAttempts)).not.toMatch(/preimage|seed|private trade/i);
+  });
+
+  it('keeps NWC wallet connections out of backups and backup imports', async () => {
+    const connection: NwcConnection = {
+      id: 'nwc_default',
+      label: 'Test wallet',
+      walletPublicKey: 'd'.repeat(64),
+      clientPublicKey: 'e'.repeat(64),
+      relayUrls: ['wss://wallet.example'],
+      encryptedSecret: {
+        ciphertext: 'encrypted-wallet-secret',
+        iv: 'iv',
+        salt: 'salt',
+        iterations: 310000,
+        algorithm: 'AES-GCM',
+        kdf: 'PBKDF2-SHA-256'
+      },
+      createdAt: '2026-06-13T00:00:00.000Z',
+      updatedAt: '2026-06-13T00:00:00.000Z'
+    };
+
+    await db.nwcConnections.put(connection);
+    const backup = await exportAllData();
+
+    expect(JSON.stringify(backup)).not.toContain('encrypted-wallet-secret');
+    expect('nwcConnections' in backup).toBe(false);
+
+    await importAllData(backup);
+    await expect(db.nwcConnections.get('nwc_default')).resolves.toMatchObject({ walletPublicKey: 'd'.repeat(64) });
   });
 });

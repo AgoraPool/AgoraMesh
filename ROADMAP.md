@@ -18,7 +18,6 @@
 - Component architecture cleanup after security-critical and accessibility flows stabilize.
 - Marketplace usability testing on the stabilized records-first Discover/Create/My listings flow, publish readiness, relay review, and trade workspace completion.
 - Private Nostr coordination protocol investigation for opt-in trade sharing without publishing private agreement or dispute content.
-- NIP-47 wallet connect and NIP-57 zap investigations for future non-custodial payment UX, without adding custody or escrow.
 - Real-device visual QA pass before v1.0, including mobile marketplace cards, item pages, and Create Listing.
 - Usability testing for progressive disclosure defaults in Browse and Settings.
 - Deeper moderation ergonomics beyond local bulk hide/reject actions, including better spam review workflows.
@@ -74,11 +73,13 @@
 - v0.32.0 Browse and Settings cleanup with preset-based Marketplace filters, grouped curation/maintenance controls, and review queue diagnostics hidden from primary Settings navigation.
 - v0.33.0 Nostr contact and encrypted intro messaging with Nostr contact methods, explicit outbound NIP-17/NIP-44 messages, and plaintext-free contact receipts.
 - v0.34.0 Nostr threaded inbox with explicit NIP-17 gift-wrap fetch, NIP-44 decrypt support, encrypted local message cache, lightweight threads, replies, and Inbox primary navigation.
+- v0.35.0 Lightning LNURL and NIP-57 payment handoff with public seller payment metadata, signed zap requests, external BOLT11 invoice handoff, explicit zap receipt checks, and metadata-only local payment attempts.
+- v0.36.0 NWC Lightning execution with encrypted local NIP-47 wallet connections, explicit wallet unlock/test/disconnect controls, `pay_invoice` handoff after LNURL invoice generation, paid/failed metadata updates, duplicate-payment guardrails, and no wallet-secret backups.
 
 ## Not Planned For MVP
 
 - Custodial escrow.
-- Wallet or payment processing.
+- Custodial wallet or payment processing.
 - Internal chat.
 - Backend database.
 - Admin surveillance dashboards.

@@ -1,7 +1,7 @@
-import { BunkerSigner, createNostrConnectURI } from 'nostr-tools/nip46';
-import { decrypt as decryptNip44, getConversationKey } from 'nostr-tools/nip44';
+import { createNostrConnectURI } from 'nostr-tools/nip46';
+import { decrypt as decryptNip44, encrypt as encryptNip44, getConversationKey } from 'nostr-tools/nip44';
 import { SimplePool } from 'nostr-tools/pool';
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { verifyNostrEvent, type NostrEvent, type NostrUnsignedEvent } from './events';
 import type { NostrSignerState } from '../../types/domain';
@@ -32,16 +32,21 @@ const NOSTR_CONNECT_TIMEOUT_MS = 120_000;
 const NOSTR_CONNECT_KIND = 24133;
 const NOSTR_CONNECT_PENDING_KEY = 'agoramesh:nip46:pending';
 const NOSTR_CONNECT_POLL_MS = 2_000;
+const NOSTR_CONNECT_REQUEST_TIMEOUT_MS = 180_000;
 
 let activeSignerProvider: NostrSignerState['provider'];
-let activeNostrConnectSigner: BunkerSigner | undefined;
+let activeNostrConnectSession: NostrConnectSession | undefined;
 
-interface PendingNostrConnectPairing {
-  uri: string;
+interface NostrConnectSession {
   clientSecretHex: string;
   clientPubkey: string;
+  remotePubkey: string;
   relays: string[];
   secret: string;
+}
+
+interface PendingNostrConnectPairing extends Omit<NostrConnectSession, 'remotePubkey'> {
+  uri: string;
   createdAtMs: number;
 }
 
@@ -140,7 +145,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function firstSuccessful<T>(promises: Promise<T>[]): Promise<T> {
+function firstSuccessful<T>(promises: Promise<T>[], errorMessage = 'Nostr Connect request failed.'): Promise<T> {
   return new Promise((resolve, reject) => {
     let rejected = 0;
     let lastError: unknown;
@@ -148,34 +153,36 @@ function firstSuccessful<T>(promises: Promise<T>[]): Promise<T> {
       void promise.then(resolve).catch((error) => {
         rejected += 1;
         lastError = error;
-        if (rejected === promises.length) reject(lastError instanceof Error ? lastError : new Error('Nostr Connect pairing failed.'));
+        if (rejected === promises.length) reject(lastError instanceof Error ? lastError : new Error(errorMessage));
       });
     }
   });
 }
 
-async function activateNostrConnectSigner(signer: BunkerSigner): Promise<NostrSignerState> {
-  activeNostrConnectSigner = signer;
+async function activateNostrConnectSession(session: NostrConnectSession): Promise<NostrSignerState> {
+  activeNostrConnectSession = session;
   activeSignerProvider = 'nip46';
   clearPendingPairing();
-  const publicKey = (await signer.getPublicKey()).toLowerCase();
+  const publicKey = (await sendNostrConnectRequest(session, 'get_public_key', [])).toLowerCase();
   return { available: true, connected: true, publicKey, provider: 'nip46' as const };
 }
 
-function signerFromConnectionEvent(pending: PendingNostrConnectPairing, event: NostrEvent): BunkerSigner | undefined {
+function sessionFromConnectionEvent(pending: PendingNostrConnectPairing, event: NostrEvent): NostrConnectSession | undefined {
   if (event.kind !== NOSTR_CONNECT_KIND || !verifyNostrEvent(event)) return undefined;
   if (!event.tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === pending.clientPubkey)) return undefined;
   const conversationKey = getConversationKey(hexToBytes(pending.clientSecretHex), event.pubkey);
   const decrypted: unknown = JSON.parse(decryptNip44(event.content, conversationKey));
   if (!isRecord(decrypted) || decrypted.result !== pending.secret) return undefined;
-  return BunkerSigner.fromBunker(hexToBytes(pending.clientSecretHex), {
-    pubkey: event.pubkey,
+  return {
+    clientSecretHex: pending.clientSecretHex,
+    clientPubkey: pending.clientPubkey,
+    remotePubkey: event.pubkey.toLowerCase(),
     relays: pending.relays,
     secret: pending.secret
-  });
+  };
 }
 
-async function findStoredConnectionSigner(pending: PendingNostrConnectPairing): Promise<BunkerSigner | undefined> {
+async function findStoredConnectionSession(pending: PendingNostrConnectPairing): Promise<NostrConnectSession | undefined> {
   const pool = new SimplePool();
   try {
     const events = (await pool.querySync(
@@ -190,8 +197,8 @@ async function findStoredConnectionSigner(pending: PendingNostrConnectPairing): 
     )) as NostrEvent[];
     for (const event of events.sort((left, right) => right.created_at - left.created_at)) {
       try {
-        const signer = signerFromConnectionEvent(pending, event);
-        if (signer) return signer;
+        const session = sessionFromConnectionEvent(pending, event);
+        if (session) return session;
       } catch {
         // Ignore unrelated or undecryptable NIP-46 events for this client key.
       }
@@ -202,22 +209,218 @@ async function findStoredConnectionSigner(pending: PendingNostrConnectPairing): 
   }
 }
 
-async function pollStoredConnectionSigner(pending: PendingNostrConnectPairing): Promise<BunkerSigner> {
+async function pollStoredConnectionSession(pending: PendingNostrConnectPairing): Promise<NostrConnectSession> {
   const deadline = pending.createdAtMs + NOSTR_CONNECT_TIMEOUT_MS;
   while (Date.now() <= deadline) {
-    const signer = await findStoredConnectionSigner(pending);
-    if (signer) return signer;
+    const session = await findStoredConnectionSession(pending);
+    if (session) return session;
     await sleep(NOSTR_CONNECT_POLL_MS);
   }
   throw new Error('Nostr Connect pairing timed out before a signer response was found.');
 }
 
+function waitForLiveConnectionSession(pending: PendingNostrConnectPairing): Promise<NostrConnectSession> {
+  const pool = new SimplePool();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let closer: { close: (reason?: string) => void } | undefined;
+    const finish = (session?: NostrConnectSession, error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeout);
+      closer?.close();
+      pool.close(pending.relays);
+      if (session) {
+        resolve(session);
+      } else {
+        reject(error ?? new Error('Nostr Connect pairing failed.'));
+      }
+    };
+    const timeout = globalThis.setTimeout(() => finish(undefined, new Error('Nostr Connect pairing timed out.')), NOSTR_CONNECT_TIMEOUT_MS);
+    closer = pool.subscribe(
+      pending.relays,
+      {
+        kinds: [NOSTR_CONNECT_KIND],
+        '#p': [pending.clientPubkey],
+        since: Math.max(0, Math.floor(pending.createdAtMs / 1000) - 60),
+        limit: 0
+      },
+      {
+        onevent: (event) => {
+          try {
+            const session = sessionFromConnectionEvent(pending, event as NostrEvent);
+            if (!session) return;
+            globalThis.clearTimeout(timeout);
+            finish(session);
+          } catch {
+            // Ignore unrelated or undecryptable NIP-46 events.
+          }
+        },
+        onclose: () => {
+          globalThis.clearTimeout(timeout);
+          finish(undefined, new Error('Nostr Connect subscription closed before connection was established.'));
+        }
+      }
+    );
+  });
+}
+
 function waitForPendingPairing(pending: PendingNostrConnectPairing): Promise<NostrSignerState> {
-  const clientSecretKey = hexToBytes(pending.clientSecretHex);
   return firstSuccessful([
-    BunkerSigner.fromURI(clientSecretKey, pending.uri, { skipSwitchRelays: true }, NOSTR_CONNECT_TIMEOUT_MS),
-    pollStoredConnectionSigner(pending)
-  ]).then(activateNostrConnectSigner);
+    waitForLiveConnectionSession(pending),
+    pollStoredConnectionSession(pending)
+  ], 'Nostr Connect pairing failed.').then(activateNostrConnectSession);
+}
+
+function nostrConnectConversationKey(session: NostrConnectSession): Uint8Array {
+  return getConversationKey(hexToBytes(session.clientSecretHex), session.remotePubkey);
+}
+
+function parseNostrConnectResponse(session: NostrConnectSession, requestIdValue: string, event: NostrEvent): string | undefined {
+  if (event.kind !== NOSTR_CONNECT_KIND || event.pubkey.toLowerCase() !== session.remotePubkey || !verifyNostrEvent(event)) return undefined;
+  if (!event.tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === session.clientPubkey)) return undefined;
+  const decrypted: unknown = JSON.parse(decryptNip44(event.content, nostrConnectConversationKey(session)));
+  if (!isRecord(decrypted) || decrypted.id !== requestIdValue) return undefined;
+  if (typeof decrypted.error === 'string' && decrypted.error) {
+    throw new Error(decrypted.error);
+  }
+  if (typeof decrypted.result === 'string') return decrypted.result;
+  if (decrypted.result !== undefined) return JSON.stringify(decrypted.result);
+  return undefined;
+}
+
+function parseSignedEventResponse(response: string): NostrEvent {
+  const parsed: unknown = JSON.parse(response);
+  if (!isRecord(parsed)) throw new Error('Signer returned a malformed event.');
+  const tags = parsed.tags;
+  if (
+    typeof parsed.id !== 'string' ||
+    typeof parsed.pubkey !== 'string' ||
+    typeof parsed.created_at !== 'number' ||
+    typeof parsed.kind !== 'number' ||
+    !Array.isArray(tags) ||
+    typeof parsed.content !== 'string' ||
+    typeof parsed.sig !== 'string'
+  ) {
+    throw new Error('Signer returned a malformed event.');
+  }
+  return {
+    id: parsed.id,
+    pubkey: parsed.pubkey.toLowerCase(),
+    created_at: parsed.created_at,
+    kind: parsed.kind,
+    tags: tags.filter((tag): tag is unknown[] => Array.isArray(tag)).map((tag) => tag.map((value) => String(value))),
+    content: parsed.content,
+    sig: parsed.sig
+  };
+}
+
+async function findStoredNostrConnectResponse(session: NostrConnectSession, requestIdValue: string, since: number): Promise<string | undefined> {
+  const pool = new SimplePool();
+  try {
+    const events = (await pool.querySync(
+      session.relays,
+      {
+        kinds: [NOSTR_CONNECT_KIND],
+        authors: [session.remotePubkey],
+        '#p': [session.clientPubkey],
+        since,
+        limit: 100
+      },
+      { maxWait: 5_000 }
+    )) as NostrEvent[];
+    for (const event of events.sort((left, right) => right.created_at - left.created_at)) {
+      try {
+        const result = parseNostrConnectResponse(session, requestIdValue, event);
+        if (result !== undefined) return result;
+      } catch (error) {
+        if (error instanceof Error) throw error;
+      }
+    }
+    return undefined;
+  } finally {
+    pool.close(session.relays);
+  }
+}
+
+async function pollStoredNostrConnectResponse(session: NostrConnectSession, requestIdValue: string, since: number): Promise<string> {
+  const deadline = Date.now() + NOSTR_CONNECT_REQUEST_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    const result = await findStoredNostrConnectResponse(session, requestIdValue, since);
+    if (result !== undefined) return result;
+    await sleep(NOSTR_CONNECT_POLL_MS);
+  }
+  throw new Error('Nostr Connect signer did not respond before the request timed out.');
+}
+
+function waitForLiveNostrConnectResponse(session: NostrConnectSession, requestIdValue: string, since: number): Promise<string> {
+  const pool = new SimplePool();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let closer: { close: (reason?: string) => void } | undefined;
+    const finish = (result?: string, error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeout);
+      closer?.close();
+      pool.close(session.relays);
+      if (result !== undefined) {
+        resolve(result);
+      } else {
+        reject(error ?? new Error('Nostr Connect signer did not respond.'));
+      }
+    };
+    const timeout = globalThis.setTimeout(
+      () => finish(undefined, new Error('Nostr Connect signer did not respond before the request timed out.')),
+      NOSTR_CONNECT_REQUEST_TIMEOUT_MS
+    );
+    closer = pool.subscribe(
+      session.relays,
+      {
+        kinds: [NOSTR_CONNECT_KIND],
+        authors: [session.remotePubkey],
+        '#p': [session.clientPubkey],
+        since,
+        limit: 0
+      },
+      {
+        onevent: (event) => {
+          try {
+            const result = parseNostrConnectResponse(session, requestIdValue, event as NostrEvent);
+            if (result !== undefined) finish(result);
+          } catch (error) {
+            finish(undefined, error instanceof Error ? error : new Error('Nostr Connect signer rejected the request.'));
+          }
+        },
+        onclose: () => finish(undefined, new Error('Nostr Connect response subscription closed before the signer responded.'))
+      }
+    );
+  });
+}
+
+async function sendNostrConnectRequest(session: NostrConnectSession, method: string, params: string[]): Promise<string> {
+  const id = requestId();
+  const createdAt = Math.floor(Date.now() / 1000);
+  const content = encryptNip44(JSON.stringify({ id, method, params }), nostrConnectConversationKey(session));
+  const requestEvent = finalizeEvent(
+    {
+      kind: NOSTR_CONNECT_KIND,
+      created_at: createdAt,
+      tags: [['p', session.remotePubkey]],
+      content
+    },
+    hexToBytes(session.clientSecretHex)
+  ) as NostrEvent;
+  const pool = new SimplePool();
+  try {
+    await firstSuccessful(pool.publish(session.relays, requestEvent), 'Could not publish Nostr Connect request to any relay.');
+  } finally {
+    pool.close(session.relays);
+  }
+  return firstSuccessful(
+    [waitForLiveNostrConnectResponse(session, id, Math.max(0, createdAt - 60)), pollStoredNostrConnectResponse(session, id, Math.max(0, createdAt - 60))],
+    'Nostr Connect signer did not respond.'
+  );
 }
 
 export function startNostrConnectPairing(relays: string[] = DEFAULT_NOSTR_CONNECT_RELAYS): NostrConnectPairing {
@@ -307,8 +510,9 @@ export async function connectNostrSigner(): Promise<NostrSignerState> {
 export async function signWithNostrSigner(event: NostrUnsignedEvent, expectedPublicKey: string): Promise<NostrEvent> {
   const nostr = extension();
   let signed: NostrEvent;
-  if (activeSignerProvider === 'nip46' && activeNostrConnectSigner) {
-    signed = (await activeNostrConnectSigner.signEvent(event)) as NostrEvent;
+  if (activeSignerProvider === 'nip46' && activeNostrConnectSession) {
+    const response = await sendNostrConnectRequest(activeNostrConnectSession, 'sign_event', [JSON.stringify(event)]);
+    signed = parseSignedEventResponse(response);
   } else if (nostr?.signEvent) {
     signed = await nostr.signEvent(event);
   } else {
@@ -333,17 +537,17 @@ export async function signWithNostrSigner(event: NostrUnsignedEvent, expectedPub
 }
 
 export function signerSupportsNip44Encryption(): boolean {
-  return Boolean(extension()?.nip44?.encrypt) || Boolean(activeNostrConnectSigner);
+  return Boolean(extension()?.nip44?.encrypt) || Boolean(activeNostrConnectSession);
 }
 
 export function signerSupportsNip44Decryption(): boolean {
-  return Boolean(extension()?.nip44?.decrypt) || Boolean(activeNostrConnectSigner);
+  return Boolean(extension()?.nip44?.decrypt) || Boolean(activeNostrConnectSession);
 }
 
 export async function encryptWithNostrSigner(recipientPublicKey: string, plaintext: string): Promise<string> {
   const encrypt = extension()?.nip44?.encrypt;
-  if (activeSignerProvider === 'nip46' && activeNostrConnectSigner) {
-    return activeNostrConnectSigner.nip44Encrypt(recipientPublicKey, plaintext);
+  if (activeSignerProvider === 'nip46' && activeNostrConnectSession) {
+    return sendNostrConnectRequest(activeNostrConnectSession, 'nip44_encrypt', [recipientPublicKey, plaintext]);
   }
   if (!encrypt) {
     throw new Error('Nostr signer does not expose NIP-44 encryption.');
@@ -353,8 +557,8 @@ export async function encryptWithNostrSigner(recipientPublicKey: string, plainte
 
 export async function decryptWithNostrSigner(senderPublicKey: string, ciphertext: string): Promise<string> {
   const decrypt = extension()?.nip44?.decrypt;
-  if (activeSignerProvider === 'nip46' && activeNostrConnectSigner) {
-    return activeNostrConnectSigner.nip44Decrypt(senderPublicKey, ciphertext);
+  if (activeSignerProvider === 'nip46' && activeNostrConnectSession) {
+    return sendNostrConnectRequest(activeNostrConnectSession, 'nip44_decrypt', [senderPublicKey, ciphertext]);
   }
   if (!decrypt) {
     throw new Error('Nostr signer does not expose NIP-44 decryption.');

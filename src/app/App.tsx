@@ -128,7 +128,7 @@ import {
   decryptWithNostrSigner,
   detectNostrSigner,
   encryptWithNostrSigner,
-  openNostrConnectPairingUri,
+  resumeNostrConnectPairing,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
   startNostrConnectPairing,
@@ -8917,12 +8917,42 @@ function NostrConnectPairingPanel({
   const [connectUri, setConnectUri] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState('');
+  const onConnectedRef = useRef(onConnected);
+  const failureMessageRef = useRef(t('signer.nostrConnectFailed'));
+
+  useEffect(() => {
+    onConnectedRef.current = onConnected;
+    failureMessageRef.current = t('signer.nostrConnectFailed');
+  }, [onConnected, t]);
+
+  useEffect(() => {
+    const pairing = resumeNostrConnectPairing();
+    if (!pairing) return;
+    let mounted = true;
+    setConnectUri(pairing.uri);
+    setConnecting(true);
+    setError('');
+    void pairing.promise
+      .then((state) => {
+        if (!mounted) return;
+        onConnectedRef.current(state);
+        setConnecting(false);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        setError(err instanceof Error ? err.message : failureMessageRef.current);
+        setConnecting(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const startPairing = (): void => {
     setError('');
     setConnecting(true);
     const pairing = startNostrConnectPairing(relays.filter((relay) => relay.enabled).map((relay) => relay.url));
     setConnectUri(pairing.uri);
-    openNostrConnectPairingUri(pairing.uri);
     void pairing.promise
       .then((state) => {
         onConnected(state);

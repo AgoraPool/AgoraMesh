@@ -8,6 +8,10 @@ export interface AttestationDraft {
   subjectPublicKey: string;
   agreementHash: string;
   role: 'buyer' | 'seller' | 'mediator';
+  score?: number;
+  listingId?: string;
+  listingTitle?: string;
+  listingCoordinate?: string;
   tags: AttestationTag[];
   text: string;
 }
@@ -41,6 +45,10 @@ function attestationContent(draft: AttestationDraft, id: string, timestamp: numb
     subjectPublicKey: draft.subjectPublicKey,
     agreementHash: draft.agreementHash,
     role: draft.role,
+    ...(draft.score ? { score: draft.score } : {}),
+    ...(draft.listingId ? { listingId: draft.listingId } : {}),
+    ...(draft.listingTitle ? { listingTitle: draft.listingTitle } : {}),
+    ...(draft.listingCoordinate ? { listingCoordinate: draft.listingCoordinate } : {}),
     tags: draft.tags,
     text: draft.text,
     timestamp
@@ -50,17 +58,20 @@ function attestationContent(draft: AttestationDraft, id: string, timestamp: numb
 export function prepareAttestationEvent(draft: AttestationDraft): PreparedAttestation {
   const timestamp = Math.floor(Date.now() / 1000);
   const id = newId('attestation');
+  const tags: string[][] = [
+    ['client', 'agoramesh'],
+    ['p', draft.subjectPublicKey],
+    ['agreement', draft.agreementHash],
+    ...(draft.listingCoordinate ? [['a', draft.listingCoordinate]] : []),
+    ...(draft.score ? [['score', String(draft.score)]] : [])
+  ];
   return {
     id,
     timestamp,
     event: {
       kind: 39004,
       created_at: timestamp,
-      tags: [
-        ['client', 'agoramesh'],
-        ['p', draft.subjectPublicKey],
-        ['agreement', draft.agreementHash]
-      ],
+      tags,
       content: attestationContent(draft, id, timestamp)
     }
   };
@@ -88,6 +99,10 @@ export function attestationFromSignedEvent(draft: AttestationDraft, prepared: Pr
     subjectPublicKey: draft.subjectPublicKey,
     agreementHash: draft.agreementHash,
     role: draft.role,
+    score: draft.score,
+    listingId: draft.listingId,
+    listingTitle: draft.listingTitle,
+    listingCoordinate: draft.listingCoordinate,
     tags: draft.tags,
     text: draft.text,
     timestamp: prepared.timestamp,
@@ -108,20 +123,27 @@ export function verifyAttestation(attestation: ReputationAttestation): boolean {
     subjectPublicKey: attestation.subjectPublicKey,
     agreementHash: attestation.agreementHash,
     role: attestation.role,
+    score: attestation.score,
+    listingId: attestation.listingId,
+    listingTitle: attestation.listingTitle,
+    listingCoordinate: attestation.listingCoordinate,
     tags: attestation.tags,
     text: attestation.text
   };
 
+  const tags: string[][] = [
+    ['client', 'agoramesh'],
+    ['p', attestation.subjectPublicKey],
+    ['agreement', attestation.agreementHash],
+    ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
+    ...(attestation.score ? [['score', String(attestation.score)]] : [])
+  ];
   return verifyEvent({
     id: attestation.eventId,
     pubkey: attestation.reviewerPublicKey,
     created_at: attestation.timestamp,
     kind: 39004,
-    tags: [
-      ['client', 'agoramesh'],
-      ['p', attestation.subjectPublicKey],
-      ['agreement', attestation.agreementHash]
-    ],
+    tags,
     content: attestationContent(draft, attestation.id, attestation.timestamp),
     sig: attestation.signature
   });

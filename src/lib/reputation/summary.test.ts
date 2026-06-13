@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Agreement, AgreementAcceptanceReceipt, CommunityAllowlistEntry, SyncedPublicRecord } from '../../types/domain';
 import { createSignedAttestation } from '../crypto/attestations';
 import { generateAgreementHash } from '../crypto/hash';
-import { agreementReputationCandidates, filterReputationRows, reputationRows, reputationSubjectSummaries } from './summary';
+import { agreementReputationCandidates, dedupeReputationRows, filterReputationRows, reputationRows, reputationSubjectSummaries } from './summary';
 
 function keypair(): { privateKeyHex: string; publicKey: string } {
   const privateKey = generateSecretKey();
@@ -50,6 +50,10 @@ describe('reputation summaries', () => {
         subjectPublicKey: subject,
         agreementHash,
         role: 'seller',
+        score: 4,
+        listingId: 'listing_1',
+        listingTitle: 'Repair work',
+        listingCoordinate: `30402:${subject}:listing_1`,
         tags: ['fulfilled-agreement', 'clear-communication'],
         text: 'Completed as agreed.'
       },
@@ -61,6 +65,10 @@ describe('reputation summaries', () => {
         subjectPublicKey: subject,
         agreementHash,
         role: 'seller',
+        score: 5,
+        listingId: 'listing_1',
+        listingTitle: 'Repair work',
+        listingCoordinate: `30402:${subject}:listing_1`,
         tags: ['fulfilled-agreement'],
         text: 'Reliable.'
       },
@@ -92,12 +100,51 @@ describe('reputation summaries', () => {
       verified: 2,
       local: 1,
       synced: 1,
+      averageScore: 4.5,
+      scoreCount: 2,
       trustedAuthors: 1,
       untrustedAuthors: 1,
       notVerifiedIdentity: true
     });
     expect(summaries[0].tags.find((entry) => entry.tag === 'fulfilled-agreement')?.count).toBe(2);
-    expect(filterReputationRows(rows, { query: 'reliable', role: 'all', tag: 'all', source: 'combined', trust: 'all', hidden: 'visible', verification: 'verified' })).toHaveLength(1);
+    expect(summaries[0].recentReviews).toHaveLength(2);
+    expect(filterReputationRows(rows, { query: 'reliable', role: 'all', tag: 'all', minScore: '4', source: 'combined', trust: 'all', hidden: 'visible', verification: 'verified' })).toHaveLength(1);
+  });
+
+  it('keeps the newest review per reviewer, subject, role, and listing context', () => {
+    const reviewer = keypair();
+    const subject = 'a'.repeat(64);
+    const agreementHash = 'e'.repeat(64);
+    const older = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: subject,
+        agreementHash,
+        role: 'seller',
+        score: 2,
+        listingCoordinate: `30402:${subject}:listing_1`,
+        tags: ['late'],
+        text: 'Slow.'
+      },
+      reviewer.privateKeyHex
+    );
+    const newer = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: subject,
+        agreementHash,
+        role: 'seller',
+        score: 5,
+        listingCoordinate: `30402:${subject}:listing_1`,
+        tags: ['fulfilled-agreement'],
+        text: 'Updated after resolution.'
+      },
+      reviewer.privateKeyHex
+    );
+    const rows = reputationRows([{ ...older, timestamp: 1 }, { ...newer, timestamp: 2 }], [], 'visible');
+
+    expect(dedupeReputationRows(rows)).toHaveLength(1);
+    expect(dedupeReputationRows(rows)[0].attestation.score).toBe(5);
   });
 
   it('creates agreement candidates without exposing private terms beyond local UI fields', () => {
@@ -109,7 +156,9 @@ describe('reputation summaries', () => {
       receiptStatus: 'draft',
       buyerPublicKey: agreement.buyerPublicKey,
       sellerPublicKey: agreement.sellerPublicKey,
-      mediatorPublicKey: agreement.mediator
+      mediatorPublicKey: agreement.mediator,
+      listingId: agreement.listingId,
+      listingCoordinate: `${30402}:${agreement.sellerPublicKey}:${agreement.listingId}`
     });
   });
 });

@@ -97,7 +97,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.36.0`.
+Current app version: `0.37.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -113,7 +113,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.36.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.37.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -151,6 +151,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.34.0 threaded inbox pass adds explicit NIP-17 fetching, passphrase-protected readable message cache, lightweight threads, and primary Inbox navigation.
 - The v0.35.0 Lightning pass adds public seller LNURL metadata, signed NIP-57 zap request creation, external invoice handoff, explicit receipt checks, and metadata-only local payment attempts.
 - The v0.36.0 NWC pass adds encrypted local NIP-47 wallet connection storage, wallet testing, explicit `pay_invoice` execution, duplicate-payment guardrails, and backup exclusion for wallet secrets.
+- The v0.37.0 reputation pass turns signed attestations into scored marketplace reviews with listing context, trusted-reviewer cues, seller summaries, and duplicate-review guardrails.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

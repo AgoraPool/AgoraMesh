@@ -9,6 +9,7 @@ import type {
   ReputationAttestation,
   SyncedPublicRecord
 } from '../../types/domain';
+import { verifyAttestation } from '../crypto/attestations';
 import { listingCategorySchema } from '../validation/schemas';
 
 export type Translate = (key: string) => string;
@@ -25,6 +26,9 @@ export interface SellerSummary {
   mediatorAvailable: boolean;
   trusted: boolean;
   reputationCount: number;
+  reputationAverage?: number;
+  reputationScoreCount: number;
+  trustedReviewCount: number;
   reputationTags: string[];
   verified: false;
 }
@@ -65,11 +69,22 @@ export function sellerSummaryForListing(
   const profile =
     profiles.find((entry) => entry.publicKey.toLowerCase() === publicKey) ??
     syncedProfiles.find((entry) => entry.payload.publicKey.toLowerCase() === publicKey)?.payload;
+  const localAttestations = attestations.filter((entry) => entry.subjectPublicKey.toLowerCase() === publicKey && verifyAttestation(entry));
+  const syncedRelevantRecords = syncedAttestations.filter(
+    (entry) => !entry.hidden && entry.payload.subjectPublicKey.toLowerCase() === publicKey && verifyAttestation(entry.payload)
+  );
   const relevantAttestations = [
-    ...attestations.filter((entry) => entry.subjectPublicKey.toLowerCase() === publicKey),
-    ...syncedAttestations.filter((entry) => entry.payload.subjectPublicKey.toLowerCase() === publicKey).map((entry) => entry.payload)
+    ...localAttestations,
+    ...syncedRelevantRecords.map((entry) => entry.payload)
   ];
+  const scoredAttestations = relevantAttestations.filter((entry) => entry.score);
+  const reputationAverage =
+    scoredAttestations.length > 0 ? scoredAttestations.reduce((sum, entry) => sum + (entry.score ?? 0), 0) / scoredAttestations.length : undefined;
   const reputationTags = [...new Set(relevantAttestations.flatMap((entry) => entry.tags))].slice(0, 4);
+  const trustedReviewerKeys = new Set([
+    ...allowlist.map((entry) => entry.publicKey.toLowerCase()),
+    ...syncedRelevantRecords.filter((entry) => entry.trusted).map((entry) => entry.payload.reviewerPublicKey.toLowerCase())
+  ]);
   return {
     displayName: profile?.displayName || `${publicKey.slice(0, 12)}...`,
     avatarUrl: profile?.avatarUrl || undefined,
@@ -82,6 +97,9 @@ export function sellerSummaryForListing(
     mediatorAvailable: profile?.mediatorAvailable ?? false,
     trusted: allowlist.some((entry) => entry.publicKey.toLowerCase() === publicKey) || syncedProfiles.some((entry) => entry.authorPublicKey.toLowerCase() === publicKey && entry.trusted),
     reputationCount: relevantAttestations.length,
+    reputationAverage,
+    reputationScoreCount: scoredAttestations.length,
+    trustedReviewCount: relevantAttestations.filter((entry) => trustedReviewerKeys.has(entry.reviewerPublicKey.toLowerCase())).length,
     reputationTags,
     verified: false
   };

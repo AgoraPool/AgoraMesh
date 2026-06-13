@@ -148,6 +148,7 @@ import {
 import {
   agreementReputationCandidates,
   filterReputationRows,
+  reputationReviewKey,
   reputationRows,
   reputationSubjectSummaries,
   shortPublicKey,
@@ -527,6 +528,22 @@ function numberResultField(result: Record<string, unknown> | undefined, ...names
     }
   }
   return undefined;
+}
+
+function formatReviewScore(score?: number): string {
+  if (!score) return 'Unscored';
+  return `${score.toFixed(1)} stars`;
+}
+
+function reputationEventTags(attestation: ReputationAttestation): string[][] {
+  const tags: string[][] = [
+    ['d', attestation.id],
+    ['p', attestation.subjectPublicKey],
+    ['agreement', attestation.agreementHash],
+    ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
+    ...(attestation.score ? [['score', String(attestation.score)]] : [])
+  ];
+  return tags;
 }
 
 function paidAttemptFromNwcResult(attempt: LightningPaymentAttempt, result: NwcRequestResult): LightningPaymentAttempt {
@@ -1767,6 +1784,7 @@ export function App(): ReactNode {
             nostrSigner={nostrSigner}
             privateKeyHex={privateKeyHex}
             nostrContactReceipts={nostrContactReceipts}
+            onConnectSigner={() => void connectSigner()}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onSaved={() => {
               showNotice(t('notice.mediatorSaved'));
@@ -1837,11 +1855,7 @@ export function App(): ReactNode {
                 () =>
                   unsignedAgoraEvent(
                     AGORAMESH_EVENT_KINDS.reputation,
-                    [
-                      ['d', attestation.id],
-                      ['p', attestation.subjectPublicKey],
-                      ['agreement', attestation.agreementHash]
-                    ],
+                    reputationEventTags(attestation),
                     publicReputationPayload(attestation)
                   ),
                 attestation.reviewerPublicKey
@@ -2097,8 +2111,9 @@ function SellerSummaryCard({ summary }: { summary: SellerSummary }): ReactNode {
           </p>
         ) : null}
         <p className="muted">
-          {t('seller.reputation')}: {summary.reputationCount}
+          {t('seller.reputation')}: {summary.reputationAverage ? `${formatReviewScore(summary.reputationAverage)} · ` : ''}{summary.reputationCount}
           {summary.reputationTags.length > 0 ? ` · ${summary.reputationTags.join(', ')}` : ''}
+          {summary.trustedReviewCount > 0 ? ` · ${summary.trustedReviewCount} ${t('reputation.trustedReviews')}` : ''}
         </p>
         <p className="muted">{t('seller.notVerified')}</p>
       </div>
@@ -5070,6 +5085,7 @@ function MediatorPage({
   nostrSigner,
   privateKeyHex,
   nostrContactReceipts,
+  onConnectSigner,
   onToggleHidden,
   onSaved,
   onPublish,
@@ -5085,6 +5101,7 @@ function MediatorPage({
   nostrSigner: NostrSignerState;
   privateKeyHex: string;
   nostrContactReceipts: NostrContactReceipt[];
+  onConnectSigner: () => void;
   onToggleHidden: (record: SyncedPublicRecord<MediatorProfile>, hidden: boolean) => void;
   onSaved: () => void;
   onPublish: (profile: MediatorProfile) => void;
@@ -6510,6 +6527,7 @@ function ReputationPage({
     query: '',
     role: 'all',
     tag: 'all',
+    minScore: 'all',
     source: syncSettings.defaultBrowseSource,
     trust: 'all',
     hidden: 'visible',
@@ -6519,6 +6537,10 @@ function ReputationPage({
     subjectPublicKey: '',
     agreementHash: '',
     role: 'seller' as 'buyer' | 'seller' | 'mediator',
+    score: 5,
+    listingId: '',
+    listingTitle: '',
+    listingCoordinate: '',
     tags: ['fulfilled-agreement'] as AttestationTag[],
     text: ''
   });
@@ -6530,6 +6552,32 @@ function ReputationPage({
   const visibleAttestations = useMemo(() => filterReputationRows(rows, filter), [filter, rows]);
   const subjectSummaries = useMemo(() => reputationSubjectSummaries(visibleAttestations, allowlist), [allowlist, visibleAttestations]);
   const selectedAgreement = agreementCandidates.find((candidate) => candidate.agreement.id === selectedAgreementId);
+  const reviewPrompts = useMemo(
+    () =>
+      agreementCandidates.flatMap((candidate) => {
+        if (!identity || candidate.receiptStatus !== 'mutually-signed') return [];
+        const activeKey = identity.publicKey.toLowerCase();
+        const prompts: { candidate: AgreementReputationCandidate; role: 'buyer' | 'seller' | 'mediator'; label: string }[] = [];
+        if (candidate.buyerPublicKey?.toLowerCase() === activeKey && candidate.sellerPublicKey) {
+          prompts.push({ candidate, role: 'seller', label: t('reputation.useSeller') });
+        }
+        if (candidate.sellerPublicKey?.toLowerCase() === activeKey && candidate.buyerPublicKey) {
+          prompts.push({ candidate, role: 'buyer', label: t('reputation.useBuyer') });
+        }
+        if (
+          (candidate.buyerPublicKey?.toLowerCase() === activeKey || candidate.sellerPublicKey?.toLowerCase() === activeKey) &&
+          candidate.mediatorPublicKey
+        ) {
+          prompts.push({ candidate, role: 'mediator', label: t('reputation.useMediator') });
+        }
+        if (candidate.mediatorPublicKey?.toLowerCase() === activeKey) {
+          if (candidate.buyerPublicKey) prompts.push({ candidate, role: 'buyer', label: t('reputation.useBuyer') });
+          if (candidate.sellerPublicKey) prompts.push({ candidate, role: 'seller', label: t('reputation.useSeller') });
+        }
+        return prompts;
+      }),
+    [agreementCandidates, identity, t]
+  );
 
   const applyAgreementCandidate = (candidate: AgreementReputationCandidate, role: 'buyer' | 'seller' | 'mediator'): void => {
     const subjectPublicKey = role === 'buyer' ? candidate.buyerPublicKey : role === 'seller' ? candidate.sellerPublicKey : candidate.mediatorPublicKey;
@@ -6540,6 +6588,10 @@ function ReputationPage({
       subjectPublicKey,
       agreementHash: candidate.agreementHash,
       role,
+      score: 5,
+      listingId: candidate.listingId ?? '',
+      listingTitle: candidate.listingTitle ?? '',
+      listingCoordinate: candidate.listingCoordinate ?? '',
       tags: role === 'mediator' ? ['fair-mediator'] : ['fulfilled-agreement', 'clear-communication']
     });
     setActiveTab('create');
@@ -6565,10 +6617,20 @@ function ReputationPage({
       subjectPublicKey: form.subjectPublicKey.toLowerCase(),
       agreementHash: form.agreementHash,
       role: form.role,
+      score: form.score,
+      listingId: form.listingId.trim() || undefined,
+      listingTitle: form.listingTitle.trim() || undefined,
+      listingCoordinate: form.listingCoordinate.trim() || undefined,
       tags: form.tags,
       text: sanitizePlainText(form.text)
     };
     try {
+      const duplicate = attestations.find((attestation) => reputationReviewKey(attestation) === reputationReviewKey({ ...draft, id: 'draft', timestamp: 1, signature: '', eventId: '' }));
+      if (duplicate) {
+        setVerifyMessage(t('reputation.duplicateReview'));
+        setActiveTab('browse');
+        return;
+      }
       const attestation =
         nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase()
           ? await (async () => {
@@ -6602,6 +6664,23 @@ function ReputationPage({
         {activeTab === 'create' ? (
           <form className="settings-section" onSubmit={(event) => void save(event)}>
             <SafetyNotice>{t('safety.reputation')}</SafetyNotice>
+            {reviewPrompts.length > 0 ? (
+              <section className="inline-card">
+                <strong>{t('reputation.reviewPrompt')}</strong>
+                <p className="muted">{t('reputation.reviewPromptBody')}</p>
+                <div className="actions small">
+                  {reviewPrompts.slice(0, 4).map((prompt) => (
+                    <button
+                      key={`${prompt.candidate.agreement.id}-${prompt.role}`}
+                      onClick={() => applyAgreementCandidate(prompt.candidate, prompt.role)}
+                      type="button"
+                    >
+                      {prompt.label}: {prompt.candidate.agreement.exchangeDescription}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
             {agreementCandidates.length > 0 ? (
               <fieldset className="fieldset-list">
                 <legend>{t('reputation.fromAgreement')}</legend>
@@ -6664,6 +6743,36 @@ function ReputationPage({
                 </select>
               </label>
               <label>
+                {t('reputation.score')}
+                <select value={form.score} onChange={(event) => setForm({ ...form, score: Number(event.target.value) })}>
+                  {[5, 4, 3, 2, 1].map((score) => (
+                    <option value={score} key={score}>
+                      {t(`reputation.score.${score}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="two">
+              <label>
+                {t('listing.title')}
+                <input
+                  placeholder={t('reputation.listingTitlePlaceholder')}
+                  value={form.listingTitle}
+                  onChange={(event) => setForm({ ...form, listingTitle: event.target.value })}
+                />
+              </label>
+              <label>
+                {t('reputation.listingCoordinate')}
+                <input
+                  placeholder="30402:pubkey:listing-id"
+                  value={form.listingCoordinate}
+                  onChange={(event) => setForm({ ...form, listingCoordinate: event.target.value })}
+                />
+              </label>
+            </div>
+            <div className="two">
+              <label>
                 {t('reputation.tags')}
                 <select
                   multiple
@@ -6720,6 +6829,12 @@ function ReputationPage({
                   </option>
                 ))}
               </select>
+              <select aria-label={t('reputation.minScore')} value={filter.minScore} onChange={(event) => setFilter({ ...filter, minScore: event.target.value as ReputationFilterState['minScore'] })}>
+                <option value="all">{t('common.all')}</option>
+                <option value="5">{t('reputation.scoreFilter.5')}</option>
+                <option value="4">{t('reputation.scoreFilter.4')}</option>
+                <option value="unscored">{t('reputation.unscored')}</option>
+              </select>
               <select aria-label={t('sync.source')} value={filter.source} onChange={(event) => setFilter({ ...filter, source: event.target.value as DataSourceFilter })}>
                 <option value="combined">{t('sync.combined')}</option>
                 <option value="local">{t('sync.localOnly')}</option>
@@ -6763,16 +6878,22 @@ function ReputationPage({
                       preferred={isPreferredConflictRecord(record, conflictGroups)}
                     />
                   ) : null}
-                  <h2>{attestation.tags.map((tag) => t(`reputation.tag.${tag}`)).join(', ')}</h2>
+                  <h2>{attestation.score ? `${formatReviewScore(attestation.score)} · ` : ''}{attestation.tags.map((tag) => t(`reputation.tag.${tag}`)).join(', ')}</h2>
                   <p>{attestation.text || t('reputation.noText')}</p>
                   <p className="muted">
                     {t('reputation.subjectShort')}: {shortPublicKey(attestation.subjectPublicKey)} · {t('agreement.hash')}: {attestation.agreementHash.slice(0, 12)}...
                   </p>
+                  {attestation.listingTitle || attestation.listingCoordinate ? (
+                    <p className="muted">
+                      {t('reputation.listingContext')}: {attestation.listingTitle || attestation.listingCoordinate}
+                    </p>
+                  ) : null}
                   <DisclosurePanel title={t('listing.details')}>
                     <p>{attestation.text || t('reputation.noText')}</p>
                     <p className="key">{attestation.subjectPublicKey}</p>
                     <p className="key">{attestation.reviewerPublicKey}</p>
                     <p className="key">{attestation.agreementHash}</p>
+                    {attestation.listingCoordinate ? <p className="key">{attestation.listingCoordinate}</p> : null}
                     <div className="actions small">
                       <button
                         onClick={() => setVerifyMessage(verifyAttestation(attestation) ? t('reputation.verified') : t('reputation.invalid'))}
@@ -6813,7 +6934,9 @@ function ReputationPage({
                 <article className="card compact" key={summary.subjectPublicKey}>
                   <div className="row between">
                     <h2>{summary.shortKey}</h2>
-                    <span className="pill">{summary.verified}/{summary.total} {t('reputation.verifiedCount')}</span>
+                    <span className="pill">
+                      {summary.averageScore ? `${formatReviewScore(summary.averageScore)} · ` : ''}{summary.verified}/{summary.total} {t('reputation.verifiedCount')}
+                    </span>
                   </div>
                   <p className="muted">{t('seller.notVerified')}</p>
                   <p>
@@ -6825,6 +6948,16 @@ function ReputationPage({
                   <p className="muted">
                     {t('sync.trusted')}: {summary.trustedAuthors} · {t('sync.untrusted')}: {summary.untrustedAuthors}
                   </p>
+                  {summary.recentReviews.length > 0 ? (
+                    <div className="compact-list">
+                      {summary.recentReviews.map((row) => (
+                        <p className="muted" key={row.attestation.id}>
+                          {row.attestation.score ? `${formatReviewScore(row.attestation.score)} · ` : ''}
+                          {row.attestation.text || t('reputation.noText')}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               ))}
               {subjectSummaries.length === 0 ? <EmptyState title={t('empty.reputationTitle')} body={t('empty.reputationBody')} /> : null}

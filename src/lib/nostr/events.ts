@@ -410,14 +410,17 @@ export function signMediator(profile: MediatorProfile, privateKeyHex: string): N
 }
 
 export function signReputation(attestation: ReputationAttestation, privateKeyHex: string): NostrEvent {
+  const tags: string[][] = [
+    ['d', attestation.id],
+    ['p', attestation.subjectPublicKey],
+    ['agreement', attestation.agreementHash],
+    ...(attestation.listingCoordinate ? [['a', attestation.listingCoordinate]] : []),
+    ...(attestation.score ? [['score', String(attestation.score)]] : [])
+  ];
   return signEvent(
     AGORAMESH_EVENT_KINDS.reputation,
     attestation.reviewerPublicKey,
-    [
-      ['d', attestation.id],
-      ['p', attestation.subjectPublicKey],
-      ['agreement', attestation.agreementHash]
-    ],
+    tags,
     publicReputationPayload(attestation),
     privateKeyHex
   );
@@ -541,6 +544,16 @@ function requireTag(event: NostrEvent, name: string, expected: string): void {
   }
 }
 
+function requireOptionalTag(event: NostrEvent, name: string, expected?: string): void {
+  const actual = firstTag(event, name);
+  if (expected && actual !== expected) {
+    throw new Error(`Nostr event tag ${name} does not match the signed payload.`);
+  }
+  if (!expected && actual) {
+    throw new Error(`Nostr event tag ${name} is not present in the signed payload.`);
+  }
+}
+
 function requireTagSet(event: NostrEvent, name: string, expected: string[]): void {
   const actual = [...tagValues(event, name)].sort();
   const wanted = [...expected].sort();
@@ -575,6 +588,8 @@ function validateAgoraEventTags(event: NostrEvent, payload: unknown): void {
     requireTag(event, 'd', attestation.id);
     requireTag(event, 'p', attestation.subjectPublicKey);
     requireTag(event, 'agreement', attestation.agreementHash);
+    requireOptionalTag(event, 'a', attestation.listingCoordinate);
+    requireOptionalTag(event, 'score', attestation.score ? String(attestation.score) : undefined);
   }
   if (event.kind === AGORAMESH_EVENT_KINDS.disputeOutcome) {
     const outcome = publicDisputeOutcomeSchema.parse(payload);

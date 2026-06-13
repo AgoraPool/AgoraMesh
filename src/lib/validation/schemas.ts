@@ -286,6 +286,10 @@ export const reputationAttestationSchema = z.object({
   subjectPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   agreementHash: z.string().regex(/^[0-9a-f]{64}$/i),
   role: z.enum(['buyer', 'seller', 'mediator']),
+  score: z.number().int().min(1).max(5).optional(),
+  listingId: optionalText,
+  listingTitle: optionalText,
+  listingCoordinate: optionalText,
   tags: z.array(
     z.enum([
       'fulfilled-agreement',

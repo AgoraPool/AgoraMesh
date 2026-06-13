@@ -304,6 +304,10 @@ export interface ReputationAttestation {
   subjectPublicKey: string;
   agreementHash: string;
   role: 'buyer' | 'seller' | 'mediator';
+  score?: number;
+  listingId?: string;
+  listingTitle?: string;
+  listingCoordinate?: string;
   tags: AttestationTag[];
   text: string;
   timestamp: number;

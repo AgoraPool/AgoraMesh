@@ -75,6 +75,7 @@
 - v0.34.0 Nostr threaded inbox with explicit NIP-17 gift-wrap fetch, NIP-44 decrypt support, encrypted local message cache, lightweight threads, replies, and Inbox primary navigation.
 - v0.35.0 Lightning LNURL and NIP-57 payment handoff with public seller payment metadata, signed zap requests, external BOLT11 invoice handoff, explicit zap receipt checks, and metadata-only local payment attempts.
 - v0.36.0 NWC Lightning execution with encrypted local NIP-47 wallet connections, explicit wallet unlock/test/disconnect controls, `pay_invoice` handoff after LNURL invoice generation, paid/failed metadata updates, duplicate-payment guardrails, and no wallet-secret backups.
+- v0.37.0 seller trust and reputation reviews with scored `39004` attestations, listing/agreement context, verified newest-wins aggregation, post-trade review prompts, trusted-reviewer cues, and clearer seller summaries.
 
 ## Not Planned For MVP
 

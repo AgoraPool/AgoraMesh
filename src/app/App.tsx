@@ -128,6 +128,7 @@ import {
   decryptWithNostrSigner,
   detectNostrSigner,
   encryptWithNostrSigner,
+  openNostrConnectPairingUri,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
   startNostrConnectPairing,
@@ -8921,7 +8922,7 @@ function NostrConnectPairingPanel({
     setConnecting(true);
     const pairing = startNostrConnectPairing(relays.filter((relay) => relay.enabled).map((relay) => relay.url));
     setConnectUri(pairing.uri);
-    window.location.href = pairing.uri;
+    openNostrConnectPairingUri(pairing.uri);
     void pairing.promise
       .then((state) => {
         onConnected(state);
@@ -8939,6 +8940,11 @@ function NostrConnectPairingPanel({
         <button className="subtle" disabled={connecting} onClick={startPairing} type="button">
           {connecting ? t('signer.nostrConnectWaiting') : t('signer.startNostrConnect')}
         </button>
+        {connectUri ? (
+          <a className="button subtle" href={connectUri} rel="noopener noreferrer" target="_blank">
+            {t('signer.openNostrConnect')}
+          </a>
+        ) : null}
         <button className="subtle" disabled={!connectUri} onClick={() => void navigator.clipboard?.writeText(connectUri)} type="button">
           {t('signer.copyNostrConnectUrl')}
         </button>

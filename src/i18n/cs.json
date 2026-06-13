@@ -1036,6 +1036,7 @@
   "signer.copyAmberUrl": "Kopírovat Amber URL",
   "signer.amberFallback": "Na Androidu otevřete tuto propojovací URL v Amberu, pokud hlavní tlačítko nepřepne aplikaci.",
   "signer.startNostrConnect": "Spustit Nostr Connect",
+  "signer.openNostrConnect": "Otevřít signer",
   "signer.copyNostrConnectUrl": "Kopírovat Nostr Connect URL",
   "signer.nostrConnectFallback": "Spárujte Amber nebo jiný NIP-46 signer přes Nostr Connect URL. Na mobilu by se měl otevřít Amber; na desktopu URL zkopírujte do signeru.",
   "signer.nostrConnectWaiting": "Čeká se na signer...",

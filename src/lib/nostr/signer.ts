@@ -77,10 +77,21 @@ export function startNostrConnectPairing(relays: string[] = DEFAULT_NOSTR_CONNEC
   return { uri, promise };
 }
 
+export function openNostrConnectPairingUri(uri: string): void {
+  if (typeof window === 'undefined') return;
+  const opened = window.open(uri, '_blank', 'noopener,noreferrer');
+  if (opened) return;
+  const link = window.document.createElement('a');
+  link.href = uri;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.click();
+}
+
 async function connectNostrConnectSigner(): Promise<NostrSignerState> {
   try {
     const pairing = startNostrConnectPairing();
-    if (typeof window !== 'undefined') window.location.href = pairing.uri;
+    openNostrConnectPairingUri(pairing.uri);
     return await pairing.promise;
   } catch (error) {
     return {

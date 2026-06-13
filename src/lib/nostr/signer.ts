@@ -1,4 +1,3 @@
-import { getPublicKeyUri, signEventUri, encryptNip44Uri, decryptNip44Uri } from 'nostr-tools/nip55';
 import * as nip19 from 'nostr-tools/nip19';
 import { getEventHash } from 'nostr-tools/pure';
 import { verifyNostrEvent, type NostrEvent, type NostrUnsignedEvent } from './events';
@@ -38,6 +37,55 @@ const NIP55_TIMEOUT_MS = 120_000;
 const nip55PendingRequests = new Map<string, Nip55PendingRequest>();
 let activeSignerProvider: NostrSignerState['provider'];
 let nip55ListenerInstalled = false;
+
+interface Nip55BaseUriParams {
+  callbackUrl?: string;
+  returnType?: 'signature' | 'event';
+  compressionType?: 'none' | 'gzip';
+  currentUser?: string;
+}
+
+interface Nip55UriParams extends Nip55BaseUriParams {
+  pubKey?: string;
+  plainText?: string;
+  encryptedText?: string;
+}
+
+function nip55Query(params: Record<string, string | undefined>): string {
+  return new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined)) as Record<string, string>
+  ).toString();
+}
+
+function nip55Uri(base: string, type: string, params: Nip55UriParams = {}): string {
+  const query = nip55Query({
+    type,
+    compressionType: params.compressionType ?? 'none',
+    returnType: params.returnType ?? 'signature',
+    callbackUrl: params.callbackUrl,
+    current_user: params.currentUser,
+    pubKey: params.pubKey,
+    plainText: params.plainText,
+    encryptedText: params.encryptedText
+  });
+  return `${base}?${query}`;
+}
+
+function getNip55PublicKeyUri(params: Nip55BaseUriParams): string {
+  return nip55Uri('nostrsigner:', 'get_public_key', params);
+}
+
+function getNip55SignEventUri(event: Record<string, unknown>, params: Nip55BaseUriParams): string {
+  return nip55Uri(`nostrsigner:${encodeURIComponent(JSON.stringify(event))}`, 'sign_event', params);
+}
+
+function getNip55EncryptUri(pubkey: string, plaintext: string, params: Nip55BaseUriParams): string {
+  return nip55Uri('nostrsigner:', 'nip44_encrypt', { ...params, pubKey: pubkey, plainText: plaintext });
+}
+
+function getNip55DecryptUri(pubkey: string, ciphertext: string, params: Nip55BaseUriParams): string {
+  return nip55Uri('nostrsigner:', 'nip44_decrypt', { ...params, pubKey: pubkey, encryptedText: ciphertext });
+}
 
 function isAndroidLike(): boolean {
   return typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
@@ -194,7 +242,7 @@ async function connectNip55Signer(): Promise<NostrSignerState> {
   }
   try {
     const value = await requestNip55(
-      getPublicKeyUri({
+      getNip55PublicKeyUri({
         callbackUrl: callbackUrl(),
         returnType: 'signature',
         compressionType: 'none'
@@ -248,13 +296,15 @@ export async function signWithNostrSigner(event: NostrUnsignedEvent, expectedPub
       ? await nostr.signEvent(event)
       : parseNip55EventResult(
           await requestNip55(
-            signEventUri({
-              eventJson: { ...event, pubkey: expectedPublicKey },
-              callbackUrl: callbackUrl(),
-              returnType: 'event',
-              compressionType: 'none',
-              currentUser: expectedPublicKey
-            }),
+            getNip55SignEventUri(
+              { ...event, pubkey: expectedPublicKey },
+              {
+                callbackUrl: callbackUrl(),
+                returnType: 'event',
+                compressionType: 'none',
+                currentUser: expectedPublicKey
+              }
+            ),
             'event'
           ),
           event,
@@ -292,9 +342,7 @@ export async function encryptWithNostrSigner(recipientPublicKey: string, plainte
   }
   if (activeSignerProvider === 'nip55') {
     return requestNip55(
-      encryptNip44Uri({
-        pubKey: recipientPublicKey,
-        content: plaintext,
+      getNip55EncryptUri(recipientPublicKey, plaintext, {
         callbackUrl: callbackUrl(),
         returnType: 'signature',
         compressionType: 'none'
@@ -315,9 +363,7 @@ export async function decryptWithNostrSigner(senderPublicKey: string, ciphertext
   }
   if (activeSignerProvider === 'nip55') {
     return requestNip55(
-      decryptNip44Uri({
-        pubKey: senderPublicKey,
-        content: ciphertext,
+      getNip55DecryptUri(senderPublicKey, ciphertext, {
         callbackUrl: callbackUrl(),
         returnType: 'signature',
         compressionType: 'none'

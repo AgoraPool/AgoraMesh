@@ -124,7 +124,7 @@ export interface NostrSignerState {
   connected: boolean;
   publicKey?: string;
   lastError?: string;
-  provider?: 'nip07' | 'nip55';
+  provider?: 'nip07' | 'nip46';
 }
 
 export interface NostrProfileMetadata {

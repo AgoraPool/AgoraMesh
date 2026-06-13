@@ -403,13 +403,13 @@ pre {
   line-height: 1;
 }
 
-.amber-signer-fallback {
+.nostr-connect-pairing {
   display: grid;
   gap: var(--space-2);
   min-width: 0;
 }
 
-.amber-signer-fallback .key {
+.nostr-connect-pairing .key {
   max-width: 100%;
   overflow-wrap: anywhere;
 }

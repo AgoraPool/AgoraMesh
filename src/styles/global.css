@@ -2287,8 +2287,9 @@ dd {
     bottom: 0;
     left: 0;
     z-index: 30;
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
     gap: 0.2rem;
     padding: 0.45rem max(0.45rem, env(safe-area-inset-left, 0px)) calc(0.45rem + env(safe-area-inset-bottom, 0px)) max(0.45rem, env(safe-area-inset-right, 0px));
     border-top: 1px solid rgba(245, 231, 200, 0.14);
@@ -2298,9 +2299,11 @@ dd {
 
   .mobile-bottom-nav button {
     display: grid;
+    flex: 1 1 0;
     gap: 0.18rem;
     place-items: center;
     min-width: 0;
+    width: 100%;
     min-height: 3.75rem;
     border-color: transparent;
     background: transparent;

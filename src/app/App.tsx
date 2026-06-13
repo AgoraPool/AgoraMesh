@@ -454,6 +454,32 @@ async function upsertSyncedRecord<T extends CacheablePayload>(
   return 'updated';
 }
 
+async function upsertExistingSyncedListing(
+  item: NostrReviewItem,
+  allowlist: CommunityAllowlistEntry[],
+  listing: Listing
+): Promise<PublicCacheWriteResult> {
+  const incoming = syncedRecordFromReviewItem(item, allowlist, listing);
+  const coordinate = reviewItemCoordinate(item, listing);
+  const existing = (await db.syncedListings.toArray()).find((record) => syncedCoordinate(record) === coordinate);
+  if (!existing) return 'skipped';
+
+  const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
+  if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
+    if (relayUrls.length !== existing.relayUrls.length) await db.syncedListings.put({ ...existing, relayUrls });
+    return 'unchanged';
+  }
+
+  await db.syncedListings.put({
+    ...incoming,
+    id: existing.id,
+    trusted: existing.trusted,
+    hidden: existing.hidden,
+    relayUrls
+  });
+  return 'updated';
+}
+
 async function cachePublicReviewItem(
   item: NostrReviewItem,
   allowlist: CommunityAllowlistEntry[],
@@ -465,7 +491,7 @@ async function cachePublicReviewItem(
     const listing = listingSchema.parse(payload);
 
     if (!isActiveMarketplaceListing(listing)) {
-      return 'skipped';
+      return upsertExistingSyncedListing(item, allowlist, listing);
     }
 
     return upsertSyncedRecord(db.syncedListings, item, allowlist, listing);
@@ -904,7 +930,7 @@ export function App(): ReactNode {
     );
     setSyncStatuses(statuses);
     showNotice(t('notice.publishComplete'));
-    void reload();
+    await reload();
   };
 
   const saveListingDiscoveryScope = async (listingDiscoveryScope: ListingDiscoveryScope): Promise<void> => {
@@ -943,10 +969,6 @@ export function App(): ReactNode {
       if (item.importStatus !== 'pending' || !item.signatureValid) {
         if (item.signatureValid) summary.skipped += 1;
         else summary.invalid += 1;
-        continue;
-      }
-      if (reviewItemContainsExpiredListing(item)) {
-        summary.skipped += 1;
         continue;
       }
       try {
@@ -2939,6 +2961,27 @@ function OperatorSupportPanel({
   };
 
   if (!config.enabled) return null;
+  if (supportReceipt) {
+    return (
+      <section className="operator-support-panel">
+        <div className="row between">
+          <div>
+            <strong>{t('support.title')}</strong>
+            <p className="muted">{t('support.alreadyPaid')}</p>
+          </div>
+          <SupporterBadge receipt={supportReceipt} />
+        </div>
+        <DisclosurePanel title={t('payment.details')}>
+          <SafetyNotice>{t('support.metadataWarning')}</SafetyNotice>
+          <p className="key">{supportReceipt.receiptEventId}</p>
+          <p className="muted">
+            {Math.floor(supportReceipt.amountMsats / 1000)} sats · {supportReceipt.validatedAt}
+          </p>
+          <p className="key">{supportReceipt.operatorLnurl}</p>
+        </DisclosurePanel>
+      </section>
+    );
+  }
   return (
     <section className="operator-support-panel">
       <div className="row between">
@@ -3886,7 +3929,10 @@ function BrowsePage({
   };
 
   const localListingRows = useMemo(
-    () => listings.map((listing) => ({ listing, source: 'local' as const, trusted: true, record: undefined })),
+    () =>
+      listings
+        .filter((listing) => listing.status !== 'deleted')
+        .map((listing) => ({ listing, source: 'local' as const, trusted: true, record: undefined })),
     [listings]
   );
   const marketplaceStatusItems: [string, string][] = [

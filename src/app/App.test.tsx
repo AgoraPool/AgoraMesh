@@ -948,7 +948,8 @@ describe('production readiness UI', () => {
     expect(await screen.findByText('Active status listing')).toBeInTheDocument();
     expect(screen.queryByText('Deleted status listing')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'My listings' }));
-    expect(await screen.findByText('Deleted status listing')).toBeInTheDocument();
+    expect(await screen.findByText('Active status listing')).toBeInTheDocument();
+    expect(screen.queryByText('Deleted status listing')).not.toBeInTheDocument();
   });
 
   it('allows the local author to edit a listing without publishing', async () => {

@@ -976,6 +976,7 @@
   "payment.status.failed": "Payment attempt failed",
   "support.title": "AgoraMesh supporter badge",
   "support.body": "Pay at least {amount} sats to {operator} to cache a public supporter badge for this profile. It is a payment signal only, not trust or verification.",
+  "support.alreadyPaid": "A qualifying public support receipt is already cached for this profile. The pay option is hidden to avoid duplicate support payments.",
   "support.badge": "AgoraMesh supporter",
   "support.badgeShort": "Supporter",
   "support.badgeTitle": "Validated public support zap of at least {amount} sats.",

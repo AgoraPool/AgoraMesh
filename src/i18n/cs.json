@@ -976,6 +976,7 @@
   "payment.status.failed": "Platební pokus selhal",
   "support.title": "Badge podporovatele AgoraMesh",
   "support.body": "Zaplaťte alespoň {amount} sats na {operator} a uložte k profilu veřejný badge podporovatele. Je to jen signál o platbě, ne důvěra ani ověření.",
+  "support.alreadyPaid": "Pro tento profil už je uložený odpovídající veřejný support receipt. Možnost platby je skrytá, aby nevznikaly duplicitní support platby.",
   "support.badge": "Podporovatel AgoraMesh",
   "support.badgeShort": "Podporovatel",
   "support.badgeTitle": "Ověřený veřejný support zap alespoň {amount} sats.",

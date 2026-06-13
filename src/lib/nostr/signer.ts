@@ -100,6 +100,14 @@ function callbackUrl(): string {
   return `${location.origin}${location.pathname}${location.search}#${NIP55_CALLBACK_HASH}`;
 }
 
+export function amberSignerConnectUri(): string {
+  return getNip55PublicKeyUri({
+    callbackUrl: callbackUrl(),
+    returnType: 'signature',
+    compressionType: 'none'
+  });
+}
+
 function requestId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -190,6 +198,25 @@ function consumeNip55Callbacks(): void {
   }
 }
 
+export function consumeNip55SignerCallback(): NostrSignerState | undefined {
+  if (nip55PendingRequests.size > 0) {
+    consumeNip55Callbacks();
+    return undefined;
+  }
+  for (const params of callbackParamSets()) {
+    const value = firstParam(params, ['public_key', 'pubkey', 'npub', 'result', 'signature']);
+    if (!value) continue;
+    const publicKey = normalizePublicKey(value);
+    if (!publicKey) continue;
+    activeSignerProvider = 'nip55';
+    if (window.location.hash.startsWith(`#${NIP55_CALLBACK_HASH}`)) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#profile`);
+    }
+    return { available: true, connected: true, publicKey, provider: 'nip55' };
+  }
+  return undefined;
+}
+
 function ensureNip55Listener(): void {
   if (typeof window === 'undefined' || nip55ListenerInstalled) return;
   nip55ListenerInstalled = true;
@@ -242,11 +269,7 @@ async function connectNip55Signer(): Promise<NostrSignerState> {
   }
   try {
     const value = await requestNip55(
-      getNip55PublicKeyUri({
-        callbackUrl: callbackUrl(),
-        returnType: 'signature',
-        compressionType: 'none'
-      }),
+      amberSignerConnectUri(),
       'publicKey'
     );
     const publicKey = normalizePublicKey(value);

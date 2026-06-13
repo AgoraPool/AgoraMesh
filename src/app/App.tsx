@@ -124,7 +124,9 @@ import {
   type ZapRequestArgs
 } from '../lib/nostr/zaps';
 import {
+  amberSignerConnectUri,
   connectNostrSigner,
+  consumeNip55SignerCallback,
   decryptWithNostrSigner,
   detectNostrSigner,
   encryptWithNostrSigner,
@@ -790,15 +792,24 @@ export function App(): ReactNode {
 
   useEffect(() => {
     void reload();
+    const applyNip55Callback = (): boolean => {
+      const callbackSigner = consumeNip55SignerCallback();
+      if (!callbackSigner) return false;
+      setNostrSigner(callbackSigner);
+      return true;
+    };
     const onHash = (): void => {
+      applyNip55Callback();
       const nextRoute = window.location.hash.replace('#', '');
       setRouteHash(nextRoute);
       setPage(navFromRoute(nextRoute));
     };
     const onFocus = (): void => {
+      if (applyNip55Callback()) return;
       const next = detectNostrSigner();
       setNostrSigner((current) => (current.connected ? current : next));
     };
+    applyNip55Callback();
     window.addEventListener('hashchange', onHash);
     window.addEventListener('focus', onFocus);
     return () => {
@@ -5424,6 +5435,7 @@ function ProfilePage({
                       <KeyRound size={16} /> {t('identity.connectExisting')}
                     </button>
                   </div>
+                  <AmberSignerFallback />
                 </section>
                 <DisclosurePanel title={t('identity.generateTitle')}>
                   <form className="stack-form" onSubmit={(event) => void create(event)}>
@@ -8883,6 +8895,25 @@ function StatusChipRow({ items }: { items: [string, string][] }): ReactNode {
   );
 }
 
+function AmberSignerFallback(): ReactNode {
+  const { t } = useI18n();
+  const amberUrl = amberSignerConnectUri();
+  return (
+    <div className="amber-signer-fallback">
+      <p className="muted">{t('signer.amberFallback')}</p>
+      <div className="actions small">
+        <button className="subtle" onClick={() => (window.location.href = amberUrl)} type="button">
+          {t('signer.openAmber')}
+        </button>
+        <button className="subtle" onClick={() => void navigator.clipboard?.writeText(amberUrl)} type="button">
+          {t('signer.copyAmberUrl')}
+        </button>
+      </div>
+      <p className="key">{amberUrl}</p>
+    </div>
+  );
+}
+
 function SignerStatusStrip({
   status,
   onConnect,
@@ -8893,6 +8924,7 @@ function SignerStatusStrip({
   onUseAsIdentity?: () => void;
 }): ReactNode {
   const { t } = useI18n();
+  const showAmberFallback = status.state !== 'active-identity' && status.state !== 'connected';
   return (
     <article className="inline-card signer-strip">
       <div className="row between">
@@ -8913,6 +8945,7 @@ function SignerStatusStrip({
           </button>
         ) : null}
       </div>
+      {showAmberFallback ? <AmberSignerFallback /> : null}
     </article>
   );
 }

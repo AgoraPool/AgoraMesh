@@ -392,7 +392,9 @@ function nostrThreadId(threadKey: string): string {
 }
 
 function messageContextFromPlaintext(plaintext: string): { contextTitle?: string; contextId?: string } {
-  const contextTitle = plaintext.match(/^Context: (.+)$/m)?.[1]?.trim();
+  const contextTitle =
+    plaintext.match(/^Context: (.+)$/m)?.[1]?.trim() ??
+    plaintext.match(/^(Listing|Profile|Mediator|Thread): (.+)$/m)?.[2]?.trim();
   const contextId = plaintext.match(/^Reference: (.+)$/m)?.[1]?.trim();
   return { contextTitle, contextId };
 }
@@ -3275,9 +3277,9 @@ function NostrContactPanel({
               <span className="form-eyebrow">{t('nostrContact.context')}</span>
               <strong>{target.contextTitle}</strong>
               <p className="muted">{t(`nostrContact.context.${target.contextType}`)}</p>
-              <label className="check-row">
+              <label className="context-toggle">
                 <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
-                {t('nostrContact.includeContext')}
+                <span>{t('nostrContact.includeContext')}</span>
               </label>
             </div>
           ) : null}

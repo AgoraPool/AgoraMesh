@@ -1,11 +1,28 @@
 import { bytesToHex } from '@noble/hashes/utils';
 import { describe, expect, it } from 'vitest';
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
-import { createExtensionNostrIntroEvents, createLocalNostrIntroEvents, NOSTR_GIFT_WRAP_KIND, nostrInboxSince, unwrapLocalNostrGiftWrap } from './messages';
+import {
+  createExtensionNostrIntroEvents,
+  createLocalNostrIntroEvents,
+  NOSTR_GIFT_WRAP_KIND,
+  nostrInboxSince,
+  nostrIntroPlaintext,
+  unwrapLocalNostrGiftWrap
+} from './messages';
 import { encrypt } from 'nostr-tools/nip44';
 import type { NostrUnsignedEvent } from './events';
 
 describe('encrypted Nostr intro messages', () => {
+  it('formats optional context as a readable message block', () => {
+    expect(
+      nostrIntroPlaintext('Is this still available?', {
+        type: 'listing',
+        id: 'listing-1',
+        title: 'Test listing'
+      })
+    ).toBe('Is this still available?\n\n---\nAgoraMesh context\nListing: Test listing\nReference: listing-1\n---');
+  });
+
   it('creates valid NIP-17 gift wraps with a local unlocked key without plaintext bodies', () => {
     const senderKey = generateSecretKey();
     const senderPublicKey = getPublicKey(senderKey);

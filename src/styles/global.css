@@ -2482,8 +2482,24 @@ dd {
   margin: 0;
 }
 
-.message-context .check-row {
+.context-toggle {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  justify-self: start;
   margin-top: var(--space-1);
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.25;
+}
+
+.context-toggle input {
+  flex: 0 0 auto;
+  width: 0.95rem;
+  height: 0.95rem;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .form-eyebrow {

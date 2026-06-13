@@ -56,6 +56,13 @@ function randomNowSeconds(): number {
   return Math.round(nowSeconds() - Math.random() * 2 * 24 * 60 * 60);
 }
 
+function contextLabel(context: NostrIntroContext): string {
+  if (context.type === 'listing') return 'Listing';
+  if (context.type === 'profile') return 'Profile';
+  if (context.type === 'mediator') return 'Mediator';
+  return 'Thread';
+}
+
 export function nostrIntroPlaintext(message: string, context?: NostrIntroContext): string {
   const trimmed = message.trim();
   if (!trimmed) {
@@ -65,8 +72,9 @@ export function nostrIntroPlaintext(message: string, context?: NostrIntroContext
     throw new Error(`Message must be ${NOSTR_INTRO_MESSAGE_LIMIT} characters or less.`);
   }
   if (!context?.title) return trimmed;
-  const contextLines = [`Context: ${context.title}`];
+  const contextLines = ['---', 'AgoraMesh context', `${contextLabel(context)}: ${context.title}`];
   if (context.id) contextLines.push(`Reference: ${context.id}`);
+  contextLines.push('---');
   return `${trimmed}\n\n${contextLines.join('\n')}`;
 }
 

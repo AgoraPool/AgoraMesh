@@ -758,11 +758,13 @@ export function buildAgoraRelayFilters(
 
 export function isAgoraMeshNativeListingEvent(event: NostrEvent): boolean {
   if (event.kind !== AGORAMESH_EVENT_KINDS.listing) return false;
-  return event.tags.some((tag) => {
+  const explicitMarker = event.tags.some((tag) => {
     const name = tag[0]?.toLowerCase();
     const value = tag[1]?.toLowerCase();
     return (name === 't' && value === 'agoramesh') || (name === 'client' && value === 'agoramesh');
   });
+  if (explicitMarker) return true;
+  return Boolean(firstTag(event, 'listing_type') && firstTag(event, 'category') && firstTag(event, 'expires_at') && firstTag(event, 'contact'));
 }
 
 export function isoToNostrTimestamp(value?: string): number | undefined {

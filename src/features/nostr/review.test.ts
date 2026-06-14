@@ -101,6 +101,33 @@ describe('Nostr review queue helpers', () => {
     expect(filter.kinds.filter((kind) => kind === AGORAMESH_EVENT_KINDS.listing)).toHaveLength(1);
   });
 
+  it('treats AgoraMesh-shaped NIP-99 listings as native even without explicit marker tags', () => {
+    const privateKey = generateSecretKey();
+    const publicKey = getPublicKey(privateKey);
+    const event = finalizeEvent(
+      {
+        kind: AGORAMESH_EVENT_KINDS.listing,
+        created_at: 1_700_000_000,
+        tags: [
+          ['d', 'agoramesh_shape'],
+          ['title', 'AgoraMesh shaped listing'],
+          ['published_at', '1700000000'],
+          ['location', 'Prague'],
+          ['price', '1000', 'SAT'],
+          ['status', 'active'],
+          ['category', 'repairs'],
+          ['listing_type', 'offer'],
+          ['expires_at', '2026-12-31'],
+          ['contact', 'nostr', publicKey]
+        ],
+        content: 'Valid AgoraMesh-shaped NIP-99 listing.'
+      },
+      privateKey
+    );
+
+    expect(reviewItemFromEvent(event, 'wss://relay.example', 'all-nip99').discoveryScope).toBe('agoramesh-native');
+  });
+
   it('keeps generic NIP-99 classifieds out of native scope unless broad discovery is selected', async () => {
     const privateKey = generateSecretKey();
     const publicKey = getPublicKey(privateKey);

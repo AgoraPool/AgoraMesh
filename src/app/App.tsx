@@ -399,10 +399,11 @@ function nostrThreadId(threadKey: string): string {
 }
 
 function messageContextFromPlaintext(plaintext: string): { contextTitle?: string; contextId?: string } {
+  const normalized = normalizePlainTextForDisplay(plaintext);
   const contextTitle =
-    plaintext.match(/^Context: (.+)$/m)?.[1]?.trim() ??
-    plaintext.match(/^(Listing|Profile|Mediator|Thread): (.+)$/m)?.[2]?.trim();
-  const contextId = plaintext.match(/^Reference: (.+)$/m)?.[1]?.trim();
+    normalized.match(/^Context: (.+)$/m)?.[1]?.trim() ??
+    normalized.match(/^(Listing|Profile|Mediator|Thread): (.+)$/m)?.[2]?.trim();
+  const contextId = normalized.match(/^Reference: (.+)$/m)?.[1]?.trim();
   return { contextTitle, contextId };
 }
 
@@ -410,9 +411,17 @@ function messageIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString();
 }
 
-function PlainTextBlock({ text, className = '' }: { text: string; className?: string }): ReactNode {
-  const blocks = text
+function normalizePlainTextForDisplay(text: string): string {
+  return text
     .replace(/\r\n/g, '\n')
+    .replace(/\s+---\s+AgoraMesh context\s+/g, '\n\n---\nAgoraMesh context\n')
+    .replace(/\s+---\s*$/g, '\n---')
+    .replace(/\s+(Listing|Profile|Mediator|Thread):\s+/g, '\n$1: ')
+    .replace(/\s+Reference:\s+/g, '\nReference: ');
+}
+
+function PlainTextBlock({ text, className = '' }: { text: string; className?: string }): ReactNode {
+  const blocks = normalizePlainTextForDisplay(text)
     .trim()
     .split(/\n{2,}/)
     .map((block) => block.split('\n').map((line) => line.trimEnd()))
@@ -449,15 +458,20 @@ function PlainTextBlock({ text, className = '' }: { text: string; className?: st
   );
 }
 
+function effectiveSyncedListingScope(record: SyncedPublicRecord<Listing>): ListingDiscoveryScope | undefined {
+  if (record.discoveryScope === 'agoramesh-native') return 'agoramesh-native';
+  try {
+    if (isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(record.rawEvent)))) return 'agoramesh-native';
+  } catch {
+    // Fall back to parsed compatibility markers if the raw signed event cannot be inspected.
+  }
+  if (record.payload.tags.some((tag) => tag.toLowerCase() === 'agoramesh')) return 'agoramesh-native';
+  return record.discoveryScope;
+}
+
 function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
   if (scope === 'all-nip99') return true;
-  if (!record.discoveryScope || record.discoveryScope === 'agoramesh-native') return true;
-  try {
-    return isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(record.rawEvent)));
-  } catch {
-    // Fall back to parsed legacy tags if the raw event is not available.
-  }
-  return record.payload.tags.some((tag) => tag.toLowerCase() === 'agoramesh');
+  return !record.discoveryScope || effectiveSyncedListingScope(record) === 'agoramesh-native';
 }
 
 function reviewItemCoordinate(item: NostrReviewItem, payload: CacheablePayload): string {
@@ -4284,9 +4298,10 @@ function BrowsePage({
       rowSource === 'synced' && record
         ? { source: 'synced', id: listing.id, recordId: record.id, listing }
         : { source: 'local', id: listing.id, listing };
+    const recordScope = record ? effectiveSyncedListingScope(record) : undefined;
     const sourceLabel = syncSettings.showDataSource
       ? `${rowSource === 'synced' ? t('sync.syncedData') : t('sync.localData')}${rowSource === 'synced' ? ` · ${trusted ? t('sync.trusted') : t('sync.untrusted')}` : ''}${
-          record?.discoveryScope ? ` · ${record.discoveryScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('sync.scopeAgoraMeshNative')}` : ''
+          recordScope ? ` · ${recordScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('sync.scopeAgoraMeshNative')}` : ''
         }`
       : listing.visibility;
     const visibleTags = listing.tags.slice(0, 3);

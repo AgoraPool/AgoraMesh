@@ -460,10 +460,12 @@ function PlainTextBlock({ text, className = '' }: { text: string; className?: st
 
 function effectiveSyncedListingScope(record: SyncedPublicRecord<Listing>): ListingDiscoveryScope | undefined {
   if (record.discoveryScope === 'agoramesh-native') return 'agoramesh-native';
-  try {
-    if (isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(record.rawEvent)))) return 'agoramesh-native';
-  } catch {
-    // Fall back to parsed compatibility markers if the raw signed event cannot be inspected.
+  if (record.rawEvent) {
+    try {
+      if (isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(record.rawEvent)))) return 'agoramesh-native';
+    } catch {
+      // Fall back to parsed compatibility markers if the raw signed event cannot be inspected.
+    }
   }
   if (record.payload.tags.some((tag) => tag.toLowerCase() === 'agoramesh')) return 'agoramesh-native';
   return record.discoveryScope;

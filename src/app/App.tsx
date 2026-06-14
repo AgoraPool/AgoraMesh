@@ -75,6 +75,7 @@ import {
   fetchNostrProfileMetadata,
   isoToNostrTimestamp,
   importablePayloadFromReviewItem,
+  isAgoraMeshNativeListingEvent,
   nostrCoordinate,
   parseAgoraEventPayload,
   parseNostrEvent,
@@ -412,6 +413,11 @@ function messageIso(seconds: number): string {
 function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
   if (scope === 'all-nip99') return true;
   if (!record.discoveryScope || record.discoveryScope === 'agoramesh-native') return true;
+  try {
+    return isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(record.rawEvent)));
+  } catch {
+    // Fall back to parsed legacy tags if the raw event is not available.
+  }
   return record.payload.tags.some((tag) => tag.toLowerCase() === 'agoramesh');
 }
 
@@ -448,7 +454,13 @@ async function upsertSyncedRecord<T extends CacheablePayload>(
 
   const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
   if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
-    if (relayUrls.length !== existing.relayUrls.length) await table.put({ ...existing, relayUrls });
+    const discoveryScope =
+      existing.discoveryScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
+        ? 'agoramesh-native'
+        : existing.discoveryScope ?? incoming.discoveryScope;
+    if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
+      await table.put({ ...existing, relayUrls, discoveryScope });
+    }
     return 'unchanged';
   }
 
@@ -474,7 +486,13 @@ async function upsertExistingSyncedListing(
 
   const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
   if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
-    if (relayUrls.length !== existing.relayUrls.length) await db.syncedListings.put({ ...existing, relayUrls });
+    const discoveryScope =
+      existing.discoveryScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
+        ? 'agoramesh-native'
+        : existing.discoveryScope ?? incoming.discoveryScope;
+    if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
+      await db.syncedListings.put({ ...existing, relayUrls, discoveryScope });
+    }
     return 'unchanged';
   }
 

@@ -800,10 +800,13 @@ export function reviewItemFromEvent(
   let signatureValid = false;
   let importStatus: NostrReviewItem['importStatus'] = 'invalid';
   let payloadPreview = 'Invalid or unsupported AgoraMesh event.';
-  const discoveryScope = event.kind === AGORAMESH_EVENT_KINDS.listing ? listingDiscoveryScope : undefined;
+  let discoveryScope: ListingDiscoveryScope | undefined = event.kind === AGORAMESH_EVENT_KINDS.listing ? listingDiscoveryScope : undefined;
 
   try {
     signatureValid = verifyNostrEvent(event);
+    if (signatureValid && event.kind === AGORAMESH_EVENT_KINDS.listing && isAgoraMeshNativeListingEvent(event)) {
+      discoveryScope = 'agoramesh-native';
+    }
     const encrypted = signatureValid ? encryptedRelayContentFromEvent(event) : undefined;
     if (encrypted && event.kind === AGORAMESH_EVENT_KINDS.listing) {
       payloadPreview = 'Encrypted listing relay content is not valid NIP-99 marketplace discovery.';

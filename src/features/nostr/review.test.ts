@@ -83,9 +83,11 @@ describe('Nostr review queue helpers', () => {
     const { listing, privateKeyHex } = publicListing();
     const event = signListing(listing, privateKeyHex);
     const item = reviewItemFromEvent(event, 'wss://relay.example');
+    const broadFetchItem = reviewItemFromEvent(event, 'wss://relay.example', 'all-nip99');
 
     expect(item.signatureValid).toBe(true);
     expect(item.importStatus).toBe('pending');
+    expect(broadFetchItem.discoveryScope).toBe('agoramesh-native');
     await expect(importablePayloadFromReviewItem(item)).resolves.toMatchObject({ id: 'listing_review' });
   });
 

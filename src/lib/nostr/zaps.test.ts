@@ -4,6 +4,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import {
   signZapRequestLocally,
   signZapRequestWithExtension,
+  validateListingZapReceipt,
   validateOperatorSupportReceipt,
   validateZapReceipt,
   validateZapRequest,
@@ -79,6 +80,60 @@ describe('NIP-57 zap helpers', () => {
     ) as NostrEvent;
 
     expect(validateZapReceipt({ receipt, zapRequest, bolt11, sellerWalletPubkey: walletPublicKey })).toBe(receipt);
+  });
+
+  it('validates listing zap receipts by wallet pubkey and listing coordinate', () => {
+    const buyerKey = generateSecretKey();
+    const walletKey = generateSecretKey();
+    const sellerPublicKey = getPublicKey(generateSecretKey());
+    const buyerPublicKey = getPublicKey(buyerKey);
+    const walletPublicKey = getPublicKey(walletKey);
+    const listingCoordinate = `30402:${sellerPublicKey}:listing_1`;
+    const bolt11 = 'lnbc1listinginvoice';
+    const zapRequest = signZapRequestLocally(
+      {
+        buyerPublicKey,
+        sellerPublicKey: walletPublicKey,
+        amountMsats: 50_000,
+        lnurl: 'lnurl1listing',
+        relays: ['wss://relay.example'],
+        listingCoordinate
+      },
+      bytesToHex(buyerKey)
+    );
+    const receipt = finalizeEvent(
+      {
+        kind: NOSTR_ZAP_RECEIPT_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['p', walletPublicKey],
+          ['P', buyerPublicKey],
+          ['a', listingCoordinate],
+          ['bolt11', bolt11],
+          ['description', JSON.stringify(zapRequest)]
+        ],
+        content: ''
+      },
+      walletKey
+    ) as NostrEvent;
+
+    const validation = validateListingZapReceipt({
+      receipt,
+      sellerWalletPubkey: walletPublicKey,
+      listingCoordinate,
+      lnurl: 'lnurl1listing'
+    });
+    expect(validation.buyerPublicKey).toBe(buyerPublicKey);
+    expect(validation.amountMsats).toBe(50_000);
+    expect(validation.bolt11).toBe(bolt11);
+    expect(() =>
+      validateListingZapReceipt({
+        receipt,
+        sellerWalletPubkey: walletPublicKey,
+        listingCoordinate: `30402:${sellerPublicKey}:other`,
+        lnurl: 'lnurl1listing'
+      })
+    ).toThrow(/listing/i);
   });
 
   it('rejects receipts with the wrong invoice, buyer, seller, request, or wallet signer', () => {

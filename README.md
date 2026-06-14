@@ -108,7 +108,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.39.0`.
+Current app version: `0.40.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -124,7 +124,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.39.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.40.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -166,6 +166,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.37.0 reputation pass turns signed attestations into scored marketplace reviews with listing context, trusted-reviewer cues, seller summaries, and duplicate-review guardrails.
 - The v0.38.0 native marketplace pass makes Inbox read like a simple DM surface and allows seller/listing reviews without requiring in-app trade agreements.
 - The v0.39.0 support badge pass adds optional operator support zaps with public receipt-backed profile badges, explicit support filters, and no trust/allowlist mutation.
+- The v0.40.0 public receipt pass makes supporter badges discoverable across devices, adds seller listing zap checks, improves DM reply threading, and stops publishing new fulfillment tags in AgoraMesh NIP-99 listings.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

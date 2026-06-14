@@ -489,6 +489,26 @@ export interface OperatorSupportReceipt {
   validatedAt: string;
 }
 
+export interface ListingZapReceipt {
+  id: string;
+  listingId: string;
+  listingTitle?: string;
+  listingCoordinate: string;
+  sellerPublicKey: string;
+  buyerPublicKey: string;
+  lnurl: string;
+  sellerWalletPubkey: string;
+  amountMsats: number;
+  zapRequestId: string;
+  zapRequest: string;
+  receiptEventId: string;
+  receiptEvent: string;
+  bolt11: string;
+  relayUrls: string[];
+  paidAt: string;
+  validatedAt: string;
+}
+
 export interface PublishReceipt {
   id: string;
   objectType: PublishObjectType;
@@ -632,6 +652,7 @@ export interface AppBackup {
   nostrInboxCursors: NostrInboxCursor[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
   operatorSupportReceipts: OperatorSupportReceipt[];
+  listingZapReceipts: ListingZapReceipt[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

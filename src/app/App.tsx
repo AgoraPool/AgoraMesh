@@ -103,6 +103,7 @@ import {
   createLocalNostrIntroEvents,
   fetchNostrInboxGiftWraps,
   nostrInboxSince,
+  nostrIntroPlaintext,
   NOSTR_INTRO_MESSAGE_LIMIT,
   unwrapExtensionNostrGiftWrap,
   unwrapLocalNostrGiftWrap,
@@ -119,6 +120,7 @@ import {
   fetchZapReceiptsFromRelays,
   signZapRequestLocally,
   signZapRequestWithExtension,
+  validateListingZapReceipt,
   validateOperatorSupportReceipt,
   validateZapReceipt,
   type ZapRequestArgs
@@ -192,6 +194,7 @@ import type {
   ListingStatus,
   ListingType,
   ListingVisibility,
+  ListingZapReceipt,
   LightningPaymentAttempt,
   MediatorProfile,
   NostrContactReceipt,
@@ -273,6 +276,7 @@ type SaveNwcConnectionRequest = {
 type SendNostrContactIntroArgs = NostrContactTarget & {
   message: string;
   includeContext: boolean;
+  cachePassphrase?: string;
 };
 type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
 type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
@@ -632,6 +636,17 @@ function supportFilterLabel(filter: SupportFilter, t: (key: string) => string): 
   return t('support.all');
 }
 
+function listingCoordinateForZap(listing: Listing): string {
+  return nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id);
+}
+
+function listingZapReceiptsForListing(listing: Listing, receipts: ListingZapReceipt[]): ListingZapReceipt[] {
+  const coordinate = listingCoordinateForZap(listing);
+  return receipts
+    .filter((receipt) => receipt.listingCoordinate === coordinate)
+    .sort((left, right) => right.paidAt.localeCompare(left.paidAt));
+}
+
 function summarizeListingReceipts(listing: Listing, publishReceipts: PublishReceipt[]): PublishReceiptSummary {
   const receipts = publishReceipts.filter((receipt) => receipt.objectType === 'listing' && receipt.objectId === listing.id);
   return {
@@ -699,6 +714,7 @@ export function App(): ReactNode {
   const [nostrInboxCursors, setNostrInboxCursors] = useState<NostrInboxCursor[]>([]);
   const [lightningPaymentAttempts, setLightningPaymentAttempts] = useState<LightningPaymentAttempt[]>([]);
   const [operatorSupportReceipts, setOperatorSupportReceipts] = useState<OperatorSupportReceipt[]>([]);
+  const [listingZapReceipts, setListingZapReceipts] = useState<ListingZapReceipt[]>([]);
   const [nwcConnections, setNwcConnections] = useState<NwcConnection[]>([]);
   const [unlockedNwcSecrets, setUnlockedNwcSecrets] = useState<Record<string, string>>({});
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
@@ -784,6 +800,7 @@ export function App(): ReactNode {
     setNostrInboxCursors(await db.nostrInboxCursors.toArray());
     setLightningPaymentAttempts((await db.lightningPaymentAttempts.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setOperatorSupportReceipts((await db.operatorSupportReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
+    setListingZapReceipts((await db.listingZapReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
     setNwcConnections((await db.nwcConnections.toArray()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
@@ -980,6 +997,14 @@ export function App(): ReactNode {
         summary[result] += 1;
       } catch {
         summary.invalid += 1;
+      }
+    }
+
+    if (operatorSupport.enabled) {
+      try {
+        await refreshOperatorSupportReceipts();
+      } catch {
+        // Support badge refresh should not fail the normal public marketplace fetch.
       }
     }
 
@@ -1199,6 +1224,51 @@ export function App(): ReactNode {
       sentAt: nowIso()
     };
     await db.nostrContactReceipts.put(receipt);
+    if (args.cachePassphrase && args.cachePassphrase.length >= 10) {
+      const selfCopy = events.find((event) => event.tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === senderPublicKey)) ?? events[0];
+      if (selfCopy) {
+        const plaintext = nostrIntroPlaintext(args.message, context);
+        const subject = context?.title;
+        const contextId = context?.id;
+        const counterpartPublicKey = recipient.publicKey.toLowerCase();
+        const existingThreads = await db.nostrMessageThreads.where('ownerPublicKey').equals(senderPublicKey).toArray();
+        const exactThreadKey = nostrThreadKey(senderPublicKey, counterpartPublicKey, subject, contextId);
+        const matchingThread =
+          existingThreads.find((thread) => thread.counterpartPublicKey.toLowerCase() === counterpartPublicKey && thread.threadKey === exactThreadKey) ??
+          existingThreads
+            .filter(
+              (thread) =>
+                thread.counterpartPublicKey.toLowerCase() === counterpartPublicKey &&
+                (!subject || thread.subject?.trim().toLowerCase() === subject.trim().toLowerCase())
+            )
+            .sort((left, right) => right.lastMessageAt.localeCompare(left.lastMessageAt))[0];
+        const threadKey = matchingThread?.threadKey ?? exactThreadKey;
+        const record: NostrMessageRecord = {
+          id: `nostr_msg_${selfCopy.id}`,
+          ownerPublicKey: senderPublicKey,
+          eventId: selfCopy.id,
+          wrapPublicKey: selfCopy.pubkey,
+          senderPublicKey,
+          recipientPublicKey: senderPublicKey,
+          counterpartPublicKey,
+          direction: 'outgoing',
+          threadKey,
+          subject: matchingThread?.subject ?? subject,
+          contextType: context?.type ?? matchingThread?.contextType,
+          contextId: matchingThread?.contextId ?? contextId,
+          wrapCreatedAt: messageIso(selfCopy.created_at),
+          messageCreatedAt: nowIso(),
+          receivedAt: nowIso(),
+          relayUrls: relays.filter((relay) => relay.enabled).map((relay) => relay.url),
+          rawEvent: JSON.stringify(selfCopy),
+          encryptedPlaintext: await encryptLocalSecret(plaintext, args.cachePassphrase),
+          read: true,
+          archived: false
+        };
+        await db.nostrMessages.put(record);
+        await rebuildNostrThread(threadKey);
+      }
+    }
     setNostrContactReceipts((current) => [receipt, ...current.filter((entry) => entry.id !== receipt.id)]);
     showNotice(receipt.status === 'failed' ? t('nostrContact.sentFailed') : t('nostrContact.sent'));
     return receipt;
@@ -1251,7 +1321,18 @@ export function App(): ReactNode {
     const counterpartPublicKey = direction === 'outgoing' ? sentReceipt?.recipientPublicKey.toLowerCase() ?? ownerPublicKey : unwrapped.senderPublicKey;
     const subject = unwrapped.subject ?? parsedContext.contextTitle ?? sentReceipt?.contextTitle;
     const contextId = parsedContext.contextId ?? sentReceipt?.contextId;
-    const threadKey = nostrThreadKey(ownerPublicKey, counterpartPublicKey, subject, contextId);
+    const exactThreadKey = nostrThreadKey(ownerPublicKey, counterpartPublicKey, subject, contextId);
+    const existingThreads = await db.nostrMessageThreads.where('ownerPublicKey').equals(ownerPublicKey).toArray();
+    const counterpartThreads = existingThreads.filter((thread) => thread.counterpartPublicKey.toLowerCase() === counterpartPublicKey.toLowerCase());
+    const matchingThread =
+      counterpartThreads.find((thread) => thread.threadKey === exactThreadKey) ??
+      (subject
+        ? counterpartThreads
+            .filter((thread) => thread.subject?.trim().toLowerCase() === subject.trim().toLowerCase())
+            .sort((left, right) => right.lastMessageAt.localeCompare(left.lastMessageAt))[0]
+        : undefined) ??
+      (!subject && !contextId && counterpartThreads.length === 1 ? counterpartThreads[0] : undefined);
+    const threadKey = matchingThread?.threadKey ?? exactThreadKey;
     const record: NostrMessageRecord = {
       id: `nostr_msg_${unwrapped.wrap.id}`,
       ownerPublicKey,
@@ -1262,9 +1343,9 @@ export function App(): ReactNode {
       counterpartPublicKey,
       direction,
       threadKey,
-      subject,
-      contextType: sentReceipt?.contextType,
-      contextId,
+      subject: matchingThread?.subject ?? subject,
+      contextType: sentReceipt?.contextType ?? matchingThread?.contextType,
+      contextId: matchingThread?.contextId ?? contextId,
       wrapCreatedAt: messageIso(unwrapped.wrap.created_at),
       messageCreatedAt: messageIso(unwrapped.rumor.created_at),
       receivedAt: nowIso(),
@@ -1576,6 +1657,91 @@ export function App(): ReactNode {
     return cached;
   };
 
+  const refreshOperatorSupportReceipts = async (): Promise<number> => {
+    if (!operatorSupport.enabled) return 0;
+    const metadata = await fetchLnurlPayMetadata(operatorSupport.lnurl);
+    const newest = operatorSupportReceipts
+      .filter((receipt) => receipt.operatorWalletPubkey.toLowerCase() === metadata.nostrPubkey.toLowerCase())
+      .sort((left, right) => right.paidAt.localeCompare(left.paidAt))[0];
+    const since = newest ? Math.max(0, Math.floor(new Date(newest.paidAt).getTime() / 1000) - 600) : undefined;
+    const results = await fetchZapReceiptsFromRelays(relays, metadata.nostrPubkey, since);
+    let cachedCount = 0;
+    for (const result of results) {
+      for (const event of result.events) {
+        try {
+          await cacheOperatorSupportReceipt(event, [result.relayUrl], operatorSupport, undefined, metadata.nostrPubkey);
+          cachedCount += 1;
+        } catch {
+          // Ignore receipts that are not valid operator support zaps for this build.
+        }
+      }
+    }
+    await reload();
+    return cachedCount;
+  };
+
+  const cacheListingZapReceipt = async (
+    listing: Listing,
+    receipt: NostrEvent,
+    relayUrls: string[],
+    sellerWalletPubkey: string,
+    lnurl: string
+  ): Promise<ListingZapReceipt> => {
+    const listingCoordinate = listingCoordinateForZap(listing);
+    const validation = validateListingZapReceipt({
+      receipt,
+      sellerWalletPubkey,
+      listingCoordinate,
+      lnurl
+    });
+    const id = `listing_zap_${listing.id}_${receipt.id}`;
+    const existing = await db.listingZapReceipts.get(id);
+    const cached: ListingZapReceipt = {
+      id,
+      listingId: listing.id,
+      listingTitle: listing.title,
+      listingCoordinate,
+      sellerPublicKey: listing.authorPublicKey.toLowerCase(),
+      buyerPublicKey: validation.buyerPublicKey,
+      lnurl,
+      sellerWalletPubkey: sellerWalletPubkey.toLowerCase(),
+      amountMsats: validation.amountMsats,
+      zapRequestId: validation.zapRequest.id,
+      zapRequest: JSON.stringify(validation.zapRequest),
+      receiptEventId: receipt.id,
+      receiptEvent: JSON.stringify(receipt),
+      bolt11: validation.bolt11,
+      relayUrls: [...new Set([...(existing?.relayUrls ?? []), ...relayUrls])],
+      paidAt: new Date(receipt.created_at * 1000).toISOString(),
+      validatedAt: nowIso()
+    };
+    await db.listingZapReceipts.put(cached);
+    return cached;
+  };
+
+  const checkListingZapReceipts = async (listing: Listing, sellerProfile?: PublicProfile): Promise<ListingZapReceipt[]> => {
+    const lnurlSource = listingLightningSource(listing, sellerProfile);
+    if (!lnurlSource) throw new Error(t('listingZap.noLightningSource'));
+    const metadata = await fetchLnurlPayMetadata(lnurlSource);
+    const lnurl = lnurlTagForPayUrl(lnurlSource);
+    const newest = listingZapReceiptsForListing(listing, listingZapReceipts)[0];
+    const since = newest ? Math.max(0, Math.floor(new Date(newest.paidAt).getTime() / 1000) - 600) : undefined;
+    const results = await fetchZapReceiptsFromRelays(relays, metadata.nostrPubkey, since);
+    const cached: ListingZapReceipt[] = [];
+    for (const result of results) {
+      for (const event of result.events) {
+        try {
+          cached.push(await cacheListingZapReceipt(listing, event, [result.relayUrl], metadata.nostrPubkey, lnurl));
+        } catch {
+          // Keep scanning for receipts tied to this listing coordinate.
+        }
+      }
+    }
+    await reload();
+    showNotice(t('listingZap.checkComplete').replace('{count}', String(cached.length)));
+    return cached;
+  };
+
   const saveNwcConnection = async ({ uri, passphrase, label }: SaveNwcConnectionRequest): Promise<NwcConnection> => {
     const parsed = parseNwcUri(uri);
     const at = nowIso();
@@ -1869,6 +2035,7 @@ export function App(): ReactNode {
             nostrContactReceipts={nostrContactReceipts}
             lightningPaymentAttempts={lightningPaymentAttempts}
             operatorSupportReceipts={operatorSupportReceipts}
+            listingZapReceipts={listingZapReceipts}
             nwcConnections={nwcConnections}
             unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             relays={relays}
@@ -1905,6 +2072,7 @@ export function App(): ReactNode {
             onSendNostrIntro={sendNostrContactIntro}
             onCreateLightningPaymentAttempt={createLightningPaymentAttempt}
             onCheckLightningPaymentReceipt={checkLightningPaymentReceipt}
+            onCheckListingZapReceipts={checkListingZapReceipts}
             onCreateOperatorSupportPaymentAttempt={createOperatorSupportPaymentAttempt}
             onCheckOperatorSupportReceipt={checkOperatorSupportReceipt}
             onSaveNwcConnection={saveNwcConnection}
@@ -2836,6 +3004,57 @@ function LightningPaymentPanel({
   );
 }
 
+function ListingZapReceiptsPanel({
+  receipts,
+  onCheck
+}: {
+  receipts: ListingZapReceipt[];
+  onCheck: () => Promise<ListingZapReceipt[]>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
+  const totalSats = receipts.reduce((total, receipt) => total + Math.floor(receipt.amountMsats / 1000), 0);
+  const check = async (): Promise<void> => {
+    setError('');
+    setChecking(true);
+    try {
+      await onCheck();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('listingZap.checkFailed'));
+    } finally {
+      setChecking(false);
+    }
+  };
+  return (
+    <section className="inline-card">
+      <div className="row">
+        <ReceiptText size={16} aria-hidden="true" />
+        <strong>{t('listingZap.title')}</strong>
+      </div>
+      <p className="muted">
+        {receipts.length > 0
+          ? t('listingZap.summary').replace('{count}', String(receipts.length)).replace('{sats}', String(totalSats))
+          : t('listingZap.empty')}
+      </p>
+      <button className="subtle" disabled={checking} onClick={() => void check()} type="button">
+        {checking ? t('listingZap.checking') : t('listingZap.check')}
+      </button>
+      {error ? <p className="warning compact-warning" role="alert">{error}</p> : null}
+      {receipts.length > 0 ? (
+        <DisclosurePanel title={t('listingZap.receipts')}>
+          <SafetyNotice>{t('listingZap.warning')}</SafetyNotice>
+          {receipts.slice(0, 5).map((receipt) => (
+            <p className="muted" key={receipt.id}>
+              {receipt.paidAt} · {Math.floor(receipt.amountMsats / 1000)} sats · {shortPublicKey(receipt.buyerPublicKey)}
+            </p>
+          ))}
+        </DisclosurePanel>
+      ) : null}
+    </section>
+  );
+}
+
 function OperatorSupportPanel({
   config,
   identity,
@@ -2977,6 +3196,12 @@ function OperatorSupportPanel({
           </div>
           <SupporterBadge receipt={supportReceipt} />
         </div>
+        <div className="actions small">
+          <button className="subtle" disabled={working} onClick={() => void check()} type="button">
+            {working ? t('payment.working') : t('support.refreshBadges')}
+          </button>
+        </div>
+        {error ? <p className="warning compact-warning" role="alert">{error}</p> : null}
         <DisclosurePanel title={t('payment.details')}>
           <SafetyNotice>{t('support.metadataWarning')}</SafetyNotice>
           <p className="key">{supportReceipt.receiptEventId}</p>
@@ -3368,6 +3593,7 @@ function ListingPage({
   nostrContactReceipts,
   lightningPaymentAttempts,
   operatorSupportReceipts,
+  listingZapReceipts,
   nwcConnections,
   unlockedNwcConnectionIds,
   relays,
@@ -3383,6 +3609,7 @@ function ListingPage({
   onSendNostrIntro,
   onCreateLightningPaymentAttempt,
   onCheckLightningPaymentReceipt,
+  onCheckListingZapReceipts,
   onCreateOperatorSupportPaymentAttempt,
   onCheckOperatorSupportReceipt,
   onSaveNwcConnection,
@@ -3408,6 +3635,7 @@ function ListingPage({
   nostrContactReceipts: NostrContactReceipt[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
   operatorSupportReceipts: OperatorSupportReceipt[];
+  listingZapReceipts: ListingZapReceipt[];
   nwcConnections: NwcConnection[];
   unlockedNwcConnectionIds: string[];
   relays: RelayConfig[];
@@ -3423,6 +3651,7 @@ function ListingPage({
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
   onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
+  onCheckListingZapReceipts: (listing: Listing, sellerProfile?: PublicProfile) => Promise<ListingZapReceipt[]>;
   onCreateOperatorSupportPaymentAttempt: (request: OperatorSupportPaymentRequest) => Promise<LightningPaymentAttempt>;
   onCheckOperatorSupportReceipt: (attempt?: LightningPaymentAttempt) => Promise<OperatorSupportReceipt | undefined>;
   onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
@@ -3460,6 +3689,7 @@ function ListingPage({
     profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
       ? profile
       : syncedProfiles.find((record) => record.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
+  const listingZaps = listingZapReceiptsForListing(listing, listingZapReceipts);
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
   const canPublish = relays.some((relay) => relay.enabled);
@@ -3583,6 +3813,12 @@ function ListingPage({
             onUnlockNwcConnection={onUnlockNwcConnection}
             onPayWithNwc={onPayLightningAttemptWithNwc}
           />
+          {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
+            <ListingZapReceiptsPanel
+              receipts={listingZaps}
+              onCheck={() => onCheckListingZapReceipts(listing, sellerProfile)}
+            />
+          ) : null}
           {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
             <OperatorSupportPanel
               config={operatorSupport}
@@ -6193,7 +6429,7 @@ function NostrInboxPanel({
                   receipts={receipts}
                   defaultOpen
                   onConnectSigner={() => void onConnectSigner()}
-                  onSend={onSend}
+                  onSend={(args) => onSend({ ...args, cachePassphrase: unlocked ? passphrase : undefined })}
                 />
               </div>
             </>

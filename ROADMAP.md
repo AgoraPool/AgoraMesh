@@ -78,6 +78,7 @@
 - v0.37.0 seller trust and reputation reviews with scored `39004` attestations, listing/agreement context, verified newest-wins aggregation, post-trade review prompts, trusted-reviewer cues, and clearer seller summaries.
 - v0.38.0 native Inbox and marketplace reviews with a simpler DM layout, hidden protocol diagnostics, seller/listing-first reviews, optional agreement context, and direct Review seller actions.
 - v0.39.0 operator support zap badges with build-configured LNURL support payments, validated public NIP-57 receipt caching, profile/seller/reputation/curation badge display, support filters, and no trust or allowlist mutation.
+- v0.40.0 public receipt portability with explicit supporter badge refresh, seller listing zap receipt checks, improved original-sender DM reply threading, encrypted outgoing inbox continuity, and cleaner AgoraMesh NIP-99 listing publication without new fulfillment tags.
 
 ## Not Planned For MVP
 

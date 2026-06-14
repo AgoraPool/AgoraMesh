@@ -505,6 +505,26 @@ export const operatorSupportReceiptSchema = z.object({
   validatedAt: nonEmpty
 });
 
+export const listingZapReceiptSchema = z.object({
+  id: nonEmpty,
+  listingId: nonEmpty,
+  listingTitle: optionalText,
+  listingCoordinate: nonEmpty,
+  sellerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  buyerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  lnurl: nonEmpty.max(500),
+  sellerWalletPubkey: z.string().regex(/^[0-9a-f]{64}$/i),
+  amountMsats: z.number().int().positive(),
+  zapRequestId: nonEmpty,
+  zapRequest: nonEmpty,
+  receiptEventId: nonEmpty,
+  receiptEvent: nonEmpty,
+  bolt11: nonEmpty,
+  relayUrls: z.array(nonEmpty).default([]),
+  paidAt: nonEmpty,
+  validatedAt: nonEmpty
+});
+
 export const communityAllowlistEntrySchema = z.object({
   id: nonEmpty,
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i),
@@ -593,6 +613,7 @@ export const appBackupSchema = z.object({
   nostrInboxCursors: z.array(nostrInboxCursorSchema).default([]),
   lightningPaymentAttempts: z.array(lightningPaymentAttemptSchema).default([]),
   operatorSupportReceipts: z.array(operatorSupportReceiptSchema).default([]),
+  listingZapReceipts: z.array(listingZapReceiptSchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

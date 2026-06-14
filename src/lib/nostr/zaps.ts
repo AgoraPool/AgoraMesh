@@ -50,6 +50,23 @@ export interface OperatorSupportReceiptValidation {
   amountMsats: number;
 }
 
+export interface ValidateListingZapReceiptArgs {
+  receipt: NostrEvent;
+  sellerWalletPubkey: string;
+  listingCoordinate: string;
+  lnurl?: string;
+  bolt11?: string;
+}
+
+export interface ListingZapReceiptValidation {
+  receipt: NostrEvent;
+  zapRequest: NostrEvent;
+  amountMsats: number;
+  bolt11: string;
+  buyerPublicKey: string;
+  lnurl: string;
+}
+
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -165,6 +182,31 @@ export function validateOperatorSupportReceipt(args: ValidateOperatorSupportRece
   const amountMsats = Number(firstTag(describedRequest, 'amount') ?? '0');
   if (!Number.isSafeInteger(amountMsats) || amountMsats < minimumMsats) throw new Error('Zap receipt amount is below the operator support minimum.');
   return { receipt, zapRequest: describedRequest, amountMsats };
+}
+
+export function validateListingZapReceipt(args: ValidateListingZapReceiptArgs): ListingZapReceiptValidation {
+  const { receipt, sellerWalletPubkey, listingCoordinate } = args;
+  if (!verifyNostrEvent(receipt)) throw new Error('Zap receipt signature is invalid.');
+  if (receipt.kind !== NOSTR_ZAP_RECEIPT_KIND) throw new Error('Expected NIP-57 zap receipt.');
+  if (receipt.pubkey.toLowerCase() !== sellerWalletPubkey.toLowerCase()) throw new Error('Zap receipt signer does not match LNURL server.');
+  if (firstTag(receipt, 'p')?.toLowerCase() !== sellerWalletPubkey.toLowerCase()) throw new Error('Zap receipt seller tag does not match.');
+  const bolt11 = firstTag(receipt, 'bolt11');
+  if (!bolt11) throw new Error('Zap receipt invoice is missing.');
+  if (args.bolt11 && bolt11 !== args.bolt11) throw new Error('Zap receipt invoice does not match.');
+  const describedRequest = parseDescription(firstTag(receipt, 'description') ?? '');
+  if (!verifyNostrEvent(describedRequest)) throw new Error('Zap receipt description contains an invalid zap request.');
+  const buyerPublicKey = describedRequest.pubkey.toLowerCase();
+  const buyerTag = firstTag(receipt, 'P');
+  if (buyerTag && buyerTag.toLowerCase() !== buyerPublicKey) throw new Error('Zap receipt buyer tag does not match.');
+  if (firstTag(describedRequest, 'p')?.toLowerCase() !== sellerWalletPubkey.toLowerCase()) throw new Error('Zap request seller recipient does not match.');
+  if (firstTag(describedRequest, 'a') !== listingCoordinate) throw new Error('Zap request listing reference does not match.');
+  const lnurl = firstTag(describedRequest, 'lnurl');
+  if (!lnurl) throw new Error('Zap request LNURL is missing.');
+  if (args.lnurl && lnurl !== args.lnurl) throw new Error('Zap request LNURL does not match.');
+  if (!relayTagHasValues(describedRequest)) throw new Error('Zap request did not include relays.');
+  const amountMsats = Number(firstTag(describedRequest, 'amount') ?? '0');
+  if (!Number.isSafeInteger(amountMsats) || amountMsats <= 0) throw new Error('Zap receipt amount is invalid.');
+  return { receipt, zapRequest: describedRequest, amountMsats, bolt11, buyerPublicKey, lnurl };
 }
 
 export async function fetchZapReceiptsFromRelays(relays: RelayConfig[], sellerPublicKey: string, since?: number): Promise<ZapReceiptFetchResult[]> {

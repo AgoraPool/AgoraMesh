@@ -91,7 +91,7 @@ describe('Nostr event serialization', () => {
     expect(serialized).toContain('https://media.example/listing.webp');
   });
 
-  it('includes public payment intents and fulfillment hints, and rejects secret or custodial wording', () => {
+  it('includes public payment intents, omits new fulfillment tags, and rejects secret or custodial wording', () => {
     const privateKey = generateSecretKey();
     const publicKey = getPublicKey(privateKey);
     const listing: Listing = {
@@ -124,6 +124,8 @@ describe('Nostr event serialization', () => {
     });
     const event = signListing(listing, bytesToHex(privateKey));
     expect(event.tags).toContainEqual(['payment_intent', 'lightning', 'seller@example.com', 'Public invoice handoff']);
+    expect(event.tags).not.toContainEqual(['fulfillment', 'local-pickup']);
+    expect(event.tags).not.toContainEqual(['fulfillment_note', 'Public meetup area.']);
     expect(parseAgoraEventPayload(event)).toMatchObject({
       paymentIntents: [{ method: 'lightning', value: 'seller@example.com', note: 'Public invoice handoff' }]
     });

@@ -410,6 +410,45 @@ function messageIso(seconds: number): string {
   return new Date(seconds * 1000).toISOString();
 }
 
+function PlainTextBlock({ text, className = '' }: { text: string; className?: string }): ReactNode {
+  const blocks = text
+    .replace(/\r\n/g, '\n')
+    .trim()
+    .split(/\n{2,}/)
+    .map((block) => block.split('\n').map((line) => line.trimEnd()))
+    .filter((lines) => lines.some((line) => line.trim()));
+  if (blocks.length === 0) return null;
+  return (
+    <div className={className ? `plain-text-block ${className}` : 'plain-text-block'}>
+      {blocks.map((lines, blockIndex) => {
+        const isContextBlock = lines[0] === '---' && lines[lines.length - 1] === '---' && lines.some((line) => line.toLowerCase() === 'agoramesh context');
+        if (isContextBlock) {
+          const contextLines = lines.slice(1, -1).filter((line) => line.trim());
+          const title = contextLines[0] ?? 'AgoraMesh context';
+          return (
+            <aside className="plain-text-context" key={`context-${blockIndex}`}>
+              <strong>{title}</strong>
+              {contextLines.slice(1).map((line, lineIndex) => (
+                <span key={`${blockIndex}-context-${lineIndex}`}>{line}</span>
+              ))}
+            </aside>
+          );
+        }
+        return (
+          <p key={`paragraph-${blockIndex}`}>
+            {lines.map((line, lineIndex) => (
+              <span key={`${blockIndex}-${lineIndex}`}>
+                {line}
+                {lineIndex < lines.length - 1 ? <br /> : null}
+              </span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
   if (scope === 'all-nip99') return true;
   if (!record.discoveryScope || record.discoveryScope === 'agoramesh-native') return true;
@@ -2573,7 +2612,7 @@ function ListingDetails({ listing, sellerSummary, hideSeller = false }: { listin
   return (
     <div className="listing-details">
       {hideSeller ? null : <SellerSummaryCard summary={sellerSummary} />}
-      <p>{listing.description}</p>
+      <PlainTextBlock className="listing-description" text={listing.description} />
       <dl className="meta">
         <div>
           <dt>{t('listing.location')}</dt>
@@ -4296,11 +4335,6 @@ function BrowsePage({
     <section className="page marketplace-page">
       <div className="marketplace-heading">
         <h1>{t('marketplace.title')}</h1>
-        <div className="actions small">
-          <button className="subtle" onClick={() => go('mediators')} type="button">
-            <Scale size={16} aria-hidden="true" /> {t('marketplace.openMediators')}
-          </button>
-        </div>
       </div>
       <CompactTabs
         active={activeBrowseTab}
@@ -6421,7 +6455,7 @@ function NostrInboxPanel({
                 <div className="message-list dm-message-list">
                   {activeMessages.map((message) => (
                     <article className={`message-bubble ${message.direction}`} key={message.id}>
-                      <p>{message.plaintext}</p>
+                      <PlainTextBlock className="message-text" text={message.plaintext} />
                       <span className="muted">
                         {message.direction === 'incoming' ? t('nostrInbox.incoming') : t('nostrInbox.outgoing')} · {message.messageCreatedAt}
                       </span>

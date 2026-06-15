@@ -59,6 +59,7 @@ function identityFixture(): IdentityRecord {
 describe('production readiness UI', () => {
   beforeEach(async () => {
     localStorage.clear();
+    localStorage.setItem('agoramesh.marketplace.prefetchedNative.v1', 'done');
     await deleteLocalData();
     URL.createObjectURL = vi.fn((_object: Blob | MediaSource) => 'blob:agoramesh-test');
     URL.revokeObjectURL = vi.fn((_url: string) => undefined);
@@ -68,6 +69,7 @@ describe('production readiness UI', () => {
   afterEach(() => {
     Reflect.deleteProperty(window, 'nostr');
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('references the shipped app icon for browser chrome', () => {
@@ -490,6 +492,46 @@ describe('production readiness UI', () => {
     expect(screen.getByRole('button', { name: 'Fetch listings' })).toBeInTheDocument();
   });
 
+  it('prefetches AgoraMesh-native starter listings once on first Marketplace entry', async () => {
+    localStorage.removeItem('agoramesh.marketplace.prefetchedNative.v1');
+    const sentMessages: string[] = [];
+    class FakeWebSocket {
+      static instances: FakeWebSocket[] = [];
+      onopen: (() => void) | undefined;
+      onmessage: ((message: { data: string }) => void) | undefined;
+      onerror: (() => void) | undefined;
+      url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        FakeWebSocket.instances.push(this);
+        window.setTimeout(() => this.onopen?.(), 0);
+      }
+
+      send(message: string): void {
+        sentMessages.push(message);
+        const parsed = JSON.parse(message) as [string, string, ...unknown[]];
+        window.setTimeout(() => this.onmessage?.({ data: JSON.stringify(['EOSE', parsed[1]]) }), 0);
+      }
+
+      close(): void {
+        // Test socket closes synchronously.
+      }
+    }
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText(/Starter fetch: 0 imported, 0 updated, 0 unchanged from 2 relays/i)).toBeInTheDocument();
+    expect(localStorage.getItem('agoramesh.marketplace.prefetchedNative.v1')).toBe('done');
+    expect(sentMessages.join('\n')).toContain('"#t":["agoramesh"]');
+    expect(sentMessages.join('\n')).toContain('"#client":["agoramesh"]');
+
+    cleanup();
+    renderAppAt('#profile');
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
   it('keeps published listing guidance out of the normal Browse surface', async () => {
     const listing = listingFixture();
     const syncedListing = listingFixture({ id: 'listing_synced_ready', authorPublicKey: 'd'.repeat(64), title: 'Synced ready listing' });
@@ -826,6 +868,7 @@ describe('production readiness UI', () => {
     expect(screen.getByText(/Create an identity first/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create identity' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Listing readiness' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Listing creation progress')).toBeInTheDocument();
     expect(screen.getByText('Create or connect an identity before saving a listing.')).toBeInTheDocument();
     expect(screen.getByText('Add title, description, location, and contact before saving.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
@@ -850,14 +893,14 @@ describe('production readiness UI', () => {
     expect(screen.getByLabelText('Listing images')).toBeInTheDocument();
     expect(screen.getByLabelText('Tags')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'More details' }));
-    expect(screen.getByRole('group', { name: 'Trade context' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Trade context' })).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Payment' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Fulfillment')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Fulfillment notes')).not.toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'Other payment options' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Cash')).toBeInTheDocument();
-    expect(screen.getByLabelText('Barter')).toBeInTheDocument();
-    expect(screen.getByLabelText('Other')).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Other payment options' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cash')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Barter accepted')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Other')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Payment method')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Payment address or URI')).not.toBeInTheDocument();
   });
@@ -902,10 +945,10 @@ describe('production readiness UI', () => {
     const card = (await screen.findByText('Priced classified')).closest('article') as HTMLElement;
     expect(card.querySelector('.listing-card-primary')).toHaveTextContent('500 CZK');
     expect(card.querySelector('.listing-card-primary')).toHaveTextContent('Active');
-    expect(card.querySelector('.listing-card-region')).toHaveTextContent('Ostrava');
+    expect(card.querySelector('.listing-card-facts')).toHaveTextContent('Ostrava');
     expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('bike');
     expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('repair');
-    expect(card.querySelector('.listing-card-settlement')).toHaveTextContent('Cashu');
+    expect(card.querySelector('.listing-card-settlement')).toBeNull();
     expect(card.querySelector('img')).toHaveAttribute('src', 'https://shop.example/listing.webp');
   });
 

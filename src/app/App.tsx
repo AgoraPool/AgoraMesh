@@ -324,6 +324,7 @@ const attestationTags: AttestationTag[] = [
 
 const emptyContact = (): ContactMethod => ({ id: newId('contact'), kind: 'matrix', value: '' });
 const marketplacePageSize = 24;
+const marketplaceNativePrefetchKey = 'agoramesh.marketplace.prefetchedNative.v1';
 const operatorSupport = operatorSupportConfig();
 
 function defaultListingExpirationDate(): string {
@@ -4476,8 +4477,12 @@ function BrowsePage({
   const [curationForm, setCurationForm] = useState({ title: '', description: '', selectedCoordinates: [] as string[] });
   const [failedListingImages, setFailedListingImages] = useState<string[]>([]);
   const [fetchingMarketplace, setFetchingMarketplace] = useState(false);
+  const [prefetchingMarketplace, setPrefetchingMarketplace] = useState(false);
+  const [marketplacePrefetchSummary, setMarketplacePrefetchSummary] = useState<MarketplaceFetchSummary | undefined>();
+  const [marketplacePrefetchError, setMarketplacePrefetchError] = useState('');
   const [marketplaceFetchSummary, setMarketplaceFetchSummary] = useState<MarketplaceFetchSummary | undefined>();
   const [marketplaceFetchError, setMarketplaceFetchError] = useState('');
+  const prefetchAttemptedRef = useRef(false);
   const enabledRelays = relays.filter((relay) => relay.enabled);
   const scopedSyncedListings = useMemo(
     () => syncedListings.filter((record) => syncedListingInDisplayScope(record, syncSettings.listingDiscoveryScope)),
@@ -4512,6 +4517,26 @@ function BrowsePage({
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
   }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type]);
+
+  useEffect(() => {
+    if (activeBrowseTab !== 'discover') return;
+    if (prefetchAttemptedRef.current || syncedListings.length > 0 || enabledRelays.length === 0) return;
+    if (localStorage.getItem(marketplaceNativePrefetchKey) === 'done') return;
+    prefetchAttemptedRef.current = true;
+    setPrefetchingMarketplace(true);
+    setMarketplacePrefetchError('');
+    void onFetchMarketplace('agoramesh-native')
+      .then((summary) => {
+        setMarketplacePrefetchSummary(summary);
+        localStorage.setItem(marketplaceNativePrefetchKey, 'done');
+        if (source === 'local') setSource('combined');
+      })
+      .catch(() => {
+        setMarketplacePrefetchError(t('marketplace.prefetchFailed'));
+        localStorage.setItem(marketplaceNativePrefetchKey, 'done');
+      })
+      .finally(() => setPrefetchingMarketplace(false));
+  }, [activeBrowseTab, enabledRelays.length, onFetchMarketplace, source, syncedListings.length, t]);
 
   const filtered = useMemo(() => {
     const normalized = query.toLowerCase();
@@ -4732,40 +4757,37 @@ function BrowsePage({
           recordScope ? ` · ${recordScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('sync.scopeAgoraMeshNative')}` : ''
         }`
       : listing.visibility;
-    const visibleTags = listing.tags.slice(0, 3);
+    const visibleTags = listing.tags.slice(0, 2);
     const seller = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, [], [], []);
     const supportReceipt = supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts);
     return (
       <article className="card listing-card" key={listingKey}>
         {renderListingThumb(listing)}
         <div className="listing-card-body">
-          <div className="listing-card-meta">
-            <span className="pill">{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
-            <span className="muted">{sourceLabel}</span>
-          </div>
-          <h2>{listing.title}</h2>
           <div className="listing-card-primary">
             <strong>{formatListingPrice(listing)}</strong>
             <span>{t(`listing.status.${listing.status}`)}</span>
           </div>
-          <p className="muted listing-card-region">{listing.region || t('listing.location')}</p>
+          <h2>{listing.title}</h2>
+          <p className="listing-card-facts">
+            <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
+            <span>{listing.region || t('listing.location')}</span>
+          </p>
           <div className="badge-row listing-card-taxonomy">
-            <span className="pill subtle-pill">{categoryLabel(listing.category, t)}</span>
+            <span>{categoryLabel(listing.category, t)}</span>
             {visibleTags.map((tag) => (
-              <span className="pill subtle-pill" key={tag}>
+              <span key={tag}>
                 {tag}
               </span>
             ))}
-            {listing.tags.length > visibleTags.length ? <span className="pill subtle-pill">+{listing.tags.length - visibleTags.length}</span> : null}
+            {listing.tags.length > visibleTags.length ? <span>+{listing.tags.length - visibleTags.length}</span> : null}
           </div>
-          <p className="muted listing-card-settlement">
-            {fulfillmentBadgeForListing(listing, t)} · {listing.paymentPreferences.map((entry) => paymentBadgeLabel(entry, t)).join(', ')}
-          </p>
           <div className="listing-card-seller">
             <AvatarCircle avatarUrl={seller.avatarUrl} label={seller.displayName} size="small" />
-            <span className="muted">{seller.displayName}</span>
+            <span>{seller.displayName}</span>
             <SupporterBadge receipt={supportReceipt} compact />
           </div>
+          <p className="muted listing-card-source">{sourceLabel}</p>
           <button onClick={() => onNavigateListing(listingRef)} type="button">
             {t('listing.viewItem')}
           </button>
@@ -4857,9 +4879,24 @@ function BrowsePage({
             <span className="muted discovery-relay-count">
               {t('marketplace.enabledRelays').replace('{count}', String(enabledRelays.length))}
             </span>
-            <button disabled={fetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
+            <button disabled={fetchingMarketplace || prefetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
               <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
             </button>
+            {prefetchingMarketplace ? <p className="muted marketplace-fetch-summary">{t('marketplace.prefetching')}</p> : null}
+            {marketplacePrefetchSummary ? (
+              <p className="muted marketplace-fetch-summary">
+                {t('marketplace.prefetchSummary')
+                  .replace('{imported}', String(marketplacePrefetchSummary.imported))
+                  .replace('{updated}', String(marketplacePrefetchSummary.updated))
+                  .replace('{unchanged}', String(marketplacePrefetchSummary.unchanged))
+                  .replace('{relays}', String(marketplacePrefetchSummary.relaysQueried))}
+              </p>
+            ) : null}
+            {marketplacePrefetchError ? (
+              <p className="warning marketplace-fetch-summary" role="alert">
+                {marketplacePrefetchError}
+              </p>
+            ) : null}
             {marketplaceFetchSummary ? (
               <p className="muted marketplace-fetch-summary">
                 {t('marketplace.fetchSummary')
@@ -5152,7 +5189,6 @@ function ListingCreatePanel({
     priceCurrency: initialListing?.price.currency ?? 'FREE',
     priceFrequency: initialListing?.price.frequency ?? '',
     priceNote: initialListing?.price.note ?? '',
-    paymentPreferences: initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]),
     lightningPayment: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.value ?? '',
     lightningPaymentNote: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.note ?? '',
     barterAccepted: initialListing?.barterAccepted ?? false,
@@ -5206,6 +5242,18 @@ function ListingCreatePanel({
           : t('listing.readiness.mediaSigner');
   const visibilityStatus =
     form.visibility === 'public' ? t('listing.readiness.visibilityPublic') : t('listing.readiness.visibilityLocal');
+  const basicsReady = Boolean(form.title.trim() && form.description.trim());
+  const priceReady = Boolean(form.priceAmount.trim() && form.priceCurrency.trim() && form.region.trim());
+  const contactReady = Boolean(form.contactValue.trim() && (form.contactKind !== 'nostr' || normalizeNostrContact(form.contactValue)));
+  const imagesReady = newImageDrafts.length === 0 || !enabledBlossomServer || hasImageSigner;
+  const publishReady = Boolean(authorPublicKey && essentialsReady && form.expiresAt && form.visibility);
+  const createSteps: ReadinessItem[] = [
+    { label: t('listing.progress.basics'), done: basicsReady },
+    { label: t('listing.progress.price'), done: priceReady },
+    { label: t('listing.progress.contact'), done: contactReady },
+    { label: t('listing.progress.images'), done: imagesReady },
+    { label: t('listing.progress.publish'), done: publishReady }
+  ];
 
   useEffect(() => {
     imageDraftsRef.current = imageDrafts;
@@ -5264,13 +5312,6 @@ function ListingCreatePanel({
     setImageDrafts((current) => current.map((draft) => (draft.id === id ? { ...draft, altText } : draft)));
   };
 
-  const togglePaymentPreference = (preference: PaymentPreference, checked: boolean): void => {
-    const next = checked
-      ? Array.from(new Set([...form.paymentPreferences, preference]))
-      : form.paymentPreferences.filter((entry) => entry !== preference);
-    setForm({ ...form, paymentPreferences: next.length > 0 ? next : ['other'] });
-  };
-
   const uploadListingImages = async (): Promise<Map<string, ListingImage>> => {
     if (!authorPublicKey || newImageDrafts.length === 0) return new Map();
     if (!enabledBlossomServer) {
@@ -5320,13 +5361,7 @@ function ListingCreatePanel({
       const existingNonLightningPaymentIntents = initialListing?.paymentIntents?.filter((intent) => intent.method !== 'lightning') ?? [];
       const lightningPaymentValue = sanitizePlainText(form.lightningPayment);
       const lightningPaymentNote = sanitizePlainText(form.lightningPaymentNote);
-      const paymentPreferences = Array.from(
-        new Set<PaymentPreference>([
-          ...form.paymentPreferences,
-          ...(lightningPaymentValue ? (['lightning'] as PaymentPreference[]) : []),
-          ...(form.barterAccepted ? (['barter'] as PaymentPreference[]) : [])
-        ])
-      );
+      const paymentPreferences = initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]);
       const paymentIntents = lightningPaymentValue
         ? [
             ...existingNonLightningPaymentIntents,
@@ -5394,8 +5429,16 @@ function ListingCreatePanel({
             {formError}
           </p>
         ) : null}
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionEssentials')}</legend>
+        <div className="listing-create-progress" aria-label={t('listing.progress.title')}>
+          {createSteps.map((step) => (
+            <span className={step.done ? 'done' : ''} key={step.label}>
+              {step.label}
+            </span>
+          ))}
+        </div>
+        <section className="listing-form-section" aria-labelledby="listing-section-essentials">
+          <h2 id="listing-section-essentials">{t('listing.sectionEssentials')}</h2>
+          <p className="muted compact-meta">{t('listing.sectionEssentialsHelp')}</p>
           <label>
             {t('listing.titleField')}
             <input
@@ -5438,9 +5481,10 @@ function ListingCreatePanel({
             {t('listing.tags')}
             <input placeholder={t('placeholder.tags')} value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} />
           </label>
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionPrice')}</legend>
+        </section>
+        <section className="listing-form-section" aria-labelledby="listing-section-price">
+          <h2 id="listing-section-price">{t('listing.sectionPrice')}</h2>
+          <p className="muted compact-meta">{t('listing.sectionPriceHelp')}</p>
           <div className="listing-form-row publish-row">
             <label>
               {t('listing.priceAmount')}
@@ -5466,9 +5510,10 @@ function ListingCreatePanel({
             </label>
           </div>
           <FieldHint>{t('hint.pricePublic')}</FieldHint>
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionContact')}</legend>
+        </section>
+        <section className="listing-form-section" aria-labelledby="listing-section-contact">
+          <h2 id="listing-section-contact">{t('listing.sectionContact')}</h2>
+          <p className="muted compact-meta">{t('listing.sectionContactHelp')}</p>
           <div className="listing-form-row two-up">
             <label>
               {t('profile.contacts')}
@@ -5502,10 +5547,10 @@ function ListingCreatePanel({
             </label>
           </div>
           <FieldHint>{t('hint.contactPublic')}</FieldHint>
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionImages')}</legend>
-          <SafetyNotice>{t('safety.blossomImages')}</SafetyNotice>
+        </section>
+        <section className="listing-form-section" aria-labelledby="listing-section-images">
+          <h2 id="listing-section-images">{t('listing.sectionImages')}</h2>
+          <p className="muted compact-meta">{t('listing.sectionImagesHelp')}</p>
           {enabledBlossomServer ? (
             <p className="muted">
               {t('listing.blossomServer')}: {enabledBlossomServer.url}
@@ -5518,6 +5563,7 @@ function ListingCreatePanel({
             <input accept="image/jpeg,image/png,image/webp" multiple type="file" onChange={selectImages} />
             <FieldHint>{t('hint.listingImages')}</FieldHint>
           </label>
+          <FieldHint>{t('safety.blossomImages')}</FieldHint>
           {needsImageSignerAction ? (
             <div className="action-hint media-signer-actions">
               <p>{t(connectedSignerCanBecomeIdentity ? 'listing.imageSignerLink' : 'listing.imageSignerRequired')}</p>
@@ -5548,7 +5594,10 @@ function ListingCreatePanel({
                   </figure>
                   <div className="image-manager-copy">
                     <strong>{draft.name}</strong>
-                    <span className="muted">{draft.kind === 'existing' ? t('listing.imageExisting') : t('listing.imageSelected')}</span>
+                    <span className="muted">
+                      {index === 0 ? `${t('listing.imagePrimary')} · ` : ''}
+                      {draft.kind === 'existing' ? t('listing.imageExisting') : t('listing.imageSelected')}
+                    </span>
                   </div>
                   <label>
                     {t('listing.imageAltFor').replace('{index}', String(index + 1))}
@@ -5574,9 +5623,10 @@ function ListingCreatePanel({
               ))}
             </div>
           ) : null}
-        </fieldset>
-        <fieldset className="fieldset-list">
-          <legend>{t('listing.sectionPublishReadiness')}</legend>
+        </section>
+        <section className="listing-form-section" aria-labelledby="listing-section-publish">
+          <h2 id="listing-section-publish">{t('listing.sectionPublishReadiness')}</h2>
+          <p className="muted compact-meta">{t('listing.sectionPublishHelp')}</p>
           <div className="listing-form-row publish-row">
             <label>
               {t('listing.status')}
@@ -5633,10 +5683,11 @@ function ListingCreatePanel({
               </div>
             </div>
           </div>
-        </fieldset>
-        <DisclosurePanel title={t('marketplace.advancedListingFields')}>
-          <fieldset className="fieldset-list">
-            <legend>{t('listing.sectionTrustSettlement')}</legend>
+        </section>
+        <DisclosurePanel title={t('listing.moreDetails')}>
+          <section className="listing-form-section quiet" aria-labelledby="listing-section-more-details">
+            <h2 id="listing-section-more-details">{t('listing.sectionTrustSettlement')}</h2>
+            <p className="muted compact-meta">{t('listing.moreDetailsHelp')}</p>
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -5645,22 +5696,6 @@ function ListingCreatePanel({
               />
               {t('listing.barter')}
             </label>
-            <div className="chip-fieldset" role="group" aria-label={t('listing.paymentOptions')}>
-              <span>{t('listing.paymentOptions')}</span>
-              <div className="chip-row">
-                {(['cash', 'barter', 'other'] as PaymentPreference[]).map((preference) => (
-                  <label className="chip-checkbox" key={preference}>
-                    <input
-                      type="checkbox"
-                      checked={form.paymentPreferences.includes(preference)}
-                      onChange={(event) => togglePaymentPreference(preference, event.target.checked)}
-                    />
-                    {paymentBadgeLabel(preference, t)}
-                  </label>
-                ))}
-              </div>
-              <FieldHint>{t('listing.paymentOptionsHelp')}</FieldHint>
-            </div>
             <label>
               {t('agreement.mediator')}
               <input
@@ -5688,7 +5723,7 @@ function ListingCreatePanel({
               </label>
             </div>
             <FieldHint>{t('listing.lightningOverrideHelp')}</FieldHint>
-          </fieldset>
+          </section>
         </DisclosurePanel>
         <button disabled={!authorCanSave || saving} title={!authorCanSave ? t('a11y.identityRequired') : undefined} type="submit">
           {saving ? t('listing.saving') : t('common.save')}

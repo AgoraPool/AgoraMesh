@@ -299,6 +299,16 @@ type SignerRestoreSummary = {
   mediators: number;
   kept: number;
 };
+type InboxNotificationKind = 'listing-zap' | 'payment-attempt' | 'support-receipt' | 'remote-message';
+type InboxNotification = {
+  id: string;
+  kind: InboxNotificationKind;
+  title: string;
+  body: string;
+  at: string;
+  amountSats?: number;
+  status?: string;
+};
 
 const categories = listingCategorySchema.options;
 const attestationTags: AttestationTag[] = [
@@ -322,6 +332,24 @@ function defaultListingExpirationDate(): string {
 
 function backupKey(publicKey: string): string {
   return `agoramesh.identityBackup.${publicKey}`;
+}
+
+function inboxSeenKey(publicKey: string): string {
+  return `agoramesh.inboxSeenAt.${publicKey.toLowerCase()}`;
+}
+
+function paymentNotificationsSeenKey(publicKey: string): string {
+  return `agoramesh.paymentNotificationsSeenAt.${publicKey.toLowerCase()}`;
+}
+
+function readSeenTimestamp(key: string): string {
+  return localStorage.getItem(key) ?? '';
+}
+
+function writeSeenTimestamp(key: string): string {
+  const at = nowIso();
+  localStorage.setItem(key, at);
+  return at;
 }
 
 function readBackupConfirmed(identity?: IdentityRecord): boolean {
@@ -377,6 +405,82 @@ function signerRestoreCount(summary: SignerRestoreSummary): number {
 function nostrContactForMethod(contact?: ContactMethod, fallbackPublicKey?: string): ReturnType<typeof normalizeNostrContact> {
   if (contact?.kind === 'nostr') return normalizeNostrContact(contact.value) ?? (fallbackPublicKey ? normalizeNostrContact(fallbackPublicKey) : undefined);
   return fallbackPublicKey ? normalizeNostrContact(fallbackPublicKey) : undefined;
+}
+
+function buildInboxNotifications({
+  identity,
+  profile,
+  listings,
+  listingZapReceipts,
+  lightningPaymentAttempts,
+  operatorSupportReceipts,
+  t
+}: {
+  identity?: IdentityRecord;
+  profile?: PublicProfile;
+  listings: Listing[];
+  listingZapReceipts: ListingZapReceipt[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
+  t: (key: string) => string;
+}): InboxNotification[] {
+  const activePublicKey = identity?.publicKey.toLowerCase();
+  if (!activePublicKey) return [];
+  const activeProfilePublicKey = (profile?.publicKey ?? identity?.publicKey)?.toLowerCase();
+  const authoredListingIds = new Set(listings.filter((listing) => publicKeysMatch(listing.authorPublicKey, activePublicKey)).map((listing) => listing.id));
+  const notifications: InboxNotification[] = [];
+
+  for (const receipt of listingZapReceipts) {
+    if (!publicKeysMatch(receipt.sellerPublicKey, activePublicKey) && !authoredListingIds.has(receipt.listingId)) continue;
+    const amountSats = Math.floor(receipt.amountMsats / 1000);
+    notifications.push({
+      id: `listing-zap:${receipt.id}`,
+      kind: 'listing-zap',
+      title: t('nostrInbox.notificationListingZap'),
+      body: t('nostrInbox.notificationListingZapBody')
+        .replace('{amount}', String(amountSats))
+        .replace('{listing}', receipt.listingTitle || receipt.listingId)
+        .replace('{buyer}', shortPublicKey(receipt.buyerPublicKey)),
+      at: receipt.paidAt || receipt.validatedAt,
+      amountSats
+    });
+  }
+
+  for (const attempt of lightningPaymentAttempts) {
+    if (!['paid', 'receipt-found', 'failed'].includes(attempt.status)) continue;
+    const activePayment =
+      publicKeysMatch(attempt.buyerPublicKey, activePublicKey) ||
+      publicKeysMatch(attempt.sellerPublicKey, activePublicKey) ||
+      publicKeysMatch(attempt.badgeSubjectPublicKey, activePublicKey);
+    if (!activePayment) continue;
+    notifications.push({
+      id: `payment-attempt:${attempt.id}`,
+      kind: 'payment-attempt',
+      title: t('nostrInbox.notificationPayment'),
+      body: t('nostrInbox.notificationPaymentBody')
+        .replace('{status}', t(`payment.status.${attempt.status}`))
+        .replace('{amount}', String(attempt.amountSats))
+        .replace('{listing}', attempt.listingTitle || t('common.none')),
+      at: attempt.updatedAt,
+      amountSats: attempt.amountSats,
+      status: attempt.status
+    });
+  }
+
+  for (const receipt of operatorSupportReceipts) {
+    if (!activeProfilePublicKey || !publicKeysMatch(receipt.payerPublicKey, activeProfilePublicKey)) continue;
+    const amountSats = Math.floor(receipt.amountMsats / 1000);
+    notifications.push({
+      id: `support-receipt:${receipt.id}`,
+      kind: 'support-receipt',
+      title: t('nostrInbox.notificationSupport'),
+      body: t('nostrInbox.notificationSupportBody').replace('{amount}', String(amountSats)),
+      at: receipt.paidAt || receipt.validatedAt,
+      amountSats
+    });
+  }
+
+  return notifications.sort((left, right) => right.at.localeCompare(left.at));
 }
 
 function nostrContactForMethods(contacts: ContactMethod[], fallbackPublicKey?: string): ReturnType<typeof normalizeNostrContact> {
@@ -471,6 +575,22 @@ function effectiveSyncedListingScope(record: SyncedPublicRecord<Listing>): Listi
   return record.discoveryScope;
 }
 
+function effectiveDiscoveryScopeForRecord<T extends CacheablePayload>(record: SyncedPublicRecord<T>): ListingDiscoveryScope | undefined {
+  if (record.kind !== AGORAMESH_EVENT_KINDS.listing) return record.discoveryScope;
+  return effectiveSyncedListingScope(record as unknown as SyncedPublicRecord<Listing>);
+}
+
+function effectiveDiscoveryScopeForReviewItem(item: NostrReviewItem): ListingDiscoveryScope | undefined {
+  if (item.kind !== AGORAMESH_EVENT_KINDS.listing) return item.discoveryScope;
+  if (item.discoveryScope === 'agoramesh-native') return 'agoramesh-native';
+  try {
+    if (isAgoraMeshNativeListingEvent(parseNostrEvent(JSON.parse(item.rawEvent)))) return 'agoramesh-native';
+  } catch {
+    // Keep the review item's original scope if the raw event cannot be inspected.
+  }
+  return item.discoveryScope;
+}
+
 function syncedListingInDisplayScope(record: SyncedPublicRecord<Listing>, scope: ListingDiscoveryScope): boolean {
   if (scope === 'all-nip99') return true;
   return !record.discoveryScope || effectiveSyncedListingScope(record) === 'agoramesh-native';
@@ -499,7 +619,10 @@ async function upsertSyncedRecord<T extends CacheablePayload>(
   allowlist: CommunityAllowlistEntry[],
   payload: T
 ): Promise<PublicCacheWriteResult> {
-  const incoming = syncedRecordFromReviewItem(item, allowlist, payload);
+  const incoming = {
+    ...syncedRecordFromReviewItem(item, allowlist, payload),
+    discoveryScope: effectiveDiscoveryScopeForReviewItem(item)
+  };
   const coordinate = reviewItemCoordinate(item, payload);
   const existing = (await table.toArray()).find((record) => syncedCoordinate(record) === coordinate);
   if (!existing) {
@@ -509,10 +632,11 @@ async function upsertSyncedRecord<T extends CacheablePayload>(
 
   const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
   if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
+    const existingScope = effectiveDiscoveryScopeForRecord(existing);
     const discoveryScope =
-      existing.discoveryScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
+      existingScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
         ? 'agoramesh-native'
-        : existing.discoveryScope ?? incoming.discoveryScope;
+        : existingScope ?? incoming.discoveryScope;
     if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
       await table.put({ ...existing, relayUrls, discoveryScope });
     }
@@ -534,17 +658,21 @@ async function upsertExistingSyncedListing(
   allowlist: CommunityAllowlistEntry[],
   listing: Listing
 ): Promise<PublicCacheWriteResult> {
-  const incoming = syncedRecordFromReviewItem(item, allowlist, listing);
+  const incoming = {
+    ...syncedRecordFromReviewItem(item, allowlist, listing),
+    discoveryScope: effectiveDiscoveryScopeForReviewItem(item)
+  };
   const coordinate = reviewItemCoordinate(item, listing);
   const existing = (await db.syncedListings.toArray()).find((record) => syncedCoordinate(record) === coordinate);
   if (!existing) return 'skipped';
 
   const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
   if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
+    const existingScope = effectiveSyncedListingScope(existing);
     const discoveryScope =
-      existing.discoveryScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
+      existingScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
         ? 'agoramesh-native'
-        : existing.discoveryScope ?? incoming.discoveryScope;
+        : existingScope ?? incoming.discoveryScope;
     if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
       await db.syncedListings.put({ ...existing, relayUrls, discoveryScope });
     }
@@ -804,6 +932,11 @@ export function App(): ReactNode {
   const [reputationDraftRequest, setReputationDraftRequest] = useState<ReputationDraftRequest | undefined>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash.replace('#', ''));
+  const [inboxSeenAt, setInboxSeenAt] = useState('');
+  const [paymentNotificationsSeenAt, setPaymentNotificationsSeenAt] = useState('');
+  const [remoteInboxScanCount, setRemoteInboxScanCount] = useState(0);
+  const [inboxScanStatus, setInboxScanStatus] = useState('');
+  const appOpenScanKeyRef = useRef('');
   const pageLabels: Record<Page, string> = {
     home: t('nav.home'),
     browse: t('nav.browse'),
@@ -815,22 +948,70 @@ export function App(): ReactNode {
     reputation: t('nav.reputation'),
     settings: t('nav.settings')
   };
-  const primaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [
+  const inboxNotifications = useMemo(
+    () =>
+      buildInboxNotifications({
+        identity,
+        profile,
+        listings,
+        listingZapReceipts,
+        lightningPaymentAttempts,
+        operatorSupportReceipts,
+        t
+      }),
+    [identity, lightningPaymentAttempts, listingZapReceipts, listings, operatorSupportReceipts, profile, t]
+  );
+  const unreadInboxCount = useMemo(
+    () =>
+      identity
+        ? nostrMessageThreads
+            .filter((thread) => thread.ownerPublicKey === identity.publicKey.toLowerCase() && !thread.archived)
+            .reduce((total, thread) => total + thread.unreadCount, 0)
+        : 0,
+    [identity, nostrMessageThreads]
+  );
+  const locallyUnseenIncomingCount = useMemo(
+    () =>
+      identity
+        ? nostrMessages.filter(
+            (message) =>
+              message.ownerPublicKey === identity.publicKey.toLowerCase() &&
+              message.direction === 'incoming' &&
+              !message.archived &&
+              (!inboxSeenAt || message.messageCreatedAt > inboxSeenAt)
+          ).length
+        : 0,
+    [identity, inboxSeenAt, nostrMessages]
+  );
+  const unseenPaymentNotificationCount = inboxNotifications.filter((notification) => notification.at > paymentNotificationsSeenAt).length;
+  const inboxNavBadgeCount = Math.min(99, Math.max(unreadInboxCount, locallyUnseenIncomingCount) + unseenPaymentNotificationCount + remoteInboxScanCount);
+  const markInboxNotificationsSeen = useCallback((): void => {
+    if (!identity) return;
+    setInboxSeenAt(writeSeenTimestamp(inboxSeenKey(identity.publicKey)));
+    setPaymentNotificationsSeenAt(writeSeenTimestamp(paymentNotificationsSeenKey(identity.publicKey)));
+    setRemoteInboxScanCount(0);
+  }, [identity]);
+  const primaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode; badgeCount?: number }[] = [
     { key: 'home', label: t('nav.home'), route: 'home', icon: <Home size={18} aria-hidden="true" /> },
     { key: 'browse', label: t('nav.browse'), route: 'browse', icon: <ShoppingBag size={18} aria-hidden="true" /> },
     { key: 'post', label: t('nav.listing'), route: 'browse:create', icon: <PlusCircle size={18} aria-hidden="true" /> },
     { key: 'profile', label: t('nav.profile'), route: 'profile', icon: <UserRound size={18} aria-hidden="true" /> },
-    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" /> }
+    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" />, badgeCount: inboxNavBadgeCount }
   ];
   const settingsNavItem = { key: 'settings', label: t('nav.settings'), route: 'settings' as RouteTarget, icon: <SettingsIcon size={18} aria-hidden="true" /> };
   const mobileNavItems = [...primaryNavItems, settingsNavItem];
   const secondaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [];
   const activeNavKey = routeHash === 'browse:create' ? 'post' : page === 'listing' || page === 'browse' ? 'browse' : page;
-  const renderNavButton = (item: { key: string; label: string; route: RouteTarget; icon: ReactNode }, compact = false): ReactNode => {
+  const renderNavButton = (item: { key: string; label: string; route: RouteTarget; icon: ReactNode; badgeCount?: number }, compact = false): ReactNode => {
     const active = activeNavKey === item.key;
+    const badgeLabel = item.badgeCount ? (item.badgeCount > 9 ? '9+' : String(item.badgeCount)) : '';
     return (
       <button
-        aria-label={compact ? t('nav.mobileItem').replace('{label}', item.label) : undefined}
+        aria-label={
+          compact
+            ? t('nav.mobileItem').replace('{label}', item.label) + (badgeLabel ? `, ${t('nav.notificationCount').replace('{count}', badgeLabel)}` : '')
+            : undefined
+        }
         aria-current={active ? 'page' : undefined}
         className={active ? 'active' : ''}
         key={item.key}
@@ -840,6 +1021,7 @@ export function App(): ReactNode {
       >
         {item.icon}
         <span>{item.label}</span>
+        {badgeLabel ? <span className="nav-badge" aria-label={t('nav.notificationCount').replace('{count}', badgeLabel)}>{badgeLabel}</span> : null}
       </button>
     );
   };
@@ -898,6 +1080,22 @@ export function App(): ReactNode {
       window.removeEventListener('focus', onFocus);
     };
   }, []);
+
+  useEffect(() => {
+    if (!identity) {
+      setInboxSeenAt('');
+      setPaymentNotificationsSeenAt('');
+      setRemoteInboxScanCount(0);
+      return;
+    }
+    setInboxSeenAt(readSeenTimestamp(inboxSeenKey(identity.publicKey)));
+    setPaymentNotificationsSeenAt(readSeenTimestamp(paymentNotificationsSeenKey(identity.publicKey)));
+    setRemoteInboxScanCount(0);
+  }, [identity?.publicKey]);
+
+  useEffect(() => {
+    if (page === 'inbox') markInboxNotificationsSeen();
+  }, [markInboxNotificationsSeen, page]);
 
   const go = (next: RouteTarget): void => {
     window.location.hash = next;
@@ -1815,6 +2013,74 @@ export function App(): ReactNode {
     return cached;
   };
 
+  const scanAppOpenNotifications = useCallback(async (): Promise<void> => {
+    if (!identity || relays.every((relay) => !relay.enabled)) return;
+    const ownerPublicKey = identity.publicKey.toLowerCase();
+    const cursorMap = new Map(nostrInboxCursors.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
+    const sinceByRelay = Object.fromEntries(relays.filter((relay) => relay.enabled).map((relay) => [relay.url, nostrInboxSince(cursorMap.get(relay.url)?.newestCreatedAt)]));
+    const knownGiftWrapIds = new Set([
+      ...nostrMessages.filter((message) => message.ownerPublicKey === ownerPublicKey).map((message) => message.eventId),
+      ...nostrContactReceipts
+        .filter((receipt) => receipt.senderPublicKey.toLowerCase() === ownerPublicKey || receipt.recipientPublicKey.toLowerCase() === ownerPublicKey)
+        .flatMap((receipt) => receipt.eventIds)
+    ]);
+
+    let newGiftWrapCount = 0;
+    try {
+      const results = await fetchNostrInboxGiftWraps(relays, ownerPublicKey, sinceByRelay);
+      const newIds = new Set<string>();
+      for (const event of results.flatMap((result) => result.events)) {
+        if (!knownGiftWrapIds.has(event.id)) newIds.add(event.id);
+      }
+      newGiftWrapCount = newIds.size;
+      setRemoteInboxScanCount(newGiftWrapCount);
+    } catch {
+      // App-open scan is advisory. Manual Inbox Fetch remains the explicit recovery path.
+    }
+
+    let cachedZapCount = 0;
+    const authoredListings = listings.filter((listing) => publicKeysMatch(listing.authorPublicKey, ownerPublicKey) && listing.status === 'active');
+    for (const listing of authoredListings) {
+      const lnurlSource = listingLightningSource(listing, profile);
+      if (!lnurlSource) continue;
+      try {
+        const metadata = await fetchLnurlPayMetadata(lnurlSource);
+        const lnurl = lnurlTagForPayUrl(lnurlSource);
+        const newest = listingZapReceiptsForListing(listing, listingZapReceipts)[0];
+        const since = newest ? Math.max(0, Math.floor(new Date(newest.paidAt).getTime() / 1000) - 600) : undefined;
+        const results = await fetchZapReceiptsFromRelays(relays, metadata.nostrPubkey, since);
+        for (const result of results) {
+          for (const event of result.events) {
+            try {
+              const receiptId = `listing_zap_${listing.id}_${event.id}`;
+              const alreadyCached = await db.listingZapReceipts.get(receiptId);
+              await cacheListingZapReceipt(listing, event, [result.relayUrl], metadata.nostrPubkey, lnurl);
+              if (!alreadyCached) cachedZapCount += 1;
+            } catch {
+              // Ignore invalid or unrelated zap receipts.
+            }
+          }
+        }
+      } catch {
+        // Ignore listings whose Lightning source cannot be resolved during the advisory scan.
+      }
+    }
+    setInboxScanStatus(
+      t('nostrInbox.scanComplete')
+        .replace('{messages}', String(newGiftWrapCount))
+        .replace('{payments}', String(cachedZapCount))
+    );
+    if (cachedZapCount > 0) await reload();
+  }, [identity, listingZapReceipts, listings, nostrContactReceipts, nostrInboxCursors, nostrMessages, profile, relays, t]);
+
+  useEffect(() => {
+    if (!identity || relays.every((relay) => !relay.enabled)) return;
+    const scanKey = `${identity.publicKey}:${relays.filter((relay) => relay.enabled).map((relay) => relay.url).join(',')}`;
+    if (appOpenScanKeyRef.current === scanKey) return;
+    appOpenScanKeyRef.current = scanKey;
+    void scanAppOpenNotifications();
+  }, [identity?.publicKey, relays, scanAppOpenNotifications]);
+
   const saveNwcConnection = async ({ uri, passphrase, label }: SaveNwcConnectionRequest): Promise<NwcConnection> => {
     const parsed = parseNwcUri(uri);
     const at = nowIso();
@@ -2344,9 +2610,12 @@ export function App(): ReactNode {
                 identity={identity}
                 messages={nostrMessages}
                 nostrSigner={nostrSigner}
+                notifications={inboxNotifications}
+                paymentNotificationsSeenAt={paymentNotificationsSeenAt}
                 privateKeyHex={privateKeyHex}
                 receipts={nostrContactReceipts}
                 relays={relays}
+                scanStatus={inboxScanStatus}
                 threads={nostrMessageThreads}
                 onConnectSigner={() => void connectSigner()}
                 onFetch={fetchNostrInbox}
@@ -2371,6 +2640,9 @@ export function App(): ReactNode {
             nostrMessages={nostrMessages}
             nostrMessageThreads={nostrMessageThreads}
             nostrInboxCursors={nostrInboxCursors}
+            inboxNotifications={inboxNotifications}
+            paymentNotificationsSeenAt={paymentNotificationsSeenAt}
+            inboxScanStatus={inboxScanStatus}
             allowlist={allowlist}
             syncedProfiles={syncedProfiles}
             syncedListings={syncedListings}
@@ -2628,89 +2900,105 @@ function ListingDetails({ listing, sellerSummary, hideSeller = false }: { listin
   return (
     <div className="listing-details">
       {hideSeller ? null : <SellerSummaryCard summary={sellerSummary} />}
-      <PlainTextBlock className="listing-description" text={listing.description} />
-      <dl className="meta">
-        <div>
-          <dt>{t('listing.location')}</dt>
-          <dd>{listing.region || '-'}</dd>
-        </div>
-        <div>
-          <dt>{t('listing.price')}</dt>
-          <dd>{formatListingPrice(listing)}</dd>
-        </div>
-        <div>
-          <dt>{t('listing.contact')}</dt>
-          <dd>{formatContact(listing.contactMethod)}</dd>
-        </div>
-        <div>
-          <dt>{t('listing.expires')}</dt>
-          <dd>{listing.expiresAt}</dd>
-        </div>
-        <div>
-          <dt>{t('listing.status')}</dt>
-          <dd>{t(`listing.status.${listing.status}`)}</dd>
-        </div>
-        {listing.price.note ? (
+      <section className="listing-description-panel" aria-labelledby="listing-description-title">
+        <h2 id="listing-description-title">{t('listing.description')}</h2>
+        <PlainTextBlock className="listing-description" text={listing.description} />
+      </section>
+      <DisclosurePanel title={t('listing.sectionDetails')}>
+        <dl className="meta">
           <div>
-            <dt>{t('listing.priceNote')}</dt>
-            <dd>{listing.price.note}</dd>
+            <dt>{t('listing.location')}</dt>
+            <dd>{listing.region || '-'}</dd>
           </div>
-        ) : null}
-        {listing.publishedAt ? (
           <div>
-            <dt>{t('listing.publishedAt')}</dt>
-            <dd>{listing.publishedAt}</dd>
+            <dt>{t('listing.price')}</dt>
+            <dd>{formatListingPrice(listing)}</dd>
           </div>
-        ) : null}
-        <div>
-          <dt>{t('listing.fulfillment')}</dt>
-          <dd>{fulfillmentBadgeForListing(listing, t)}</dd>
-        </div>
-        {listing.fulfillmentNotes ? (
           <div>
-            <dt>{t('listing.fulfillmentNotes')}</dt>
-            <dd>{listing.fulfillmentNotes}</dd>
+            <dt>{t('listing.contact')}</dt>
+            <dd>{formatContact(listing.contactMethod)}</dd>
           </div>
-        ) : null}
-        <div>
-          <dt>{t('agreement.mediator')}</dt>
-          <dd>{listing.mediatorPreference || '-'}</dd>
-        </div>
-        <div>
-          <dt>{t('common.publicKey')}</dt>
-          <dd className="key">{listing.authorPublicKey}</dd>
-        </div>
-      </dl>
-      {listing.paymentIntents && listing.paymentIntents.length > 0 ? (
-        <div className="payment-intents">
-          <h4>{t('listing.paymentIntent')}</h4>
-          {listing.paymentIntents.map((intent) => (
-            <article className="inline-card" key={intent.id}>
-              <div className="row between">
-                <span className="pill">{paymentBadgeLabel(intent.method, t)}</span>
-                <div className="actions small">
-                  <button className="subtle" onClick={() => copyPaymentIntent(intent)} type="button">
-                    {t('listing.paymentIntentCopy')}
-                  </button>
-                  {paymentIntentHref(intent) ? (
-                    <button
-                      className="subtle"
-                      onClick={() => {
-                        const href = paymentIntentHref(intent);
-                        if (href) window.open(href, '_blank', 'noopener,noreferrer');
-                      }}
-                      type="button"
-                    >
-                      {t('listing.paymentIntentOpen')}
-                    </button>
-                  ) : null}
-                </div>
+          <div>
+            <dt>{t('listing.expires')}</dt>
+            <dd>{listing.expiresAt}</dd>
+          </div>
+          <div>
+            <dt>{t('listing.status')}</dt>
+            <dd>{t(`listing.status.${listing.status}`)}</dd>
+          </div>
+          {listing.price.note ? (
+            <div>
+              <dt>{t('listing.priceNote')}</dt>
+              <dd>{listing.price.note}</dd>
+            </div>
+          ) : null}
+          {listing.publishedAt ? (
+            <div>
+              <dt>{t('listing.publishedAt')}</dt>
+              <dd>{listing.publishedAt}</dd>
+            </div>
+          ) : null}
+          <div>
+            <dt>{t('agreement.mediator')}</dt>
+            <dd>{listing.mediatorPreference || '-'}</dd>
+          </div>
+          <div>
+            <dt>{t('common.publicKey')}</dt>
+            <dd className="key">{listing.authorPublicKey}</dd>
+          </div>
+        </dl>
+      </DisclosurePanel>
+      {(listing.fulfillmentType || listing.fulfillmentNotes || listing.paymentPreferences.length > 0) ? (
+        <DisclosurePanel title={t('listing.sectionTrustSettlement')}>
+          <dl className="meta">
+            <div>
+              <dt>{t('listing.fulfillment')}</dt>
+              <dd>{fulfillmentBadgeForListing(listing, t)}</dd>
+            </div>
+            {listing.fulfillmentNotes ? (
+              <div>
+                <dt>{t('listing.fulfillmentNotes')}</dt>
+                <dd>{listing.fulfillmentNotes}</dd>
               </div>
-              <p className="key">{intent.value}</p>
-              {intent.note ? <p className="muted">{intent.note}</p> : null}
-            </article>
-          ))}
-        </div>
+            ) : null}
+            <div>
+              <dt>{t('payment.options')}</dt>
+              <dd>{listing.paymentPreferences.map((entry) => paymentBadgeLabel(entry, t)).join(', ')}</dd>
+            </div>
+          </dl>
+        </DisclosurePanel>
+      ) : null}
+      {listing.paymentIntents && listing.paymentIntents.length > 0 ? (
+        <DisclosurePanel title={t('listing.paymentIntent')}>
+          <div className="payment-intents">
+            {listing.paymentIntents.map((intent) => (
+              <article className="inline-card" key={intent.id}>
+                <div className="row between">
+                  <span className="pill">{paymentBadgeLabel(intent.method, t)}</span>
+                  <div className="actions small">
+                    <button className="subtle" onClick={() => copyPaymentIntent(intent)} type="button">
+                      {t('listing.paymentIntentCopy')}
+                    </button>
+                    {paymentIntentHref(intent) ? (
+                      <button
+                        className="subtle"
+                        onClick={() => {
+                          const href = paymentIntentHref(intent);
+                          if (href) window.open(href, '_blank', 'noopener,noreferrer');
+                        }}
+                        type="button"
+                      >
+                        {t('listing.paymentIntentOpen')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <p className="key">{intent.value}</p>
+                {intent.note ? <p className="muted">{intent.note}</p> : null}
+              </article>
+            ))}
+          </div>
+        </DisclosurePanel>
       ) : null}
     </div>
   );
@@ -2812,7 +3100,8 @@ function LightningPaymentPanel({
   onCheckReceipt,
   onSaveNwcConnection,
   onUnlockNwcConnection,
-  onPayWithNwc
+  onPayWithNwc,
+  embedded = false
 }: {
   listing: Listing;
   sellerProfile?: PublicProfile;
@@ -2829,6 +3118,7 @@ function LightningPaymentPanel({
   onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
   onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
   onPayWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
+  embedded?: boolean;
 }): ReactNode {
   const { t } = useI18n();
   const source = listingLightningSource(listing, sellerProfile);
@@ -2970,12 +3260,14 @@ function LightningPaymentPanel({
   }, [watchedAttemptId, watchedAttemptStatus]);
   if (!source) return null;
   return (
-    <section className="lightning-payment-panel">
-      <div className="row">
-        <ReceiptText size={16} aria-hidden="true" />
-        <strong>{t('payment.lightningTitle')}</strong>
-      </div>
-      <p className="muted">{walletConnection ? t('nwc.confirmationWarning') : t('nwc.noWalletInline')}</p>
+    <section className={embedded ? 'lightning-payment-panel embedded-panel' : 'lightning-payment-panel'}>
+      {!embedded ? (
+        <div className="row">
+          <ReceiptText size={16} aria-hidden="true" />
+          <strong>{t('payment.lightningTitle')}</strong>
+        </div>
+      ) : null}
+      <p className="muted compact-meta">{walletConnection ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
       <label>
         {t('payment.amountSats')}
         <input inputMode="numeric" min="1" type="number" value={amountSats} onChange={(event) => setAmountSats(event.target.value)} />
@@ -2990,7 +3282,7 @@ function LightningPaymentPanel({
       {walletConnection && !walletUnlocked ? <p className="warning compact-warning">{t('nwc.unlockRequired')}</p> : null}
       {error ? <p className="warning" role="alert">{error}</p> : null}
       {showWalletConnect || !walletConnection ? (
-        <div className="inline-card">
+        <div className="compact-wallet-panel">
           <strong>{t('nwc.title')}</strong>
           <label>
             {t('nwc.uri')}
@@ -3006,7 +3298,7 @@ function LightningPaymentPanel({
           </button>
         </div>
       ) : !walletUnlocked ? (
-        <div className="inline-card">
+        <div className="compact-wallet-panel">
           <strong>{walletConnection.label}</strong>
           <label>
             {t('nwc.passphrase')}
@@ -3017,7 +3309,7 @@ function LightningPaymentPanel({
           </button>
         </div>
       ) : (
-        <p className="ok compact-warning">{t('nwc.connected')}</p>
+        <p className="ok compact-warning">{t('nwc.connectedCompact')}</p>
       )}
       <div className="actions small">
         {identity && !canUseLocal && !canUseSigner ? (
@@ -3491,6 +3783,7 @@ function NostrContactPanel({
   privateKeyHex,
   receipts,
   defaultOpen = false,
+  embedded = false,
   onConnectSigner,
   onSend
 }: {
@@ -3501,6 +3794,7 @@ function NostrContactPanel({
   privateKeyHex: string;
   receipts: NostrContactReceipt[];
   defaultOpen?: boolean;
+  embedded?: boolean;
   onConnectSigner: () => void;
   onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
 }): ReactNode {
@@ -3562,10 +3856,12 @@ function NostrContactPanel({
   if (!normalized) return null;
 
   return (
-    <section className="nostr-contact">
-      <button className="subtle" onClick={() => setOpen((current) => !current)} type="button">
-        <Radio size={16} /> {t('nostrContact.messageAction')}
-      </button>
+    <section className={embedded ? 'nostr-contact embedded-panel' : 'nostr-contact'}>
+      {!embedded ? (
+        <button className="subtle" onClick={() => setOpen((current) => !current)} type="button">
+          <Radio size={16} /> {t('nostrContact.messageAction')}
+        </button>
+      ) : null}
       {open ? (
         <div className="nostr-contact-panel">
           <div className="row between">
@@ -3576,9 +3872,11 @@ function NostrContactPanel({
           </div>
           {target.contextTitle ? (
             <div className="message-context">
-              <span className="form-eyebrow">{t('nostrContact.context')}</span>
-              <strong>{target.contextTitle}</strong>
-              <p className="muted">{t(`nostrContact.context.${target.contextType}`)}</p>
+              <div>
+                <span className="form-eyebrow">{t('nostrContact.context')}</span>
+                <strong>{target.contextTitle}</strong>
+                <p className="muted">{t(`nostrContact.context.${target.contextType}`)}</p>
+              </div>
               <label className="context-toggle">
                 <input type="checkbox" checked={includeContext} onChange={(event) => setIncludeContext(event.target.checked)} />
                 <span>{t('nostrContact.includeContext')}</span>
@@ -3644,6 +3942,141 @@ function NostrContactPanel({
             ) : null}
           </DisclosurePanel>
         </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ListingContactPayPanel({
+  contactTarget,
+  listing,
+  sellerProfile,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  nostrContactReceipts,
+  lightningPaymentAttempts,
+  nwcConnections,
+  unlockedNwcConnectionIds,
+  onConnectSigner,
+  onSendNostrIntro,
+  onCreateLightningPaymentAttempt,
+  onCheckLightningPaymentReceipt,
+  onSaveNwcConnection,
+  onUnlockNwcConnection,
+  onPayLightningAttemptWithNwc
+}: {
+  contactTarget?: NostrContactTarget;
+  listing: Listing;
+  sellerProfile?: PublicProfile;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  nostrContactReceipts: NostrContactReceipt[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  nwcConnections: NwcConnection[];
+  unlockedNwcConnectionIds: string[];
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
+  onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
+  onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
+  onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
+  onPayLightningAttemptWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const hasMessage = Boolean(contactTarget);
+  const hasLightning = Boolean(listingLightningSource(listing, sellerProfile));
+  const [mode, setMode] = useState<'message' | 'lightning'>(hasMessage ? 'message' : 'lightning');
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (mode === 'message' && !hasMessage && hasLightning) setMode('lightning');
+    if (mode === 'lightning' && !hasLightning && hasMessage) setMode('message');
+  }, [hasLightning, hasMessage, mode]);
+
+  if (!hasMessage && !hasLightning) return null;
+
+  const openMode = (nextMode: 'message' | 'lightning'): void => {
+    setMode(nextMode);
+    setExpanded(true);
+  };
+
+  return (
+    <section className="contact-pay-panel">
+      <div className="row between">
+        <div>
+          <h2>{t('listing.contactPay')}</h2>
+          <p className="muted compact-meta">{t('listing.contactPayHelp')}</p>
+        </div>
+        {expanded ? (
+          <button className="subtle" onClick={() => setExpanded(false)} type="button">
+            {t('listing.contactPayCollapse')}
+          </button>
+        ) : null}
+      </div>
+      {!expanded ? (
+        <div className="contact-pay-summary">
+          <p className="muted">{t('listing.contactPayCollapsed')}</p>
+          <div className="actions small">
+            {hasMessage ? (
+              <button onClick={() => openMode('message')} type="button">
+                <Radio size={16} /> {t('listing.actionMessage')}
+              </button>
+            ) : null}
+            {hasLightning ? (
+              <button className={hasMessage ? 'subtle' : undefined} onClick={() => openMode('lightning')} type="button">
+                <ReceiptText size={16} /> {t('listing.actionLightning')}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {expanded && hasMessage && hasLightning ? (
+        <div className="segmented-control compact" aria-label={t('listing.contactPay')}>
+          <button className={mode === 'message' ? 'active' : ''} onClick={() => setMode('message')} type="button">
+            {t('listing.actionMessage')}
+          </button>
+          <button className={mode === 'lightning' ? 'active' : ''} onClick={() => setMode('lightning')} type="button">
+            {t('listing.actionLightning')}
+          </button>
+        </div>
+      ) : null}
+      {expanded && mode === 'message' && contactTarget ? (
+        <NostrContactPanel
+          target={contactTarget}
+          identity={identity}
+          relays={relays}
+          nostrSigner={nostrSigner}
+          privateKeyHex={privateKeyHex}
+          receipts={nostrContactReceipts}
+          defaultOpen
+          embedded
+          onConnectSigner={onConnectSigner}
+          onSend={onSendNostrIntro}
+        />
+      ) : null}
+      {expanded && mode === 'lightning' && hasLightning ? (
+        <LightningPaymentPanel
+          listing={listing}
+          sellerProfile={sellerProfile}
+          identity={identity}
+          privateKeyHex={privateKeyHex}
+          nostrSigner={nostrSigner}
+          relays={relays}
+          attempts={lightningPaymentAttempts}
+          nwcConnections={nwcConnections}
+          unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+          onConnectSigner={onConnectSigner}
+          onCreatePaymentAttempt={onCreateLightningPaymentAttempt}
+          onCheckReceipt={onCheckLightningPaymentReceipt}
+          onSaveNwcConnection={onSaveNwcConnection}
+          onUnlockNwcConnection={onUnlockNwcConnection}
+          onPayWithNwc={onPayLightningAttemptWithNwc}
+          embedded
+        />
       ) : null}
     </section>
   );
@@ -3773,6 +4206,14 @@ function ListingPage({
   const curatedBy = [...communityLists, ...syncedCommunityLists.map((record) => record.payload)]
     .filter((list) => list.referencedCoordinates.includes(nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)))
     .map((list) => list.title);
+  const listingScope = syncedRecord ? effectiveSyncedListingScope(syncedRecord) : undefined;
+  const listingSourceLabel = syncSettings.showDataSource
+    ? source === 'synced'
+      ? `${t('sync.syncedData')} · ${syncedRecord?.trusted ? t('sync.trusted') : t('sync.untrusted')}${
+          listingScope ? ` · ${listingScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('sync.scopeAgoraMeshNative')}` : ''
+        }`
+      : t('sync.localData')
+    : listing.visibility;
 
   return (
     <section className="page listing-page">
@@ -3796,96 +4237,99 @@ function ListingPage({
           }}
         />
       ) : (
-      <div className="listing-page-layout">
-        <ListingImageGallery images={listing.images} title={listing.title} />
-        <article className="panel listing-main">
-          <section className="listing-section">
-            <div className="row between">
-              <span className="pill">{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
-              <span className="muted">
-                {syncSettings.showDataSource
-                  ? source === 'synced'
-                    ? `${t('sync.syncedData')} · ${syncedRecord?.trusted ? t('sync.trusted') : t('sync.untrusted')}`
-                    : t('sync.localData')
-                  : listing.visibility}
-              </span>
-            </div>
-            <h1>{listing.title}</h1>
-            <div className="listing-price-hero">
-              <strong>{formatListingPrice(listing)}</strong>
-              <span>{listing.region || t('listing.location')}</span>
-            </div>
-            <div className="badge-row">
-              <span className="pill subtle-pill">{t(`listing.status.${listing.status}`)}</span>
-              <span className="pill subtle-pill">{categoryLabel(listing.category, t)}</span>
-              <span className="pill subtle-pill">{fulfillmentBadgeForListing(listing, t)}</span>
-              {listing.paymentPreferences.map((entry) => (
-                <span className="pill subtle-pill" key={entry}>
-                  {paymentBadgeLabel(entry, t)}
-                </span>
-              ))}
-            </div>
-          </section>
-          <section className="listing-section">
-            <h2>{t('listing.sectionSeller')}</h2>
-            <SellerSummaryCard
-              summary={sellerSummary}
-              supportReceipt={sellerSupportReceipt}
-              onReview={
-                canReviewSeller
-                  ? () =>
-                      onReviewSeller({
-                        subjectPublicKey: listing.authorPublicKey,
-                        role: 'seller',
-                        listingId: listing.id,
-                        listingTitle: listing.title,
-                        listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
-                      })
+        <div className="listing-page-layout">
+          <article className="panel listing-main">
+            <section className="listing-section listing-hero-section">
+              <div className="listing-hero-meta">
+                <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
+                <span>{t(`listing.status.${listing.status}`)}</span>
+                <span>{categoryLabel(listing.category, t)}</span>
+              </div>
+              <h1>{listing.title}</h1>
+              <div className="listing-price-hero">
+                <strong>{formatListingPrice(listing)}</strong>
+                <span>{listing.region || t('listing.location')}</span>
+              </div>
+              <p className="muted listing-source-line">{listingSourceLabel}</p>
+              <ListingImageGallery images={listing.images} title={listing.title} />
+            </section>
+            <section className="listing-section">
+              <h2>{t('listing.sectionSeller')}</h2>
+              <SellerSummaryCard
+                summary={sellerSummary}
+                supportReceipt={sellerSupportReceipt}
+                onReview={
+                  canReviewSeller
+                    ? () =>
+                        onReviewSeller({
+                          subjectPublicKey: listing.authorPublicKey,
+                          role: 'seller',
+                          listingId: listing.id,
+                          listingTitle: listing.title,
+                          listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
+                        })
+                    : undefined
+                }
+              />
+            </section>
+            <section className="listing-section">
+              <ListingDetails listing={listing} sellerSummary={sellerSummary} hideSeller />
+              {listing.tags.length > 0 ? (
+                <DisclosurePanel title={t('listing.tags')}>
+                  <div className="tags">{listing.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
+                </DisclosurePanel>
+              ) : null}
+            </section>
+            <section className="listing-section">
+              <DisclosurePanel title={t('listing.sectionTrustSource')}>
+                {curatedBy.length > 0 ? (
+                  <p className="muted">
+                    {t('curation.curatedBy')}: {curatedBy.join(', ')}
+                  </p>
+                ) : null}
+                {syncedRecord ? (
+                  <SyncedQualityBadges
+                    conflict={isRecordConflicted(syncedRecord, conflictGroups)}
+                    hidden={syncedRecord.hidden}
+                    preferred={isPreferredConflictRecord(syncedRecord, conflictGroups)}
+                  />
+                ) : (
+                  <p className="muted">{t('sync.localData')}</p>
+                )}
+              </DisclosurePanel>
+            </section>
+          </article>
+          <aside className="panel listing-actions">
+            <ListingContactPayPanel
+              contactTarget={
+                nostrContact
+                  ? {
+                      recipientPublicKey: nostrContact.publicKey,
+                      label: sellerSummary.displayName,
+                      contextType: 'listing',
+                      contextId: listing.id,
+                      contextTitle: listing.title
+                    }
                   : undefined
               }
+              listing={listing}
+              sellerProfile={sellerProfile}
+              identity={identity}
+              privateKeyHex={privateKeyHex}
+              nostrSigner={nostrSigner}
+              relays={relays}
+              nostrContactReceipts={nostrContactReceipts}
+              lightningPaymentAttempts={lightningPaymentAttempts}
+              nwcConnections={nwcConnections}
+              unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+              onConnectSigner={onConnectSigner}
+              onSendNostrIntro={onSendNostrIntro}
+              onCreateLightningPaymentAttempt={onCreateLightningPaymentAttempt}
+              onCheckLightningPaymentReceipt={onCheckLightningPaymentReceipt}
+              onSaveNwcConnection={onSaveNwcConnection}
+              onUnlockNwcConnection={onUnlockNwcConnection}
+              onPayLightningAttemptWithNwc={onPayLightningAttemptWithNwc}
             />
-          </section>
-          <section className="listing-section">
-            <h2>{t('listing.sectionDetails')}</h2>
-            <ListingDetails listing={listing} sellerSummary={sellerSummary} hideSeller />
-            {listing.tags.length > 0 ? <div className="tags">{listing.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-          </section>
-          <section className="listing-section">
-            <h2>{t('listing.sectionTrustSource')}</h2>
-            {curatedBy.length > 0 ? (
-              <p className="muted">
-                {t('curation.curatedBy')}: {curatedBy.join(', ')}
-              </p>
-            ) : null}
-            {syncedRecord ? (
-              <SyncedQualityBadges
-                conflict={isRecordConflicted(syncedRecord, conflictGroups)}
-                hidden={syncedRecord.hidden}
-                preferred={isPreferredConflictRecord(syncedRecord, conflictGroups)}
-              />
-            ) : (
-              <p className="muted">{t('sync.localData')}</p>
-            )}
-          </section>
-        </article>
-        <aside className="panel listing-actions">
-          <LightningPaymentPanel
-            listing={listing}
-            sellerProfile={sellerProfile}
-            identity={identity}
-            privateKeyHex={privateKeyHex}
-            nostrSigner={nostrSigner}
-            relays={relays}
-            attempts={lightningPaymentAttempts}
-            nwcConnections={nwcConnections}
-            unlockedNwcConnectionIds={unlockedNwcConnectionIds}
-            onConnectSigner={onConnectSigner}
-            onCreatePaymentAttempt={onCreateLightningPaymentAttempt}
-            onCheckReceipt={onCheckLightningPaymentReceipt}
-            onSaveNwcConnection={onSaveNwcConnection}
-            onUnlockNwcConnection={onUnlockNwcConnection}
-            onPayWithNwc={onPayLightningAttemptWithNwc}
-          />
           {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
             <ListingZapReceiptsPanel
               receipts={listingZaps}
@@ -3909,24 +4353,6 @@ function ListingPage({
               onSaveNwcConnection={onSaveNwcConnection}
               onUnlockNwcConnection={onUnlockNwcConnection}
               onPayWithNwc={onPayLightningAttemptWithNwc}
-            />
-          ) : null}
-          {nostrContact ? (
-            <NostrContactPanel
-              target={{
-                recipientPublicKey: nostrContact.publicKey,
-                label: sellerSummary.displayName,
-                contextType: 'listing',
-                contextId: listing.id,
-                contextTitle: listing.title
-              }}
-              identity={identity}
-              relays={relays}
-              nostrSigner={nostrSigner}
-              privateKeyHex={privateKeyHex}
-              receipts={nostrContactReceipts}
-              onConnectSigner={onConnectSigner}
-              onSend={onSendNostrIntro}
             />
           ) : null}
           <button onClick={() => onStartTrade(listingRef)} type="button">
@@ -6287,6 +6713,9 @@ function NostrInboxPanel({
   messages,
   threads,
   cursors,
+  notifications,
+  paymentNotificationsSeenAt,
+  scanStatus,
   receipts,
   defaultOpen,
   onConnectSigner,
@@ -6301,6 +6730,9 @@ function NostrInboxPanel({
   messages: NostrMessageRecord[];
   threads: NostrMessageThread[];
   cursors: NostrInboxCursor[];
+  notifications: InboxNotification[];
+  paymentNotificationsSeenAt: string;
+  scanStatus: string;
   receipts: NostrContactReceipt[];
   defaultOpen: boolean;
   onConnectSigner: () => void;
@@ -6404,34 +6836,45 @@ function NostrInboxPanel({
 
   return (
     <section className="nostr-inbox dm-inbox" key={defaultOpen ? 'inbox-open' : 'inbox-closed'}>
-      <div className="dm-toolbar">
-        <label className="dm-passphrase">
-          {t('nostrInbox.passphrase')}
-          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
-        </label>
-        <div className="segmented-control compact" aria-label={t('nostrInbox.boxFilter')}>
-          {(['all', 'inbox', 'outbox'] as const).map((filter) => (
-            <button className={boxFilter === filter ? 'active' : ''} key={filter} onClick={() => setBoxFilter(filter)} type="button">
-              {t(`nostrInbox.${filter}`)}
-            </button>
-          ))}
+      <header className="dm-header">
+        <div>
+          <h2>{t('nostrInbox.title')}</h2>
+          <p className="muted compact-meta">{t('nostrInbox.simpleHelp')}</p>
         </div>
-        <div className="actions small">
-          {identity && !canUseLocal && !canUseSigner ? (
-            <button className="subtle" onClick={onConnectSigner} type="button">
-              <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+        <div className="dm-toolbar">
+          <div className="segmented-control compact" aria-label={t('nostrInbox.boxFilter')}>
+            {(['all', 'inbox', 'outbox'] as const).map((filter) => (
+              <button className={boxFilter === filter ? 'active' : ''} key={filter} onClick={() => setBoxFilter(filter)} type="button">
+                {t(`nostrInbox.${filter}`)}
+              </button>
+            ))}
+          </div>
+          <label className="dm-passphrase">
+            {t('nostrInbox.passphrase')}
+            <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} placeholder={t('nostrInbox.passphrasePlaceholder')} />
+          </label>
+          <div className="actions small">
+            {identity && !canUseLocal && !canUseSigner ? (
+              <button className="subtle" onClick={onConnectSigner} type="button">
+                <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+              </button>
+            ) : null}
+            <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
+              {t('nostrInbox.unlock')}
             </button>
-          ) : null}
-          <button className="subtle" disabled={!passphrase} onClick={() => void unlock()} type="button">
-            {t('nostrInbox.unlock')}
-          </button>
-          <button disabled={!identity || enabledRelayCount === 0 || fetching || passphrase.length < 10 || (!canUseLocal && !canUseSigner)} onClick={() => void fetch()} type="button">
-            {fetching ? t('nostrInbox.fetching') : t('nostrInbox.fetch')}
-          </button>
+            <button disabled={!identity || enabledRelayCount === 0 || fetching || passphrase.length < 10 || (!canUseLocal && !canUseSigner)} onClick={() => void fetch()} type="button">
+              {fetching ? t('nostrInbox.fetching') : t('nostrInbox.fetch')}
+            </button>
+          </div>
         </div>
-      </div>
+      </header>
       {fetchBlocker ? <p className="warning compact-warning">{fetchBlocker}</p> : null}
       {error ? <p className="warning" role="alert">{error}</p> : null}
+      <section className="inbox-section">
+        <div className="row between">
+          <h3>{t('nostrInbox.messages')}</h3>
+          <span className="muted compact-meta">{visibleThreads.length}</span>
+        </div>
       <div className="dm-layout">
         <aside className="dm-thread-list" aria-label={t('nostrInbox.title')}>
           {visibleThreads.map((thread) => {
@@ -6505,11 +6948,36 @@ function NostrInboxPanel({
           ) : null}
         </section>
       </div>
+      </section>
+      <section className="inbox-section">
+        <div className="row between">
+          <h3>{t('nostrInbox.notifications')}</h3>
+          <span className="muted compact-meta">{notifications.length}</span>
+        </div>
+        <p className="muted compact-meta">{t('nostrInbox.notificationsHelp')}</p>
+        <div className="notification-list">
+          {notifications.map((notification) => {
+            const fresh = !paymentNotificationsSeenAt || notification.at > paymentNotificationsSeenAt;
+            return (
+              <article className={fresh ? 'notification-row fresh' : 'notification-row'} key={notification.id}>
+                <div>
+                  <strong>{notification.title}</strong>
+                  <p>{notification.body}</p>
+                  <p className="muted compact-meta">{notification.at}</p>
+                </div>
+                {fresh ? <span className="nav-badge inline">{t('nostrInbox.new')}</span> : null}
+              </article>
+            );
+          })}
+          {notifications.length === 0 ? <EmptyState title={t('nostrInbox.noNotificationsTitle')} body={t('nostrInbox.noNotificationsBody')} /> : null}
+        </div>
+      </section>
       <DisclosurePanel title={t('nostrInbox.privacySyncDetails')} defaultOpen={defaultOpen}>
         <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
         <div className="compact-meta-list">
           <p>{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
           <p>{canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}</p>
+          {scanStatus ? <p>{scanStatus}</p> : null}
           <p>
             {t('nostrInbox.cursors')}: {cursors.filter((cursor) => cursor.ownerPublicKey === identity?.publicKey.toLowerCase()).length}
           </p>
@@ -7991,6 +8459,9 @@ function SettingsPage({
   nostrMessages,
   nostrMessageThreads,
   nostrInboxCursors,
+  inboxNotifications,
+  paymentNotificationsSeenAt,
+  inboxScanStatus,
   allowlist,
   syncedProfiles,
   syncedListings,
@@ -8034,6 +8505,9 @@ function SettingsPage({
   nostrMessages: NostrMessageRecord[];
   nostrMessageThreads: NostrMessageThread[];
   nostrInboxCursors: NostrInboxCursor[];
+  inboxNotifications: InboxNotification[];
+  paymentNotificationsSeenAt: string;
+  inboxScanStatus: string;
   allowlist: CommunityAllowlistEntry[];
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
   syncedListings: SyncedPublicRecord<Listing>[];
@@ -9022,9 +9496,12 @@ function SettingsPage({
               identity={identity}
               messages={nostrMessages}
               nostrSigner={nostrSigner}
+              notifications={inboxNotifications}
+              paymentNotificationsSeenAt={paymentNotificationsSeenAt}
               privateKeyHex={privateKeyHex}
               receipts={nostrContactReceipts}
               relays={relays}
+              scanStatus={inboxScanStatus}
               threads={nostrMessageThreads}
               onConnectSigner={onConnectSigner}
               onFetch={onFetchNostrInbox}

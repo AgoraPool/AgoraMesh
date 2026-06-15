@@ -79,6 +79,9 @@
 - v0.38.0 native Inbox and marketplace reviews with a simpler DM layout, hidden protocol diagnostics, seller/listing-first reviews, optional agreement context, and direct Review seller actions.
 - v0.39.0 operator support zap badges with build-configured LNURL support payments, validated public NIP-57 receipt caching, profile/seller/reputation/curation badge display, support filters, and no trust or allowlist mutation.
 - v0.40.0 public receipt portability with explicit supporter badge refresh, seller listing zap receipt checks, improved original-sender DM reply threading, encrypted outgoing inbox continuity, and cleaner AgoraMesh NIP-99 listing publication without new fulfillment tags.
+- v0.41.0 marketplace listing detail UX with price/media/seller-first pages, safe paragraph rendering, quieter secondary disclosures, reliable effective AgoraMesh-native scope labels, and minimal Browse polish.
+- v0.42.0 message/payment and Inbox UX cleanup with one listing Contact and Pay panel, compact Nostr context handling, quieter Lightning wallet state, and a simpler messenger-style Inbox.
+- v0.43.0 cleaner Inbox notifications with separate DM and public payment activity sections, local nav badges, one-shot app-open scans, and collapsed listing Contact and Pay actions.
 
 ## Not Planned For MVP
 

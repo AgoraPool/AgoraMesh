@@ -38,6 +38,18 @@ function listingFixture(overrides: Partial<Listing> = {}): Listing {
   };
 }
 
+function rawListingEventFixture({ id, pubkey, createdAt, title }: { id: string; pubkey: string; createdAt: number; title: string }): string {
+  return JSON.stringify({
+    id,
+    pubkey,
+    created_at: createdAt,
+    kind: 30402,
+    tags: [['d', 'listing_fixture']],
+    content: title,
+    sig: 'f'.repeat(128)
+  });
+}
+
 function identityFixture(): IdentityRecord {
   return {
     id: 'identity_1',
@@ -409,6 +421,107 @@ describe('production readiness UI', () => {
     expect(await screen.findByText('Broad NIP-99 listing')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'All NIP-99' })).toHaveAttribute('aria-pressed', 'true');
     await waitFor(async () => expect((await db.syncSettings.get('default'))?.listingDiscoveryScope).toBe('all-nip99'));
+  });
+
+  it('uses the newest cached replacement listing and does not show stale active copies', async () => {
+    const authorPublicKey = 'd'.repeat(64);
+    const oldListing = listingFixture({
+      id: 'replacement_listing',
+      title: 'Old cached listing title',
+      authorPublicKey,
+      updatedAt: '2026-06-01T00:00:00.000Z'
+    });
+    const newListing = listingFixture({
+      ...oldListing,
+      title: 'Updated cached listing title',
+      updatedAt: '2026-06-02T00:00:00.000Z'
+    });
+    await db.syncedListings.bulkPut([
+      {
+        id: 'synced_old_replacement',
+        eventId: 'event_old_replacement',
+        kind: 30402,
+        authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-06-01T00:00:00.000Z',
+        importedAt: '2026-06-01T00:00:00.000Z',
+        payload: oldListing,
+        trusted: false,
+        hidden: false,
+        rawEvent: rawListingEventFixture({ id: 'event_old_replacement', pubkey: authorPublicKey, createdAt: 100, title: oldListing.title }),
+        discoveryScope: 'agoramesh-native'
+      },
+      {
+        id: 'synced_new_replacement',
+        eventId: 'event_new_replacement',
+        kind: 30402,
+        authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-06-02T00:00:00.000Z',
+        importedAt: '2026-06-02T00:00:00.000Z',
+        payload: newListing,
+        trusted: false,
+        hidden: false,
+        rawEvent: rawListingEventFixture({ id: 'event_new_replacement', pubkey: authorPublicKey, createdAt: 200, title: newListing.title }),
+        discoveryScope: 'agoramesh-native'
+      }
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Updated cached listing title')).toBeInTheDocument();
+    expect(screen.queryByText('Old cached listing title')).not.toBeInTheDocument();
+  });
+
+  it('removes stale active cached listings when the newest replacement is deleted', async () => {
+    const authorPublicKey = 'e'.repeat(64);
+    const activeListing = listingFixture({
+      id: 'deleted_replacement_listing',
+      title: 'Listing deleted on relay',
+      authorPublicKey,
+      status: 'active',
+      updatedAt: '2026-06-01T00:00:00.000Z'
+    });
+    const deletedListing = {
+      ...activeListing,
+      status: 'deleted' as const,
+      updatedAt: '2026-06-02T00:00:00.000Z'
+    };
+    await db.syncedListings.bulkPut([
+      {
+        id: 'synced_active_before_delete',
+        eventId: 'event_active_before_delete',
+        kind: 30402,
+        authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-06-01T00:00:00.000Z',
+        importedAt: '2026-06-01T00:00:00.000Z',
+        payload: activeListing,
+        trusted: false,
+        hidden: false,
+        rawEvent: rawListingEventFixture({ id: 'event_active_before_delete', pubkey: authorPublicKey, createdAt: 100, title: activeListing.title }),
+        discoveryScope: 'agoramesh-native'
+      },
+      {
+        id: 'synced_deleted_replacement',
+        eventId: 'event_deleted_replacement',
+        kind: 30402,
+        authorPublicKey,
+        relayUrls: ['wss://relay.example'],
+        receivedAt: '2026-06-02T00:00:00.000Z',
+        importedAt: '2026-06-02T00:00:00.000Z',
+        payload: deletedListing,
+        trusted: false,
+        hidden: false,
+        rawEvent: rawListingEventFixture({ id: 'event_deleted_replacement', pubkey: authorPublicKey, createdAt: 200, title: deletedListing.title }),
+        discoveryScope: 'agoramesh-native'
+      }
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('No listings match this view')).toBeInTheDocument();
+    expect(screen.queryByText('Listing deleted on relay')).not.toBeInTheDocument();
   });
 
   it('hides expired listings by default and can show them on demand', async () => {
@@ -954,6 +1067,35 @@ describe('production readiness UI', () => {
     expect(card.querySelector('.listing-card-taxonomy')).toHaveTextContent('repair');
     expect(card.querySelector('.listing-card-settlement')).toBeNull();
     expect(card.querySelector('img')).toHaveAttribute('src', 'https://shop.example/listing.webp');
+  });
+
+  it('orders default marketplace cards with image listings first and uses the title as the no-image fallback', async () => {
+    await db.listings.bulkPut([
+      listingFixture({
+        id: 'newer_no_image',
+        title: 'Newer listing without image',
+        createdAt: '2026-06-10T00:00:00.000Z',
+        updatedAt: '2026-06-10T00:00:00.000Z',
+        images: []
+      }),
+      listingFixture({
+        id: 'older_with_image',
+        title: 'Older listing with image',
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+        images: [{ id: 'image_ordered', url: 'https://media.example/ordered.webp' }]
+      })
+    ]);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByRole('heading', { name: 'Older listing with image' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Newer listing without image' })).toBeInTheDocument();
+    const cardTitles = [...document.querySelectorAll('.listing-card h2')].map((heading) => heading.textContent);
+    expect(cardTitles.slice(0, 2)).toEqual(['Older listing with image', 'Newer listing without image']);
+
+    const noImageCard = screen.getByRole('heading', { name: 'Newer listing without image' }).closest('article') as HTMLElement;
+    expect(noImageCard.querySelector('.listing-card-thumb-title')).toHaveAttribute('data-title', 'Newer listing without image');
   });
 
   it('shows a simple listing image flipper and image count marker', async () => {

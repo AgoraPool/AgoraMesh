@@ -610,47 +610,94 @@ function rawEventCreatedAt(rawEvent?: string): number {
   }
 }
 
+function payloadCacheTimestamp(payload: CacheablePayload): string {
+  if ('updatedAt' in payload) return payload.updatedAt;
+  if ('timestamp' in payload) return String(payload.timestamp).padStart(16, '0');
+  return '';
+}
+
+function syncedRecordVersionCompare<T extends CacheablePayload>(left: SyncedPublicRecord<T>, right: SyncedPublicRecord<T>): number {
+  const leftEventAt = rawEventCreatedAt(left.rawEvent);
+  const rightEventAt = rawEventCreatedAt(right.rawEvent);
+  if (leftEventAt !== rightEventAt) return leftEventAt - rightEventAt;
+  const leftUpdatedAt = payloadCacheTimestamp(left.payload) || left.importedAt;
+  const rightUpdatedAt = payloadCacheTimestamp(right.payload) || right.importedAt;
+  return leftUpdatedAt.localeCompare(rightUpdatedAt) || left.importedAt.localeCompare(right.importedAt);
+}
+
+function latestSyncedListingRecords(records: SyncedPublicRecord<Listing>[]): SyncedPublicRecord<Listing>[] {
+  const grouped = new Map<string, SyncedPublicRecord<Listing>[]>();
+  for (const record of records) grouped.set(syncedCoordinate(record), [...(grouped.get(syncedCoordinate(record)) ?? []), record]);
+  return [...grouped.values()]
+    .map((group) => [...group].sort((left, right) => syncedRecordVersionCompare(right, left))[0])
+    .filter((record): record is SyncedPublicRecord<Listing> => Boolean(record));
+}
+
+function incomingReviewItemIsNewer<T extends CacheablePayload>(item: NostrReviewItem, payload: T, existing: SyncedPublicRecord<T>): boolean {
+  const incomingEventAt = rawEventCreatedAt(item.rawEvent);
+  const existingEventAt = rawEventCreatedAt(existing.rawEvent);
+  if (incomingEventAt !== existingEventAt) return incomingEventAt > existingEventAt;
+  return payloadCacheTimestamp(payload).localeCompare(payloadCacheTimestamp(existing.payload)) > 0;
+}
+
 function mergeRelayUrls(current: string[], relay: string): string[] {
   return [...new Set([...current, relay])];
+}
+
+function mergeSyncedRelayUrls<T extends CacheablePayload>(records: SyncedPublicRecord<T>[], relay: string): string[] {
+  return [...new Set([...records.flatMap((record) => record.relayUrls), relay])];
+}
+
+function mergeSyncedDiscoveryScope<T extends CacheablePayload>(records: SyncedPublicRecord<T>[], incoming?: ListingDiscoveryScope): ListingDiscoveryScope | undefined {
+  const scopes = records.map((record) => effectiveDiscoveryScopeForRecord(record));
+  return scopes.includes('agoramesh-native') || incoming === 'agoramesh-native' ? 'agoramesh-native' : scopes.find(Boolean) ?? incoming;
+}
+
+async function deleteSyncedDuplicateRows<T extends CacheablePayload>(table: Table<SyncedPublicRecord<T>, string>, records: SyncedPublicRecord<T>[], keepId: string): Promise<void> {
+  const duplicateIds = records.filter((record) => record.id !== keepId).map((record) => record.id);
+  if (duplicateIds.length > 0) await table.bulkDelete(duplicateIds);
 }
 
 async function upsertSyncedRecord<T extends CacheablePayload>(
   table: Table<SyncedPublicRecord<T>, string>,
   item: NostrReviewItem,
   allowlist: CommunityAllowlistEntry[],
-  payload: T
+  payload: T,
+  importIfMissing = true
 ): Promise<PublicCacheWriteResult> {
   const incoming = {
     ...syncedRecordFromReviewItem(item, allowlist, payload),
     discoveryScope: effectiveDiscoveryScopeForReviewItem(item)
   };
   const coordinate = reviewItemCoordinate(item, payload);
-  const existing = (await table.toArray()).find((record) => syncedCoordinate(record) === coordinate);
-  if (!existing) {
+  const existingRecords = (await table.toArray()).filter((record) => syncedCoordinate(record) === coordinate);
+  if (existingRecords.length === 0) {
+    if (!importIfMissing) return 'skipped';
     await table.put(incoming);
     return 'imported';
   }
 
-  const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
-  if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
-    const existingScope = effectiveDiscoveryScopeForRecord(existing);
-    const discoveryScope =
-      existingScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
-        ? 'agoramesh-native'
-        : existingScope ?? incoming.discoveryScope;
-    if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
-      await table.put({ ...existing, relayUrls, discoveryScope });
-    }
+  const existing = [...existingRecords].sort((left, right) => syncedRecordVersionCompare(right, left))[0];
+  if (!existing) return 'skipped';
+  const relayUrls = mergeSyncedRelayUrls(existingRecords, item.relay);
+  const trusted = existingRecords.some((record) => record.trusted);
+  const hidden = existingRecords.some((record) => record.hidden);
+  const discoveryScope = mergeSyncedDiscoveryScope(existingRecords, incoming.discoveryScope);
+  if (!incomingReviewItemIsNewer(item, payload, existing)) {
+    await table.put({ ...existing, trusted, hidden, relayUrls, discoveryScope });
+    await deleteSyncedDuplicateRows(table, existingRecords, existing.id);
     return 'unchanged';
   }
 
   await table.put({
     ...incoming,
     id: existing.id,
-    trusted: existing.trusted,
-    hidden: existing.hidden,
-    relayUrls
+    trusted,
+    hidden,
+    relayUrls,
+    discoveryScope
   });
+  await deleteSyncedDuplicateRows(table, existingRecords, existing.id);
   return 'updated';
 }
 
@@ -659,35 +706,7 @@ async function upsertExistingSyncedListing(
   allowlist: CommunityAllowlistEntry[],
   listing: Listing
 ): Promise<PublicCacheWriteResult> {
-  const incoming = {
-    ...syncedRecordFromReviewItem(item, allowlist, listing),
-    discoveryScope: effectiveDiscoveryScopeForReviewItem(item)
-  };
-  const coordinate = reviewItemCoordinate(item, listing);
-  const existing = (await db.syncedListings.toArray()).find((record) => syncedCoordinate(record) === coordinate);
-  if (!existing) return 'skipped';
-
-  const relayUrls = mergeRelayUrls(existing.relayUrls, item.relay);
-  if (rawEventCreatedAt(item.rawEvent) <= rawEventCreatedAt(existing.rawEvent)) {
-    const existingScope = effectiveSyncedListingScope(existing);
-    const discoveryScope =
-      existingScope === 'agoramesh-native' || incoming.discoveryScope === 'agoramesh-native'
-        ? 'agoramesh-native'
-        : existingScope ?? incoming.discoveryScope;
-    if (relayUrls.length !== existing.relayUrls.length || discoveryScope !== existing.discoveryScope) {
-      await db.syncedListings.put({ ...existing, relayUrls, discoveryScope });
-    }
-    return 'unchanged';
-  }
-
-  await db.syncedListings.put({
-    ...incoming,
-    id: existing.id,
-    trusted: existing.trusted,
-    hidden: existing.hidden,
-    relayUrls
-  });
-  return 'updated';
+  return upsertSyncedRecord(db.syncedListings, item, allowlist, listing, false);
 }
 
 async function cachePublicReviewItem(
@@ -861,6 +880,10 @@ function summarizeListingReceipts(listing: Listing, publishReceipts: PublishRece
 
 function isListingExpired(listing: Listing): boolean {
   return new Date(listing.expiresAt).getTime() < Date.now();
+}
+
+function hasListingImage(listing: Listing, failedImageUrls: string[] = []): boolean {
+  return listing.images?.some((image) => !failedImageUrls.includes(image.url)) ?? false;
 }
 
 function isActiveMarketplaceListing(listing: Listing): boolean {
@@ -4503,7 +4526,7 @@ function BrowsePage({
   const prefetchAttemptedRef = useRef(false);
   const enabledRelays = relays.filter((relay) => relay.enabled);
   const scopedSyncedListings = useMemo(
-    () => syncedListings.filter((record) => syncedListingInDisplayScope(record, syncSettings.listingDiscoveryScope)),
+    () => latestSyncedListingRecords(syncedListings).filter((record) => syncedListingInDisplayScope(record, syncSettings.listingDiscoveryScope)),
     [syncedListings, syncSettings.listingDiscoveryScope]
   );
   const syncedVisibleListings = scopedSyncedListings.filter((record) => !record.hidden);
@@ -4583,8 +4606,10 @@ function BrowsePage({
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
-    return sort === 'expiring' ? ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt)) : ranked;
-  }, [category, curationCoordinateMap, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
+    if (sort === 'expiring') return ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt));
+    if (query.trim()) return ranked;
+    return ranked.sort((left, right) => Number(hasListingImage(right.listing, failedListingImages)) - Number(hasListingImage(left.listing, failedListingImages)));
+  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -4747,7 +4772,9 @@ function BrowsePage({
             {visibleImageCount > 1 ? <span className="listing-card-image-count">{visibleImageCount}</span> : null}
           </>
         ) : (
-          <span>{categoryLabel(listing.category, t)}</span>
+          <span className="listing-card-thumb-title" data-title={listing.title}>
+            <small>{categoryLabel(listing.category, t)}</small>
+          </span>
         )}
       </div>
     );

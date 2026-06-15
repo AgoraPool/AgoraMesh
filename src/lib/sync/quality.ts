@@ -130,6 +130,24 @@ function listingKey(row: MarketplaceListingRow): string {
   return `${row.listing.authorPublicKey.toLowerCase()}:${row.listing.id}`;
 }
 
+function normalizeListingFingerprintPart(value = ''): string {
+  return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function listingContentKey(row: MarketplaceListingRow): string {
+  const listing = row.listing;
+  return [
+    listing.type,
+    listing.category,
+    normalizeListingFingerprintPart(listing.title),
+    normalizeListingFingerprintPart(listing.description),
+    normalizeListingFingerprintPart(listing.region),
+    normalizeListingFingerprintPart(listing.price.amount),
+    normalizeListingFingerprintPart(listing.price.currency),
+    normalizeListingFingerprintPart(listing.price.frequency ?? '')
+  ].join('|');
+}
+
 function isListingExpiredForRank(listing: Listing, now = Date.now()): boolean {
   return new Date(listing.expiresAt).getTime() < now;
 }
@@ -176,13 +194,37 @@ function rankScore(row: MarketplaceListingRow, query = '', category = 'all', typ
 
 export function dedupeMarketplaceListings(rows: MarketplaceListingRow[]): { visible: MarketplaceListingRow[]; duplicates: MarketplaceListingRow[] } {
   const grouped = new Map<string, MarketplaceListingRow[]>();
-  for (const row of rows) grouped.set(listingKey(row), [...(grouped.get(listingKey(row)) ?? []), row]);
+  const coordinateKeyToGroupKey = new Map<string, string>();
+  const contentKeyToGroupKey = new Map<string, string>();
+  for (const row of rows) {
+    const coordinateKey = listingKey(row);
+    const contentKey = listingContentKey(row);
+    const coordinateGroupKey = coordinateKeyToGroupKey.get(coordinateKey);
+    const contentGroupKey = contentKeyToGroupKey.get(contentKey);
+    const groupKey = coordinateGroupKey ?? contentGroupKey ?? coordinateKey;
+    if (coordinateGroupKey && contentGroupKey && coordinateGroupKey !== contentGroupKey) {
+      grouped.set(coordinateGroupKey, [...(grouped.get(coordinateGroupKey) ?? []), ...(grouped.get(contentGroupKey) ?? [])]);
+      grouped.delete(contentGroupKey);
+      for (const [key, value] of coordinateKeyToGroupKey) {
+        if (value === contentGroupKey) coordinateKeyToGroupKey.set(key, coordinateGroupKey);
+      }
+      for (const [key, value] of contentKeyToGroupKey) {
+        if (value === contentGroupKey) contentKeyToGroupKey.set(key, coordinateGroupKey);
+      }
+    }
+    const resolvedGroupKey = coordinateGroupKey ?? groupKey;
+    coordinateKeyToGroupKey.set(coordinateKey, resolvedGroupKey);
+    contentKeyToGroupKey.set(contentKey, resolvedGroupKey);
+    grouped.set(resolvedGroupKey, [...(grouped.get(resolvedGroupKey) ?? []), row]);
+  }
   const visible: MarketplaceListingRow[] = [];
   const duplicates: MarketplaceListingRow[] = [];
   for (const group of grouped.values()) {
     const sorted = [...group].sort(
       (left, right) =>
         (right.source === 'local' ? 1 : 0) - (left.source === 'local' ? 1 : 0) ||
+        Number(right.trusted) - Number(left.trusted) ||
+        Number(Boolean(right.listing.images?.length)) - Number(Boolean(left.listing.images?.length)) ||
         rowUpdatedAt(right).localeCompare(rowUpdatedAt(left))
     );
     const [first, ...rest] = sorted;

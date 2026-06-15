@@ -2259,19 +2259,41 @@ dd {
 }
 
 .listing-card-thumb.empty {
+  align-content: center;
   background:
     linear-gradient(135deg, rgba(240, 181, 66, 0.09), transparent 45%),
     #0e0d0a;
 }
 
-.listing-card-thumb span {
-  max-width: 100%;
+.listing-card-thumb.empty > span {
+  max-width: min(88%, 18rem);
   margin: var(--space-2);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border: 0;
   color: var(--text);
-  padding: 0.35rem 0.65rem;
   overflow-wrap: anywhere;
+  text-transform: none;
+}
+
+.listing-card-thumb-title {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+}
+
+.listing-card-thumb-title::before {
+  content: attr(data-title);
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: clamp(1rem, 2vw, 1.2rem);
+  font-weight: 800;
+  line-height: 1.2;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.listing-card-thumb-title small {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .listing-card-thumb img {

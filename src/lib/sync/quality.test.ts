@@ -208,4 +208,86 @@ describe('sync quality helpers', () => {
       'title-match'
     );
   });
+
+  it('deduplicates exact copied marketplace listings across different authors', () => {
+    const original: Listing = {
+      id: 'listing_original',
+      authorPublicKey: 'a'.repeat(64),
+      title: 'Coldcard Q signing device',
+      type: 'offer',
+      category: 'other-peaceful-services',
+      description: 'Full keyboard and QR scanner for Bitcoin signing.',
+      region: 'Worldwide',
+      status: 'active',
+      price: { amount: '279', currency: 'USD' },
+      paymentPreferences: ['other'],
+      barterAccepted: false,
+      tags: ['shopstr'],
+      expiresAt: '2099-06-30',
+      contactMethod: { id: 'contact_1', kind: 'nostr', value: 'a'.repeat(64) },
+      visibility: 'public',
+      createdAt: '2026-05-30T00:00:00.000Z',
+      updatedAt: '2026-05-30T00:00:00.000Z'
+    };
+    const copiedByAnotherKey: Listing = {
+      ...original,
+      id: 'listing_copy',
+      authorPublicKey: 'b'.repeat(64),
+      contactMethod: { id: 'contact_2', kind: 'nostr', value: 'b'.repeat(64) },
+      images: [{ id: 'image_copy', url: 'https://media.example/coldcard.webp' }],
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z'
+    };
+
+    const { visible, duplicates } = dedupeMarketplaceListings([
+      { listing: original, source: 'synced', trusted: false, record: record(original, { eventId: 'event_original', authorPublicKey: original.authorPublicKey }) },
+      {
+        listing: copiedByAnotherKey,
+        source: 'synced',
+        trusted: true,
+        record: record(copiedByAnotherKey, { eventId: 'event_copy', authorPublicKey: copiedByAnotherKey.authorPublicKey, trusted: true })
+      }
+    ]);
+
+    expect(visible).toHaveLength(1);
+    expect(duplicates).toHaveLength(1);
+    expect(visible[0].listing.id).toBe('listing_copy');
+    expect(visible[0].duplicateCount).toBe(1);
+  });
+
+  it('keeps listings with only the same title visible when their content differs', () => {
+    const base: Listing = {
+      id: 'listing_base',
+      authorPublicKey: 'a'.repeat(64),
+      title: 'Repair help',
+      type: 'offer',
+      category: 'repairs',
+      description: 'Bicycle repair in Brno.',
+      region: 'Brno',
+      status: 'active',
+      price: { amount: '0', currency: 'FREE' },
+      paymentPreferences: ['cash'],
+      barterAccepted: false,
+      tags: ['tools'],
+      expiresAt: '2099-06-30',
+      contactMethod: { id: 'contact_1', kind: 'matrix', value: '@a:example.org' },
+      visibility: 'public',
+      createdAt: '2026-05-30T00:00:00.000Z',
+      updatedAt: '2026-05-30T00:00:00.000Z'
+    };
+    const differentDescription = { ...base, id: 'listing_other', authorPublicKey: 'b'.repeat(64), description: 'Laptop repair in Prague.', region: 'Prague' };
+
+    const { visible, duplicates } = dedupeMarketplaceListings([
+      { listing: base, source: 'synced', trusted: false, record: record(base, { eventId: 'event_base', authorPublicKey: base.authorPublicKey }) },
+      {
+        listing: differentDescription,
+        source: 'synced',
+        trusted: false,
+        record: record(differentDescription, { eventId: 'event_other', authorPublicKey: differentDescription.authorPublicKey })
+      }
+    ]);
+
+    expect(visible).toHaveLength(2);
+    expect(duplicates).toHaveLength(0);
+  });
 });

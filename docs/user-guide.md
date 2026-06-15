@@ -6,11 +6,11 @@ Create a display name and passphrase. AgoraMesh generates a Nostr-compatible key
 
 Back up your identity. Losing the private key means losing the identity.
 
-The home screen is a minimal product overview with primary Marketplace and Create listing actions. Setup details are kept out of the landing page so the first screen stays focused.
+The home screen is a public landing page with primary Marketplace, Create listing, and existing Nostr account actions. It explains AgoraMesh as public Nostr marketplace discovery plus private local trade coordination without turning the first screen into setup status.
 
 Readiness summaries on Profile and Settings show which common steps are ready, missing, or optional. They are computed from local data only and do not contact relays.
 
-Scroll below the first Home viewport for the detailed product and security narrative: what stays local, what can become public, how Nostr review works, signer caveats, payment limits, trade privacy, community trust, release verification, and FAQ. This information is below the fold so the first screen stays minimal.
+Below the first Home viewport, the product story is condensed into public marketplace, private coordination, payments and reputation, and local-first self-hosting sections. Open the Security model disclosure for details on what stays local, what can become public, signer caveats, and release verification.
 
 ## Public Marketplace
 

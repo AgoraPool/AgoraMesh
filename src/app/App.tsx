@@ -2704,24 +2704,29 @@ function HomePage({
             <button className="subtle" onClick={() => go('browse:create')} type="button">
               <Megaphone size={18} /> {t('home.post')}
             </button>
+            <button className="subtle" onClick={() => go('profile')} type="button">
+              <UserRound size={18} /> {t('home.useNostrAccount')}
+            </button>
           </div>
           <p className="home-privacy-line">{t('home.privacyLine')}</p>
         </div>
         <HeroSignalPanel />
       </div>
       <div className="product-story" aria-label={t('home.productSections')}>
-        <ProductSection title={t('home.whatAgora')} body={t('home.whatAgoraBody')} actions={[{ label: t('home.browseMarketplace'), page: 'browse' }]} />
-        <ProductSection title={t('home.securityPromises')} body={t('home.securityPromisesBody')} />
-        <ProductSection title={t('home.staysLocal')} body={t('home.staysLocalBody')} actions={[{ label: t('nav.trade'), page: 'trade' }]} />
-        <ProductSection title={t('home.canBePublic')} body={t('home.canBePublicBody')} actions={[{ label: t('home.post'), page: 'browse:create' }]} />
-        <ProductSection title={t('home.publicPath')} body={t('home.publicPathBody')} actions={[{ label: t('next.openBrowse'), page: 'browse' }]} />
-        <ProductSection title={t('home.nostrSync')} body={t('home.nostrSyncBody')} actions={[{ label: t('settings.tab.relaysSync'), page: 'settings:relays' }]} />
-        <ProductSection title={t('home.signerKeys')} body={t('home.signerKeysBody')} actions={[{ label: t('settings.tab.relaysSync'), page: 'settings:relays' }]} />
-        <ProductSection title={t('home.paymentsNoCustody')} body={t('home.paymentsNoCustodyBody')} />
-        <ProductSection title={t('home.tradeDisputes')} body={t('home.tradeDisputesBody')} actions={[{ label: t('nav.trade'), page: 'trade' }]} />
-        <ProductSection title={t('home.communityTrust')} body={t('home.communityTrustBody')} actions={[{ label: t('curation.title'), page: 'browse' }]} />
-        <ProductSection title={t('home.releaseVerification')} body={t('home.releaseVerificationBody')} actions={[{ label: t('settings.tab.backupDanger'), page: 'settings:backup' }]} />
-        <ProductSection title={t('home.faq')} body={t('home.faqBody')} />
+        <ProductSection title={t('home.publicNostr')} body={t('home.publicNostrBody')} actions={[{ label: t('home.browseMarketplace'), page: 'browse' }]} onNavigate={go} />
+        <ProductSection title={t('home.privateTrade')} body={t('home.privateTradeBody')} actions={[{ label: t('nav.inbox'), page: 'inbox' }]} onNavigate={go} />
+        <ProductSection title={t('home.paymentsReputation')} body={t('home.paymentsReputationBody')} actions={[{ label: t('nav.reputation'), page: 'reputation' }]} onNavigate={go} />
+        <ProductSection title={t('home.localFirst')} body={t('home.localFirstBody')} actions={[{ label: t('settings.tab.backupDanger'), page: 'settings:backup' }]} onNavigate={go} />
+      </div>
+      <div className="home-security-model">
+        <DisclosurePanel title={t('home.securityModel')}>
+          <div className="home-security-grid">
+            <ProductSection title={t('home.staysLocal')} body={t('home.staysLocalBody')} />
+            <ProductSection title={t('home.canBePublic')} body={t('home.canBePublicBody')} />
+            <ProductSection title={t('home.signerKeys')} body={t('home.signerKeysBody')} />
+            <ProductSection title={t('home.releaseVerification')} body={t('home.releaseVerificationBody')} />
+          </div>
+        </DisclosurePanel>
       </div>
     </section>
   );
@@ -2779,11 +2784,13 @@ function HeroSignalPanel(): ReactNode {
 function ProductSection({
   title,
   body,
-  actions = []
+  actions = [],
+  onNavigate
 }: {
   title: string;
   body: string;
   actions?: { label: string; page: RouteTarget }[];
+  onNavigate?: (page: RouteTarget) => void;
 }): ReactNode {
   return (
     <article className="product-section">
@@ -2792,7 +2799,18 @@ function ProductSection({
       {actions.length > 0 ? (
         <div className="actions small">
           {actions.map((action) => (
-            <button className="subtle" key={action.label} onClick={() => (window.location.hash = action.page)} type="button">
+            <button
+              className="subtle"
+              key={action.label}
+              onClick={() => {
+                if (onNavigate) {
+                  onNavigate(action.page);
+                } else {
+                  window.location.hash = action.page;
+                }
+              }}
+              type="button"
+            >
               {action.label}
             </button>
           ))}

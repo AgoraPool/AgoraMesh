@@ -83,6 +83,7 @@
 - v0.42.0 message/payment and Inbox UX cleanup with one listing Contact and Pay panel, compact Nostr context handling, quieter Lightning wallet state, and a simpler messenger-style Inbox.
 - v0.43.0 cleaner Inbox notifications with separate DM and public payment activity sections, local nav badges, one-shot app-open scans, and collapsed listing Contact and Pay actions.
 - v0.44.0 marketplace card and create-listing polish with calmer previews, guided single-page listing creation, compact image management, and first Marketplace-entry AgoraMesh-native starter fetch.
+- v0.45.0 Home landing UX and copy polish with a sharper public Nostr marketplace offer, fewer stronger product sections, primary Marketplace/Create/Profile routes, and security-model details moved behind calm disclosure.
 
 ## Not Planned For MVP
 

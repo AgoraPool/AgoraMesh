@@ -27,7 +27,7 @@ The application avoids custodial funds, KYC, tracking, analytics, platform lock-
 - Relay health, per-relay publish receipts, and optional community allowlists.
 - Local moderation for synced public records, conflict labels, relay quality scores, and portable community allowlist import/export.
 - Accessibility foundation with skip navigation, page landmarks, live status messages, visible keyboard focus, and reduced-motion support.
-- Minimal Home product page, guided first-run setup disclosure, workflow safety notices, and clearer empty states for production use.
+- Public Home landing page with clearer Marketplace/Create/Profile entry points, concise local-first security copy, and deeper security details behind progressive disclosure.
 - UI spacing and visual QA polish for denser workflows, stable listing cards, more readable forms, item pages, and better mobile rhythm.
 - v1 QA hardening with labeled tablists/disclosures, keyboard-accessible workspace tabs, stronger responsive overflow handling, and a documented manual accessibility checklist.
 - v1 release-candidate readiness with one RC check command, release checklist, QA report template, release notes template, and signed-tag guidance.
@@ -108,7 +108,7 @@ npm run release:rc-check
 
 ## Release Artifacts
 
-Current app version: `0.44.0`.
+Current app version: `0.45.0`.
 
 Use the lockfile and CI workflow for release builds:
 
@@ -124,7 +124,7 @@ npm run release:check
 npm run release:rc-check
 ```
 
-The release output is written to `release/` and includes `dist/`, `agoramesh-v0.44.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
+The release output is written to `release/` and includes `dist/`, `agoramesh-v0.45.0-dist.tar.gz`, `SHA256SUMS`, and `release-manifest.json`. Do not publish builds from an unreviewed dependency tree. Verify artifacts before upload with:
 
 ```bash
 npm run release:check
@@ -171,6 +171,7 @@ For release candidates, complete [the release candidate checklist](docs/release-
 - The v0.42.0 messaging/payment pass consolidates listing contact and Lightning actions into one panel and simplifies Inbox into a cleaner messenger surface with protocol details hidden by default.
 - The v0.43.0 Inbox notification pass separates encrypted DMs from public zap/payment notifications, adds local nav activity badges and app-open scans, and collapses listing Contact and Pay actions by default.
 - The v0.44.0 marketplace pass simplifies listing cards, turns Create/Edit into a guided single-page flow, keeps payment preferences hidden from creation, and fetches AgoraMesh-native starter listings once on first Marketplace entry.
+- The v0.45.0 Home landing pass sharpens the public product offer, reduces the old documentation-style section stack, and keeps security/release details available without overwhelming the first screen.
 - A compromised browser can still steal data entered into that browser.
 - Pseudonymous does not mean anonymous; public relay metadata may be correlated.
 

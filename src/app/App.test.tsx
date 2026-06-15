@@ -138,23 +138,27 @@ describe('production readiness UI', () => {
     expect(await screen.findByRole('heading', { name: 'AgoraMesh' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Browse Marketplace' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create listing' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use existing Nostr account' })).toBeInTheDocument();
     expect(screen.getByText(/No custody, no KYC/i)).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: 'AgoraMesh marketplace flow' })).toBeInTheDocument();
-    expect(screen.getByText('Public where useful, private where it matters.')).toBeInTheDocument();
+    expect(screen.getByText('A client-side marketplace that separates public discovery from private coordination.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Setup status' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Create your identity' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Getting started' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'What AgoraMesh is' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Security promises' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Public Nostr marketplace' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Private trade workspace' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Payments and reputation' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Self-hostable and local-first' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'FAQ' })).not.toBeInTheDocument();
+
+    const securityModel = screen.getByRole('button', { name: /Security model/ });
+    expect(securityModel).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(securityModel);
+    expect(securityModel).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('heading', { name: 'What stays local' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'What can be public' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'How Nostr sync works' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Signer and keys' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Payments without custody' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Trade and disputes' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Community trust' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Release verification' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'FAQ' })).toBeInTheDocument();
   });
 
   it('renders guided empty states for blank production workflows', async () => {

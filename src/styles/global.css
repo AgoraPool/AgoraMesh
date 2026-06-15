@@ -510,7 +510,7 @@ main {
 .minimal-home {
   align-items: start;
   justify-items: center;
-  gap: clamp(2.5rem, 6vw, 5rem);
+  gap: clamp(2rem, 5vw, 4rem);
   padding-bottom: clamp(2rem, 6vw, 4rem);
 }
 
@@ -549,7 +549,7 @@ main {
   display: grid;
   gap: var(--space-4);
   width: 100%;
-  max-width: 980px;
+  max-width: 920px;
   border-block: 1px solid var(--line);
   background: rgba(14, 13, 10, 0.72);
   box-shadow: none;
@@ -676,19 +676,24 @@ main {
   position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5);
+  gap: 0;
   width: 100%;
-  max-width: 1180px;
+  max-width: 1100px;
   justify-self: center;
-  margin-top: clamp(3rem, 10vh, 7rem);
-  padding-top: clamp(2rem, 6vw, 4rem);
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  margin-top: clamp(1rem, 4vh, 3rem);
 }
 
 .product-section {
   display: grid;
   gap: var(--space-2);
-  border-top: 1px solid var(--line);
-  padding-top: var(--space-5);
+  align-content: start;
+  min-height: 100%;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: clamp(1.1rem, 2.6vw, 1.5rem);
+  background: rgba(14, 13, 10, 0.42);
 }
 
 .product-section h2,
@@ -698,6 +703,28 @@ main {
 
 .product-section p {
   color: var(--muted);
+}
+
+.home-security-model {
+  width: 100%;
+  max-width: 1100px;
+  justify-self: center;
+}
+
+.home-security-model .disclosure-panel {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.home-security-model .disclosure-body {
+  padding: 0;
+}
+
+.home-security-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
 }
 
 .eyebrow {
@@ -2563,6 +2590,7 @@ dd {
   .compact-filters,
   .minimal-home .hero-content,
   .product-story,
+  .home-security-grid,
   .two,
   .listing-form-row.two-up,
   .listing-form-row.publish-row,

@@ -6,6 +6,8 @@ Create a display name and passphrase. AgoraMesh generates a Nostr-compatible key
 
 Back up your identity. Losing the private key means losing the identity.
 
+AgoraMesh-generated identities are standard Nostr identities. The Profile page shows the public `npub` for use in other clients. If the local identity is unlocked, the advanced export section can reveal the private `nsec`; anyone with that `nsec` controls the identity, so use it only for deliberate migration to another trusted Nostr client. External signer identities such as Amber or NIP-07 extensions cannot export `nsec` from AgoraMesh because the private key never enters the app.
+
 The home screen is a public landing page with primary Marketplace, Create listing, and existing Nostr account actions. It explains AgoraMesh as public Nostr marketplace discovery plus private local trade coordination without turning the first screen into setup status.
 
 Readiness summaries on Profile and Settings show which common steps are ready, missing, or optional. They are computed from local data only and do not contact relays.

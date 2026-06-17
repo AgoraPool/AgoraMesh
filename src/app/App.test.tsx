@@ -1069,7 +1069,7 @@ describe('production readiness UI', () => {
     expect(card.querySelector('img')).toHaveAttribute('src', 'https://shop.example/listing.webp');
   });
 
-  it('orders default marketplace cards with image listings first and uses the title as the no-image fallback', async () => {
+  it('keeps newest default ordering and filters listings with images on demand', async () => {
     await db.listings.bulkPut([
       listingFixture({
         id: 'newer_no_image',
@@ -1091,11 +1091,19 @@ describe('production readiness UI', () => {
 
     expect(await screen.findByRole('heading', { name: 'Older listing with image' })).toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: 'Newer listing without image' })).toBeInTheDocument();
-    const cardTitles = [...document.querySelectorAll('.listing-card h2')].map((heading) => heading.textContent);
-    expect(cardTitles.slice(0, 2)).toEqual(['Older listing with image', 'Newer listing without image']);
+    let cardTitles = [...document.querySelectorAll('.listing-card h2')].map((heading) => heading.textContent);
+    expect(cardTitles.slice(0, 2)).toEqual(['Newer listing without image', 'Older listing with image']);
 
     const noImageCard = screen.getByRole('heading', { name: 'Newer listing without image' }).closest('article') as HTMLElement;
     expect(noImageCard.querySelector('.listing-card-thumb-title')).toHaveAttribute('data-title', 'Newer listing without image');
+
+    fireEvent.click(screen.getByRole('button', { name: 'More filters' }));
+    fireEvent.click(screen.getByLabelText('Listings with images only'));
+
+    expect(screen.queryByRole('heading', { name: 'Newer listing without image' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Older listing with image' })).toBeInTheDocument();
+    cardTitles = [...document.querySelectorAll('.listing-card h2')].map((heading) => heading.textContent);
+    expect(cardTitles[0]).toBe('Older listing with image');
   });
 
   it('shows a simple listing image flipper and image count marker', async () => {

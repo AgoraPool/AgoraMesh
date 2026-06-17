@@ -705,6 +705,17 @@ main {
   color: var(--muted);
 }
 
+.identity-portability-panel {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 980px;
+  margin-inline: auto;
+}
+
+.identity-portability-panel input[readonly] {
+  font-family: var(--font-mono);
+}
+
 .home-security-model {
   width: 100%;
   max-width: 1100px;

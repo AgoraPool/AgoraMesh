@@ -27,6 +27,7 @@ import {
   UserRound
 } from 'lucide-react';
 import type { Table } from 'dexie';
+import { nip19 } from 'nostr-tools';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { useI18n } from '../i18n/I18nProvider';
 import { attestationFromSignedEvent, createSignedAttestation, prepareAttestationEvent, verifyAttestation, type AttestationSignedEvent } from '../lib/crypto/attestations';
@@ -892,6 +893,21 @@ function isActiveMarketplaceListing(listing: Listing): boolean {
 
 function publicKeysMatch(left?: string, right?: string): boolean {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
+function bytesFromHex(hex: string): Uint8Array {
+  const normalized = hex.trim();
+  if (!/^[0-9a-f]{64}$/i.test(normalized)) throw new Error('Expected 32-byte hex private key.');
+  return new Uint8Array(normalized.match(/.{1,2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? []);
+}
+
+function npubForPublicKey(publicKey?: string): string {
+  if (!publicKey || !/^[0-9a-f]{64}$/i.test(publicKey)) return '';
+  return nip19.npubEncode(publicKey.toLowerCase());
+}
+
+function nsecForPrivateKey(privateKeyHex: string): string {
+  return nip19.nsecEncode(bytesFromHex(privateKeyHex));
 }
 
 function reviewItemContainsExpiredListing(item: NostrReviewItem): boolean {
@@ -2701,6 +2717,7 @@ export function App(): ReactNode {
             }}
           />
         ) : null}
+        {page === 'profile' ? <IdentityPortabilityPanel identity={identity} privateKeyHex={privateKeyHex} /> : null}
       </main>
     </div>
   );
@@ -2840,6 +2857,64 @@ function ProductSection({
         </div>
       ) : null}
     </article>
+  );
+}
+
+function IdentityPortabilityPanel({ identity, privateKeyHex }: { identity?: IdentityRecord; privateKeyHex: string }): ReactNode {
+  const { t } = useI18n();
+  const [nsecVisible, setNsecVisible] = useState(false);
+  if (!identity) return null;
+  const npub = npubForPublicKey(identity.publicKey);
+  const canExportNsec = Boolean(privateKeyHex && 'encryptedPrivateKey' in identity);
+  const nsec = canExportNsec && nsecVisible ? nsecForPrivateKey(privateKeyHex) : '';
+  const copyText = (value: string): void => {
+    if (!value) return;
+    void navigator.clipboard?.writeText(value);
+  };
+  return (
+    <section className="card identity-portability-panel">
+      <div className="section-header">
+        <div>
+          <p className="eyebrow">{t('identity.portabilityEyebrow')}</p>
+          <h2>{t('identity.portabilityTitle')}</h2>
+          <p>{t('identity.portabilityBody')}</p>
+        </div>
+      </div>
+      <div className="inline-form">
+        <label>
+          {t('identity.npub')}
+          <input readOnly value={npub || identity.publicKey} />
+        </label>
+        <button className="subtle" onClick={() => copyText(npub || identity.publicKey)} type="button">
+          {t('identity.copyNpub')}
+        </button>
+      </div>
+      <DisclosurePanel title={t('identity.exportNsec')}>
+        <div className="notice warning">
+          <p>{t('identity.nsecWarning')}</p>
+        </div>
+        {canExportNsec ? (
+          <>
+            <button className="subtle" onClick={() => setNsecVisible((visible) => !visible)} type="button">
+              {nsecVisible ? t('identity.hideNsec') : t('identity.revealNsec')}
+            </button>
+            {nsecVisible ? (
+              <div className="inline-form">
+                <label>
+                  {t('identity.nsec')}
+                  <input readOnly value={nsec} />
+                </label>
+                <button className="subtle" onClick={() => copyText(nsec)} type="button">
+                  {t('identity.copyNsec')}
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="muted">{'encryptedPrivateKey' in identity ? t('identity.unlockForNsec') : t('identity.signerNoNsec')}</p>
+        )}
+      </DisclosurePanel>
+    </section>
   );
 }
 
@@ -4512,6 +4587,7 @@ function BrowsePage({
   const [trust, setTrust] = useState<TrustFilter>('all');
   const [support, setSupport] = useState<SupportFilter>('all');
   const [hidden, setHidden] = useState<HiddenFilter>('visible');
+  const [imageOnly, setImageOnly] = useState(false);
   const [curationFilter, setCurationFilter] = useState('all');
   const [showExpired, setShowExpired] = useState(false);
   const [visibleLimit, setVisibleLimit] = useState(marketplacePageSize);
@@ -4557,7 +4633,7 @@ function BrowsePage({
 
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
-  }, [category, curationFilter, fulfillment, hidden, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type]);
+  }, [category, curationFilter, fulfillment, hidden, imageOnly, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type]);
 
   useEffect(() => {
     if (activeBrowseTab !== 'discover') return;
@@ -4598,6 +4674,7 @@ function BrowsePage({
       .filter(({ listing }) => (type === 'all' ? true : listing.type === type))
       .filter(({ listing }) => paymentMatchesListing(listing, payment))
       .filter(({ listing }) => fulfillmentMatchesListing(listing, fulfillment))
+      .filter(({ listing }) => (imageOnly ? hasListingImage(listing, failedListingImages) : true))
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
@@ -4607,9 +4684,8 @@ function BrowsePage({
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
     if (sort === 'expiring') return ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt));
-    if (query.trim()) return ranked;
-    return ranked.sort((left, right) => Number(hasListingImage(right.listing, failedListingImages)) - Number(hasListingImage(left.listing, failedListingImages)));
-  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
+    return ranked;
+  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, imageOnly, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -4628,6 +4704,7 @@ function BrowsePage({
       .filter(({ listing }) => (type === 'all' ? true : listing.type === type))
       .filter(({ listing }) => paymentMatchesListing(listing, payment))
       .filter(({ listing }) => fulfillmentMatchesListing(listing, fulfillment))
+      .filter(({ listing }) => (imageOnly ? hasListingImage(listing, failedListingImages) : true))
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
@@ -4649,6 +4726,7 @@ function BrowsePage({
     fulfillment !== 'all' ? `${t('listing.fulfillment')}: ${t(`fulfillment.${fulfillment}`)}` : undefined,
     payment !== 'all' ? `${t('listing.paymentIntentMethod')}: ${paymentBadgeLabel(payment as PaymentPreference, t)}` : undefined,
     sort !== 'newest' ? `${t('common.sort')}: ${t('common.expiring')}` : undefined,
+    imageOnly ? t('marketplace.imagesOnly') : undefined,
     source !== syncSettings.defaultBrowseSource ? `${t('sync.source')}: ${source}` : undefined,
     trust !== 'all' ? `${t('sync.trust')}: ${trust}` : undefined,
     support !== 'all' ? `${t('support.filter')}: ${supportFilterLabel(support, t)}` : undefined,
@@ -4661,13 +4739,15 @@ function BrowsePage({
     setPayment('all');
     setFulfillment('all');
     setRegion('');
-    setSort('newest');
+                        setSort('newest');
+                        setImageOnly(false);
     setSource(syncSettings.defaultBrowseSource);
     setTrust('all');
     setSupport('all');
     setHidden('visible');
     setCurationFilter('all');
-    setShowExpired(false);
+                        setShowExpired(false);
+                        setImageOnly(false);
   };
   const applyMarketplacePreset = (preset: MarketplaceFilterPreset): void => {
     resetAdvancedFilters();
@@ -5007,6 +5087,10 @@ function BrowsePage({
                     <option value="newest">{t('common.newest')}</option>
                     <option value="expiring">{t('common.expiring')}</option>
                   </select>
+                  <span className="checkbox-row">
+                    <input aria-label={t('marketplace.imagesOnly')} type="checkbox" checked={imageOnly} onChange={(event) => setImageOnly(event.target.checked)} />
+                    <span>{t('marketplace.imagesOnly')}</span>
+                  </span>
                 </div>
               </section>
               <section className="filter-drawer-group" aria-labelledby="marketplace-source-filters">

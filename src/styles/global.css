@@ -1219,8 +1219,10 @@ dd {
 .supporter-badge {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 0.35rem;
   width: fit-content;
+  max-width: 100%;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
   border-radius: 0;
   color: var(--accent);
@@ -1230,6 +1232,7 @@ dd {
   font-weight: 800;
   line-height: 1.2;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .supporter-badge.compact {
@@ -1596,6 +1599,49 @@ dd {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: transparent;
+}
+
+.profile-workflow-section {
+  max-width: 980px;
+}
+
+.section-heading {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.section-heading h2,
+.section-heading p {
+  margin: 0;
+}
+
+.section-heading p {
+  color: var(--muted);
+  max-width: 760px;
+}
+
+.profile-onboarding-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.9fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.profile-avatar-editor-large {
+  align-items: flex-start;
+}
+
+.profile-avatar-editor-large .avatar-circle {
+  width: 4.25rem;
+  height: 4.25rem;
+  font-size: 1.25rem;
+}
+
+.copy-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: end;
 }
 
 .profile-card-heading h2 {
@@ -2226,6 +2272,12 @@ dd {
   margin-top: auto;
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+.listing-card-seller > span:not(.avatar-circle):not(.supporter-badge) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .listing-price-hero {
@@ -3046,6 +3098,11 @@ dd {
   .identity-summary {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .profile-onboarding-grid,
+  .copy-field {
+    grid-template-columns: 1fr;
   }
 
   .dm-toolbar,

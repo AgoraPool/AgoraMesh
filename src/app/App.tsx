@@ -2,6 +2,7 @@ import {
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Download,
   Eye,
   EyeOff,
@@ -240,7 +241,7 @@ type RouteTarget =
   | 'settings:inbox';
 type BrowseTab = 'discover' | 'create' | 'mine';
 type SettingsTab = 'account' | 'relays' | 'cache' | 'trust' | 'media' | 'backup' | 'diagnostics';
-type ProfileTab = 'identity' | 'publicProfile' | 'backup';
+type ProfileTab = 'identity' | 'publicProfile' | 'contactPayments' | 'mediator' | 'publish' | 'advanced';
 type TradeTab = 'agreement' | 'mediator' | 'dispute' | 'outcome';
 type ReputationTab = 'create' | 'browse' | 'context';
 type NextStep = { body: string; actions: { label: string; page: RouteTarget }[] };
@@ -844,6 +845,16 @@ function supportReceiptForPublicKey(publicKey: string | undefined, receipts: Ope
   return receipts
     .filter((receipt) => receipt.payerPublicKey.toLowerCase() === normalized)
     .sort((left, right) => right.validatedAt.localeCompare(left.validatedAt))[0];
+}
+
+function supportReceiptForPublicKeys(publicKeys: Array<string | undefined>, receipts: OperatorSupportReceipt[]): OperatorSupportReceipt | undefined {
+  const matches = publicKeys
+    .flatMap((publicKey) => {
+      const receipt = supportReceiptForPublicKey(publicKey, receipts);
+      return receipt ? [receipt] : [];
+    })
+    .sort((left, right) => right.validatedAt.localeCompare(left.validatedAt));
+  return matches[0];
 }
 
 function supportFilterMatches(publicKey: string, receipts: OperatorSupportReceipt[], filter: SupportFilter): boolean {
@@ -2717,7 +2728,6 @@ export function App(): ReactNode {
             }}
           />
         ) : null}
-        {page === 'profile' ? <IdentityPortabilityPanel identity={identity} privateKeyHex={privateKeyHex} /> : null}
       </main>
     </div>
   );
@@ -2857,64 +2867,6 @@ function ProductSection({
         </div>
       ) : null}
     </article>
-  );
-}
-
-function IdentityPortabilityPanel({ identity, privateKeyHex }: { identity?: IdentityRecord; privateKeyHex: string }): ReactNode {
-  const { t } = useI18n();
-  const [nsecVisible, setNsecVisible] = useState(false);
-  if (!identity) return null;
-  const npub = npubForPublicKey(identity.publicKey);
-  const canExportNsec = Boolean(privateKeyHex && 'encryptedPrivateKey' in identity);
-  const nsec = canExportNsec && nsecVisible ? nsecForPrivateKey(privateKeyHex) : '';
-  const copyText = (value: string): void => {
-    if (!value) return;
-    void navigator.clipboard?.writeText(value);
-  };
-  return (
-    <section className="card identity-portability-panel">
-      <div className="section-header">
-        <div>
-          <p className="eyebrow">{t('identity.portabilityEyebrow')}</p>
-          <h2>{t('identity.portabilityTitle')}</h2>
-          <p>{t('identity.portabilityBody')}</p>
-        </div>
-      </div>
-      <div className="inline-form">
-        <label>
-          {t('identity.npub')}
-          <input readOnly value={npub || identity.publicKey} />
-        </label>
-        <button className="subtle" onClick={() => copyText(npub || identity.publicKey)} type="button">
-          {t('identity.copyNpub')}
-        </button>
-      </div>
-      <DisclosurePanel title={t('identity.exportNsec')}>
-        <div className="notice warning">
-          <p>{t('identity.nsecWarning')}</p>
-        </div>
-        {canExportNsec ? (
-          <>
-            <button className="subtle" onClick={() => setNsecVisible((visible) => !visible)} type="button">
-              {nsecVisible ? t('identity.hideNsec') : t('identity.revealNsec')}
-            </button>
-            {nsecVisible ? (
-              <div className="inline-form">
-                <label>
-                  {t('identity.nsec')}
-                  <input readOnly value={nsec} />
-                </label>
-                <button className="subtle" onClick={() => copyText(nsec)} type="button">
-                  {t('identity.copyNsec')}
-                </button>
-              </div>
-            ) : null}
-          </>
-        ) : (
-          <p className="muted">{'encryptedPrivateKey' in identity ? t('identity.unlockForNsec') : t('identity.signerNoNsec')}</p>
-        )}
-      </DisclosurePanel>
-    </section>
   );
 }
 
@@ -3583,7 +3535,11 @@ function OperatorSupportPanel({
   const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
   const canUseSigner = Boolean(identity && nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase());
   const supportReceipt = supportReceiptForPublicKey(identity?.publicKey, receipts);
-  const supportAttempts = attempts.filter((attempt) => attempt.purpose === 'operator-support' && publicKeysMatch(attempt.badgeSubjectPublicKey, identity?.publicKey));
+  const supportAttempts = attempts.filter(
+    (attempt) =>
+      attempt.purpose === 'operator-support' &&
+      (publicKeysMatch(attempt.badgeSubjectPublicKey, identity?.publicKey) || publicKeysMatch(attempt.buyerPublicKey, identity?.publicKey))
+  );
   const visibleAttempt = activeAttempt ?? supportAttempts[0];
   const walletConnection = nwcConnections[0];
   const walletUnlocked = Boolean(walletConnection && unlockedNwcConnectionIds.includes(walletConnection.id));
@@ -3667,7 +3623,18 @@ function OperatorSupportPanel({
     }
   };
 
-  if (!config.enabled) return null;
+  if (!config.enabled) {
+    return (
+      <section className="operator-support-panel">
+        <div className="row between">
+          <div>
+            <strong>{t('support.title')}</strong>
+            <p className="muted">{t('support.notConfigured')}</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
   if (supportReceipt) {
     return (
       <section className="operator-support-panel">
@@ -4307,11 +4274,11 @@ function ListingPage({
       ? { source: 'local', id: listing.id, listing }
       : { source: 'synced', id: listing.id, recordId: syncedRecord?.id, listing };
   const sellerSummary = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, attestations, syncedAttestations, allowlist);
-  const sellerSupportReceipt = supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts);
   const sellerProfile =
     profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
       ? profile
       : syncedProfiles.find((record) => record.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
+  const sellerSupportReceipt = supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey], operatorSupportReceipts);
   const listingZaps = listingZapReceiptsForListing(listing, listingZapReceipts);
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
@@ -4714,12 +4681,18 @@ function BrowsePage({
     return dedupeMarketplaceListings(filteredRows).duplicates.length;
   }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type]);
   const visibleFiltered = filtered.slice(0, visibleLimit);
-  const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => ({
-    label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}${
-      supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts) ? ` · ${t('support.badge')}` : ''
-    }`,
-    coordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
-  }));
+  const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => {
+    const sellerProfile =
+      profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
+        ? profile
+        : syncedProfiles.find((entry) => entry.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
+    return {
+      label: `${listing.title} · ${categoryLabel(listing.category, t)} · ${rowSource === 'synced' ? t('marketplace.sourceSynced') : t('marketplace.sourceLocal')}${
+        supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey], operatorSupportReceipts) ? ` · ${t('support.badge')}` : ''
+      }`,
+      coordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
+    };
+  });
   const advancedFilterLabels = [
     category !== 'all' ? `${t('common.category')}: ${categoryLabel(category, t)}` : undefined,
     region ? `${t('common.region')}: ${region}` : undefined,
@@ -4884,7 +4857,11 @@ function BrowsePage({
       : listing.visibility;
     const visibleTags = listing.tags.slice(0, 2);
     const seller = sellerSummaryForListing(listing, profile ? [profile] : [], syncedProfiles, [], [], []);
-    const supportReceipt = supportReceiptForPublicKey(listing.authorPublicKey, operatorSupportReceipts);
+    const sellerProfile =
+      profile?.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase()
+        ? profile
+        : syncedProfiles.find((entry) => entry.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
+    const supportReceipt = supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, seller.publicKey], operatorSupportReceipts);
     return (
       <article className="card listing-card" key={listingKey}>
         {renderListingThumb(listing)}
@@ -5926,13 +5903,14 @@ function ProfilePage({
   const localMediator = identity
     ? mediators.find((entry) => entry.publicKey.toLowerCase() === identity.publicKey.toLowerCase())
     : undefined;
-  const [name, setName] = useState(identity?.displayName ?? '');
+  const [name, setName] = useState(profile?.displayName ?? identity?.displayName ?? '');
   const [passphrase, setPassphrase] = useState('');
   const [metadataMessage, setMetadataMessage] = useState('');
   const [profileError, setProfileError] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [avatarFile, setAvatarFile] = useState<File | undefined>();
   const [avatarPreview, setAvatarPreview] = useState('');
+  const [nsecVisible, setNsecVisible] = useState(false);
   const [savedProfileId, setSavedProfileId] = useState<string | undefined>(profile?.id);
   const [savedMediatorId, setSavedMediatorId] = useState<string | undefined>(localMediator?.id);
   const [form, setForm] = useState({
@@ -5942,8 +5920,8 @@ function ProfilePage({
     lnurl: profile?.lnurl ?? '',
     region: profile?.region ?? '',
     languages: profile?.languages?.join(', ') ?? 'en, cs',
-    contactKind: (profile?.contactMethods?.[0]?.kind ?? 'matrix') as ContactKind,
-    contactValue: profile?.contactMethods?.[0]?.value ?? '',
+    contactKind: (profile?.contactMethods?.[0]?.kind ?? 'nostr') as ContactKind,
+    contactValue: profile?.contactMethods?.[0]?.value ?? identity?.publicKey ?? '',
     skills: profile?.skills?.join(', ') ?? '',
     mediatorAvailable: profile?.mediatorAvailable ?? false,
     mediatorSpecialties: localMediator?.specialties.join(', ') ?? '',
@@ -5953,15 +5931,15 @@ function ProfilePage({
     mediatorProcedure: localMediator?.procedure ?? '',
     publicVisibility: profile?.publicVisibility ?? false
   });
-  const [activeProfileTab, setActiveProfileTab] = useState<ProfileTab>(() => (window.location.hash === '#profile:public' ? 'publicProfile' : 'identity'));
+  const [activeProfileTab, setActiveProfileTab] = useState<ProfileTab>(() => (window.location.hash === '#profile:public' ? 'publish' : 'identity'));
   const localIdentity = identityCanUseLocalUnlock(identity);
   const extensionIdentity = identity?.keySource === 'nostr-extension';
   const signerStatus = signerIdentityStatus(identity, nostrSigner);
   const enabledBlossomServer = blossomServers.find((server) => server.enabled);
-  const activeSupportReceipt = supportReceiptForPublicKey(identity?.publicKey ?? profile?.publicKey, operatorSupportReceipts);
+  const activeSupportReceipt = supportReceiptForPublicKeys([profile?.publicKey, identity?.publicKey], operatorSupportReceipts);
 
   useEffect(() => {
-    setName(identity?.displayName ?? '');
+    setName(profile?.displayName ?? identity?.displayName ?? '');
     setSavedProfileId(profile?.id);
     setSavedMediatorId(localMediator?.id);
     setForm({
@@ -5971,8 +5949,8 @@ function ProfilePage({
       lnurl: profile?.lnurl ?? '',
       region: profile?.region ?? '',
       languages: profile?.languages?.join(', ') ?? 'en, cs',
-      contactKind: (profile?.contactMethods?.[0]?.kind ?? 'matrix') as ContactKind,
-      contactValue: profile?.contactMethods?.[0]?.value ?? '',
+      contactKind: (profile?.contactMethods?.[0]?.kind ?? 'nostr') as ContactKind,
+      contactValue: profile?.contactMethods?.[0]?.value ?? identity?.publicKey ?? '',
       skills: profile?.skills?.join(', ') ?? '',
       mediatorAvailable: profile?.mediatorAvailable ?? false,
       mediatorSpecialties: localMediator?.specialties.join(', ') ?? '',
@@ -5982,11 +5960,11 @@ function ProfilePage({
       mediatorProcedure: localMediator?.procedure ?? '',
       publicVisibility: profile?.publicVisibility ?? false
     });
-  }, [identity?.displayName, identity?.id, localMediator?.id, localMediator?.updatedAt, profile?.id, profile?.updatedAt]);
+  }, [identity?.displayName, identity?.id, identity?.publicKey, localMediator?.id, localMediator?.updatedAt, profile?.displayName, profile?.id, profile?.updatedAt]);
 
   useEffect(() => {
     const onHash = (): void => {
-      if (window.location.hash === '#profile:public') setActiveProfileTab('publicProfile');
+      if (window.location.hash === '#profile:public') setActiveProfileTab('publish');
     };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
@@ -6228,6 +6206,65 @@ function ProfilePage({
       : privateKeyHex
         ? t('identity.unlocked')
         : t('identity.lockedCompact');
+  const mediatorReadiness: ReadinessItem[] = [
+    {
+      done: form.mediatorAvailable,
+      label: t('profile.mediatorAvailable'),
+      detail: form.mediatorAvailable ? t('profile.mediatorEnabled') : t('profile.mediatorDisabled')
+    },
+    {
+      done: Boolean(localMediator || form.mediatorSpecialties.trim()),
+      label: t('mediator.specialties'),
+      detail: localMediator?.specialties.join(', ') || form.mediatorSpecialties.trim() || t('readiness.needsAttention')
+    },
+    {
+      done: Boolean(localMediator || form.mediatorFeeModel.trim()),
+      label: t('mediator.fee'),
+      detail: localMediator?.feeModel || form.mediatorFeeModel.trim() || t('readiness.needsAttention')
+    },
+    {
+      done: Boolean(localMediator || form.mediatorResponseTime.trim()),
+      label: t('mediator.response'),
+      detail: localMediator?.responseTime || form.mediatorResponseTime.trim() || t('readiness.needsAttention')
+    },
+    {
+      done: Boolean(localMediator || form.mediatorProcedure.trim()),
+      label: t('mediator.procedure'),
+      detail: localMediator ? t('profile.mediatorLinked') : form.mediatorProcedure.trim() ? t('readiness.ready') : t('readiness.needsAttention')
+    }
+  ];
+  const publishReadiness: ReadinessItem[] = [
+    {
+      done: Boolean(identity),
+      label: t('readiness.identity'),
+      detail: identity ? t('readiness.identityReady') : t('readiness.identityMissing')
+    },
+    {
+      done: Boolean(profile),
+      label: t('readiness.profile'),
+      detail: profile ? t('readiness.profileReady') : t('readiness.profileMissing')
+    },
+    {
+      done: Boolean(profile?.publicVisibility),
+      label: t('profile.publicVisibility'),
+      detail: profile?.publicVisibility ? t('profile.publicVisibilityReady') : t('profile.publicVisibilityMissing')
+    },
+    {
+      done: !profile?.mediatorAvailable || Boolean(localMediator),
+      label: t('profile.mediatorMarketplace'),
+      detail: profile?.mediatorAvailable
+        ? localMediator
+          ? t('profile.mediatorLinked')
+          : t('profile.mediatorIncomplete')
+        : t('profile.mediatorNotPublished')
+    }
+  ];
+  const profileNpub = npubForPublicKey(identity?.publicKey);
+  const canExportNsec = Boolean(identity && privateKeyHex && identityCanUseLocalUnlock(identity));
+  const visibleNsec = canExportNsec && nsecVisible ? nsecForPrivateKey(privateKeyHex) : '';
+  const copyToClipboard = (value: string): void => {
+    void navigator.clipboard?.writeText(value);
+  };
 
   return (
     <section className="page">
@@ -6239,28 +6276,40 @@ function ProfilePage({
           tabs={[
             ['identity', t('profile.tab.identity')],
             ['publicProfile', t('profile.tab.public')],
-            ['backup', t('profile.tab.backup')]
+            ['contactPayments', t('profile.tab.contactPayments')],
+            ['mediator', t('profile.tab.mediator')],
+            ['publish', t('profile.tab.publish')],
+            ['advanced', t('profile.tab.advanced')]
           ]}
           onChange={setActiveProfileTab}
         />
 
         {activeProfileTab === 'identity' ? (
-          <section className="settings-section" aria-labelledby="profile-identity">
-            <h2 id="profile-identity">{t('identity.title')}</h2>
+          <section className="settings-section profile-workflow-section" aria-labelledby="profile-identity">
+            <div className="section-heading">
+              <h2 id="profile-identity">{t('identity.title')}</h2>
+              <p>{t('profile.identityBody')}</p>
+            </div>
             {identity ? (
               <>
                 <article className="identity-summary">
                   <div>
                     <div className="row">
-                      <strong>{identity.displayName}</strong>
+                      <strong>{profile?.displayName || identity.displayName}</strong>
                       <SupporterBadge receipt={activeSupportReceipt} />
                     </div>
                     <p className="muted">
                       {extensionIdentity ? t('identity.sourceExtension') : t('identity.sourceLocal')} · {identityStatusText}
                     </p>
-                    <p className="key" title={t('common.publicKey')}>
-                      {identity.publicKey}
-                    </p>
+                    <label>
+                      {t('identity.npub')}
+                      <div className="copy-field">
+                        <input readOnly value={profileNpub || identity.publicKey} />
+                        <button className="subtle" onClick={() => copyToClipboard(profileNpub || identity.publicKey)} type="button">
+                          <Copy size={16} /> {t('identity.copyNpub')}
+                        </button>
+                      </div>
+                    </label>
                   </div>
                   <div className="actions small">
                     {extensionIdentity ? (
@@ -6291,59 +6340,42 @@ function ProfilePage({
                     </button>
                   </div>
                 ) : null}
-                <DisclosurePanel title={t('guided.statusDetails')}>
-                  <PageStatusDisclosure title={t('readiness.identityProfile')} items={identityReadiness} />
-                  {localIdentity && !identityBackedUp ? <p className="muted">{t('hint.backupNext')}</p> : null}
-                  <DisclosurePanel title={t('identity.metadataTitle')}>
-                    <p className="muted">{t('identity.metadataBody')}</p>
-                    <button onClick={() => void fetchMetadata()} type="button">
-                      <Download size={16} /> {t('identity.metadataFetch')}
-                    </button>
-                    {metadataMessage ? <StatusMessage>{metadataMessage}</StatusMessage> : null}
-                  </DisclosurePanel>
-                  <DisclosurePanel title={t('ui.advanced')}>
-                    <SafetyNotice>{t('identity.forgetBody')}</SafetyNotice>
-                    <button className="danger" onClick={() => void forgetIdentity()} type="button">
-                      <LockKeyhole size={16} /> {t('identity.forget')}
-                    </button>
-                  </DisclosurePanel>
-                </DisclosurePanel>
               </>
             ) : (
               <>
-                <section className="identity-summary">
-                  <div>
-                    <strong>{t('identity.existingTitle')}</strong>
-                    <p className="muted">{t('identity.existingBodyCompact')}</p>
-                    <label>
-                      {t('common.displayName')}
-                      <input placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
-                    </label>
-                  </div>
-                  <div className="actions small">
-                    <button onClick={() => void useExistingNostrAccount()} type="button">
-                      <KeyRound size={16} /> {t('identity.connectExisting')}
-                    </button>
-                  </div>
-                  <NostrConnectPairingPanel
+                <div className="profile-onboarding-grid">
+                  <section className="identity-summary">
+                    <div>
+                      <strong>{t('identity.existingTitle')}</strong>
+                      <p className="muted">{t('identity.existingBody')}</p>
+                      <label>
+                        {t('common.displayName')}
+                        <input placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
+                      </label>
+                    </div>
+                    <div className="actions small">
+                      <button onClick={() => void useExistingNostrAccount()} type="button">
+                        <KeyRound size={16} /> {t('identity.connectExisting')}
+                      </button>
+                    </div>
+                  </section>
+                  <SignerStatusStrip
+                    status={signerStatus}
                     relays={relays}
-                    onConnected={(state) => {
+                    onConnect={() => void onConnectSigner()}
+                    onNostrConnectConnected={(state) => {
                       onNostrConnectConnected(state);
                       void onUseConnectedSignerAsIdentity(name || profile?.displayName || undefined, state);
                     }}
+                    onUseAsIdentity={() => void onUseConnectedSignerAsIdentity(name || profile?.displayName || undefined)}
                   />
-                </section>
+                </div>
                 <DisclosurePanel title={t('identity.generateTitle')}>
                   <form className="stack-form" onSubmit={(event) => void create(event)}>
                     <p className="muted">{t('identity.generateBody')}</p>
                     <label>
                       {t('common.displayName')}
-                      <input
-                        required
-                        placeholder={t('placeholder.displayName')}
-                        value={name}
-                        onChange={(event) => setName(event.target.value)}
-                      />
+                      <input required placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
                     </label>
                     <label>
                       {t('common.passphrase')}
@@ -6360,35 +6392,23 @@ function ProfilePage({
                     <button type="submit">{t('identity.create')}</button>
                   </form>
                 </DisclosurePanel>
-                <DisclosurePanel title={t('guided.statusDetails')}>
-                  <SignerStatusStrip
-                    status={signerStatus}
-                    relays={relays}
-                    onConnect={() => void onConnectSigner()}
-                    onNostrConnectConnected={onNostrConnectConnected}
-                    onUseAsIdentity={() => void onUseConnectedSignerAsIdentity()}
-                  />
-                  <PageStatusDisclosure title={t('readiness.identityProfile')} items={identityReadiness} />
-                </DisclosurePanel>
               </>
             )}
           </section>
         ) : null}
 
         {activeProfileTab === 'publicProfile' ? (
-          <form className="settings-section" aria-labelledby="profile-public" onSubmit={(event) => void saveProfile(event)}>
-            <h2 id="profile-public">{t('profile.title')}</h2>
-            <DisclosurePanel title={t('ui.whyMatters')}>
-              <InlineHelp>{t('help.profile')}</InlineHelp>
-            </DisclosurePanel>
-            <PageStatusDisclosure title={t('profile.marketplaceReadiness')} items={profileReadiness} />
+          <form className="settings-section profile-workflow-section" aria-labelledby="profile-public" onSubmit={(event) => void saveProfile(event)}>
+            <div className="section-heading">
+              <h2 id="profile-public">{t('profile.publicTitle')}</h2>
+              <p>{t('profile.publicBody')}</p>
+            </div>
             {profileError ? (
               <p className="warning" role="alert">
                 {profileError}
               </p>
             ) : null}
-            {profile?.mediatorAvailable && !localMediator ? <ActionHint>{t('profile.mediatorIncomplete')}</ActionHint> : null}
-            <div className="profile-avatar-editor">
+            <div className="profile-avatar-editor profile-avatar-editor-large">
               <AvatarCircle avatarUrl={avatarPreview || form.avatarUrl} label={name || identity?.displayName || t('profile.title')} />
               <div>
                 <div className="row">
@@ -6398,6 +6418,75 @@ function ProfilePage({
                 <p className="muted">{t('profile.avatarHelp')}</p>
               </div>
             </div>
+            <div className="two">
+              <label>
+                {t('common.displayName')}
+                <input placeholder={t('placeholder.displayName')} value={name} onChange={(event) => setName(event.target.value)} />
+              </label>
+              <label>
+                {t('profile.region')}
+                <input placeholder={t('placeholder.region')} value={form.region} onChange={(event) => setForm({ ...form, region: event.target.value })} />
+              </label>
+            </div>
+            <label>
+              {t('profile.bio')}
+              <textarea placeholder={t('placeholder.profileBio')} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} />
+            </label>
+            <div className="two">
+              <label>
+                {t('profile.languages')}
+                <input placeholder={t('placeholder.languages')} value={form.languages} onChange={(event) => setForm({ ...form, languages: event.target.value })} />
+              </label>
+              <label>
+                {t('profile.skills')}
+                <input placeholder={t('placeholder.skills')} value={form.skills} onChange={(event) => setForm({ ...form, skills: event.target.value })} />
+              </label>
+            </div>
+            <DisclosurePanel title={t('profile.avatarMedia')}>
+              <label>
+                {t('profile.avatar')}
+                <input placeholder={t('placeholder.avatar')} value={form.avatarUrl} onChange={(event) => setForm({ ...form, avatarUrl: event.target.value })} />
+                <FieldHint>{t('profile.avatarUrlHelp')}</FieldHint>
+              </label>
+              <label>
+                {t('profile.avatarUpload')}
+                <input accept="image/jpeg,image/png,image/webp" type="file" onChange={selectAvatarFile} />
+                <FieldHint>{enabledBlossomServer ? t('profile.avatarUploadHelp') : t('profile.avatarNoBlossomServer')}</FieldHint>
+              </label>
+              {avatarFile && !privateKeyHex && !(nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity?.publicKey.toLowerCase()) ? (
+                <ActionHint>
+                  {t('profile.avatarSignerRequired')}{' '}
+                  <button className="inline-action" onClick={() => void onConnectSigner()} type="button">
+                    {t('signer.connect')}
+                  </button>
+                </ActionHint>
+              ) : null}
+            </DisclosurePanel>
+            <DisclosurePanel title={t('identity.metadataTitle')}>
+              <p className="muted">{t('identity.metadataBody')}</p>
+              <button disabled={!identity} onClick={() => void fetchMetadata()} type="button">
+                <Download size={16} /> {t('identity.metadataFetch')}
+              </button>
+              {metadataMessage ? <StatusMessage>{metadataMessage}</StatusMessage> : null}
+            </DisclosurePanel>
+            <button disabled={!identity || profileSaving} title={!identity ? t('a11y.identityRequired') : undefined} type="submit">
+              {profileSaving ? t('profile.saving') : t('common.save')}
+            </button>
+            {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
+          </form>
+        ) : null}
+
+        {activeProfileTab === 'contactPayments' ? (
+          <form className="settings-section profile-workflow-section" aria-labelledby="profile-contact-payments" onSubmit={(event) => void saveProfile(event)}>
+            <div className="section-heading">
+              <h2 id="profile-contact-payments">{t('profile.contactPaymentsTitle')}</h2>
+              <p>{t('profile.contactPaymentsBody')}</p>
+            </div>
+            {profileError ? (
+              <p className="warning" role="alert">
+                {profileError}
+              </p>
+            ) : null}
             <OperatorSupportPanel
               config={operatorSupportConfig}
               identity={identity}
@@ -6415,54 +6504,10 @@ function ProfilePage({
               onUnlockNwcConnection={onUnlockNwcConnection}
               onPayWithNwc={onPayLightningAttemptWithNwc}
             />
-            <label>
-              {t('profile.bio')}
-              <textarea placeholder={t('placeholder.profileBio')} value={form.bio} onChange={(event) => setForm({ ...form, bio: event.target.value })} />
-            </label>
-            <label>
-              {t('profile.avatar')}
-              <input placeholder={t('placeholder.avatar')} value={form.avatarUrl} onChange={(event) => setForm({ ...form, avatarUrl: event.target.value })} />
-              <FieldHint>{t('profile.avatarUrlHelp')}</FieldHint>
-            </label>
-            <label>
-              {t('profile.avatarUpload')}
-              <input accept="image/jpeg,image/png,image/webp" type="file" onChange={selectAvatarFile} />
-              <FieldHint>{enabledBlossomServer ? t('profile.avatarUploadHelp') : t('profile.avatarNoBlossomServer')}</FieldHint>
-            </label>
+            {form.contactKind !== 'nostr' ? <ActionHint>{t('profile.nostrContactRecommended')}</ActionHint> : null}
             <div className="two">
               <label>
-                {t('profile.lightningAddress')}
-                <input
-                  placeholder={t('placeholder.lightningAddress')}
-                  value={form.lightningAddress}
-                  onChange={(event) => setForm({ ...form, lightningAddress: event.target.value })}
-                />
-              </label>
-              <label>
-                {t('profile.lnurl')}
-                <input placeholder={t('placeholder.lnurl')} value={form.lnurl} onChange={(event) => setForm({ ...form, lnurl: event.target.value })} />
-              </label>
-            </div>
-            <FieldHint>{t('profile.lightningHelp')}</FieldHint>
-            {avatarFile && !privateKeyHex && !(nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity?.publicKey.toLowerCase()) ? (
-              <ActionHint>
-                {t('profile.avatarSignerRequired')}{' '}
-                <button className="inline-action" onClick={() => void onConnectSigner()} type="button">
-                  {t('signer.connect')}
-                </button>
-              </ActionHint>
-            ) : null}
-            <label>
-              {t('profile.region')}
-              <input placeholder={t('placeholder.region')} value={form.region} onChange={(event) => setForm({ ...form, region: event.target.value })} />
-            </label>
-            <label>
-              {t('profile.languages')}
-              <input placeholder={t('placeholder.languages')} value={form.languages} onChange={(event) => setForm({ ...form, languages: event.target.value })} />
-            </label>
-            <div className="two">
-              <label>
-                {t('profile.contacts')}
+                {t('profile.contactType')}
                 <select
                   value={form.contactKind}
                   onChange={(event) => {
@@ -6474,27 +6519,59 @@ function ProfilePage({
                     });
                   }}
                 >
+                  <option value="nostr">Nostr</option>
                   <option value="matrix">Matrix</option>
                   <option value="simplex">SimpleX</option>
                   <option value="session">Session</option>
                   <option value="email">Email</option>
-                  <option value="nostr">Nostr</option>
                   <option value="custom">Custom</option>
                 </select>
               </label>
               <label>
-                {t('profile.contacts')}
+                {t('profile.contactValue')}
                 <input
-                  placeholder={t('placeholder.contact')}
+                  placeholder={form.contactKind === 'nostr' ? t('placeholder.nostrContact') : t('placeholder.contact')}
                   value={form.contactValue}
                   onChange={(event) => setForm({ ...form, contactValue: event.target.value })}
                 />
               </label>
             </div>
-            <label>
-              {t('profile.skills')}
-              <input placeholder={t('placeholder.skills')} value={form.skills} onChange={(event) => setForm({ ...form, skills: event.target.value })} />
-            </label>
+            <fieldset className="fieldset-list">
+              <legend>{t('profile.publicPaymentInfo')}</legend>
+              <FieldHint>{t('profile.lightningHelp')}</FieldHint>
+              <div className="two">
+                <label>
+                  {t('profile.lightningAddress')}
+                  <input
+                    placeholder={t('placeholder.lightningAddress')}
+                    value={form.lightningAddress}
+                    onChange={(event) => setForm({ ...form, lightningAddress: event.target.value })}
+                  />
+                </label>
+                <label>
+                  {t('profile.lnurl')}
+                  <input placeholder={t('placeholder.lnurl')} value={form.lnurl} onChange={(event) => setForm({ ...form, lnurl: event.target.value })} />
+                </label>
+              </div>
+            </fieldset>
+            <button disabled={!identity || profileSaving} title={!identity ? t('a11y.identityRequired') : undefined} type="submit">
+              {profileSaving ? t('profile.saving') : t('common.save')}
+            </button>
+            {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
+          </form>
+        ) : null}
+
+        {activeProfileTab === 'mediator' ? (
+          <form className="settings-section profile-workflow-section" aria-labelledby="profile-mediator" onSubmit={(event) => void saveProfile(event)}>
+            <div className="section-heading">
+              <h2 id="profile-mediator">{t('profile.mediatorTitle')}</h2>
+              <p>{t('profile.mediatorBody')}</p>
+            </div>
+            {profileError ? (
+              <p className="warning" role="alert">
+                {profileError}
+              </p>
+            ) : null}
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -6504,57 +6581,83 @@ function ProfilePage({
               {t('profile.mediatorAvailable')}
             </label>
             {form.mediatorAvailable ? (
-              <fieldset className="fieldset-list">
-                <legend>{t('profile.mediatorMarketplace')}</legend>
-                <InlineHelp>{t('profile.mediatorMarketplaceHelp')}</InlineHelp>
-                <label>
-                  {t('mediator.specialties')}
-                  <input
-                    required={form.mediatorAvailable}
-                    placeholder={t('placeholder.mediatorSpecialties')}
-                    value={form.mediatorSpecialties}
-                    onChange={(event) => setForm({ ...form, mediatorSpecialties: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {t('mediator.fee')}
-                  <input
-                    required={form.mediatorAvailable}
-                    placeholder={t('placeholder.mediatorFee')}
-                    value={form.mediatorFeeModel}
-                    onChange={(event) => setForm({ ...form, mediatorFeeModel: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {t('mediator.style')}
-                  <textarea
-                    required={form.mediatorAvailable}
-                    placeholder={t('placeholder.mediatorStyle')}
-                    value={form.mediatorStyle}
-                    onChange={(event) => setForm({ ...form, mediatorStyle: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {t('mediator.response')}
-                  <input
-                    required={form.mediatorAvailable}
-                    placeholder={t('placeholder.mediatorResponse')}
-                    value={form.mediatorResponseTime}
-                    onChange={(event) => setForm({ ...form, mediatorResponseTime: event.target.value })}
-                  />
-                </label>
-                <label>
-                  {t('mediator.procedure')}
-                  <textarea
-                    required={form.mediatorAvailable}
-                    placeholder={t('placeholder.mediatorProcedure')}
-                    value={form.mediatorProcedure}
-                    onChange={(event) => setForm({ ...form, mediatorProcedure: event.target.value })}
-                  />
-                  <FieldHint>{t('hint.mediatorProcedure')}</FieldHint>
-                </label>
-              </fieldset>
+              <>
+                <ReadinessSummary title={t('profile.mediatorChecklist')} items={mediatorReadiness} />
+                <ActionHint>{localMediator ? t('profile.mediatorLinkedBody') : t('profile.mediatorLocalLinkBody')}</ActionHint>
+                <fieldset className="fieldset-list">
+                  <legend>{t('profile.mediatorMarketplace')}</legend>
+                  <InlineHelp>{t('profile.mediatorMarketplaceHelp')}</InlineHelp>
+                  <label>
+                    {t('mediator.specialties')}
+                    <input
+                      required={form.mediatorAvailable}
+                      placeholder={t('placeholder.mediatorSpecialties')}
+                      value={form.mediatorSpecialties}
+                      onChange={(event) => setForm({ ...form, mediatorSpecialties: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    {t('mediator.fee')}
+                    <input
+                      required={form.mediatorAvailable}
+                      placeholder={t('placeholder.mediatorFee')}
+                      value={form.mediatorFeeModel}
+                      onChange={(event) => setForm({ ...form, mediatorFeeModel: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    {t('mediator.style')}
+                    <textarea
+                      required={form.mediatorAvailable}
+                      placeholder={t('placeholder.mediatorStyle')}
+                      value={form.mediatorStyle}
+                      onChange={(event) => setForm({ ...form, mediatorStyle: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    {t('mediator.response')}
+                    <input
+                      required={form.mediatorAvailable}
+                      placeholder={t('placeholder.mediatorResponse')}
+                      value={form.mediatorResponseTime}
+                      onChange={(event) => setForm({ ...form, mediatorResponseTime: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    {t('mediator.procedure')}
+                    <textarea
+                      required={form.mediatorAvailable}
+                      placeholder={t('placeholder.mediatorProcedure')}
+                      value={form.mediatorProcedure}
+                      onChange={(event) => setForm({ ...form, mediatorProcedure: event.target.value })}
+                    />
+                    <FieldHint>{t('hint.mediatorProcedure')}</FieldHint>
+                  </label>
+                </fieldset>
+              </>
+            ) : (
+              <ActionHint>{t('profile.mediatorDisabledBody')}</ActionHint>
+            )}
+            <button disabled={!identity || profileSaving} title={!identity ? t('a11y.identityRequired') : undefined} type="submit">
+              {profileSaving ? t('profile.saving') : t('common.save')}
+            </button>
+            {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
+          </form>
+        ) : null}
+
+        {activeProfileTab === 'publish' ? (
+          <form className="settings-section profile-workflow-section" aria-labelledby="profile-publish" onSubmit={(event) => void saveProfile(event)}>
+            <div className="section-heading">
+              <h2 id="profile-publish">{t('profile.publishTitle')}</h2>
+              <p>{t('profile.publishBody')}</p>
+            </div>
+            {profileError ? (
+              <p className="warning" role="alert">
+                {profileError}
+              </p>
             ) : null}
+            <ReadinessSummary title={t('profile.marketplaceReadiness')} items={profileReadiness} />
+            <ReadinessSummary title={t('profile.publishReadiness')} items={publishReadiness} />
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -6563,41 +6666,87 @@ function ProfilePage({
               />
               {t('profile.publicVisibility')}
             </label>
-            <button disabled={!identity || profileSaving} title={!identity ? t('a11y.identityRequired') : undefined} type="submit">
-              {profileSaving ? t('profile.saving') : t('common.save')}
-            </button>
-            {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
-            {profile?.publicVisibility ? (
-              <button onClick={() => onPublish(profile)} type="button">
-                <Radio size={16} /> {t('common.publish')}
+            <div className="actions">
+              <button disabled={!identity || profileSaving} title={!identity ? t('a11y.identityRequired') : undefined} type="submit">
+                {profileSaving ? t('profile.saving') : t('common.save')}
               </button>
-            ) : null}
+              <button disabled={!profile?.publicVisibility} onClick={() => profile && onPublish(profile)} type="button">
+                <Radio size={16} /> {t('profile.publishPublicProfile')}
+              </button>
+            </div>
+            {profile?.mediatorAvailable ? <ActionHint>{t('profile.publishMediatorSeparately')}</ActionHint> : null}
+            {!identity ? <ActionHint>{t('hint.disabledIdentity')}</ActionHint> : null}
           </form>
         ) : null}
 
-        {activeProfileTab === 'backup' ? (
-          <section className="settings-section" aria-labelledby="profile-backup">
-            <h2 id="profile-backup">{t('profile.tab.backup')}</h2>
-            <SafetyNotice>{t('identity.lost')}</SafetyNotice>
-            {identity && localIdentity ? (
-              <>
-                <button onClick={exportIdentity} type="button">
-                  <Download size={16} /> {t('identity.export')}
+        {activeProfileTab === 'advanced' ? (
+          <section className="settings-section profile-workflow-section" aria-labelledby="profile-advanced">
+            <div className="section-heading">
+              <h2 id="profile-advanced">{t('profile.advancedTitle')}</h2>
+              <p>{t('profile.advancedBody')}</p>
+            </div>
+            <PageStatusDisclosure title={t('readiness.identityProfile')} items={identityReadiness} />
+            {localIdentity && !identityBackedUp ? <p className="muted">{t('hint.backupNext')}</p> : null}
+            <DisclosurePanel title={t('profile.tab.backup')}>
+              <SafetyNotice>{t('identity.lost')}</SafetyNotice>
+              {identity && localIdentity ? (
+                <>
+                  <button onClick={exportIdentity} type="button">
+                    <Download size={16} /> {t('identity.export')}
+                  </button>
+                  <StatusMessage className={identityBackedUp ? 'ok' : 'warning'}>
+                    {identityBackedUp ? t('identity.backupConfirmed') : t('identity.backupMissing')}
+                  </StatusMessage>
+                </>
+              ) : identity && extensionIdentity ? (
+                <>
+                  <ActionHint>{t('identity.extensionBackup')}</ActionHint>
+                  <button disabled title={t('identity.extensionNoPrivateKey')} type="button">
+                    <Download size={16} /> {t('identity.export')}
+                  </button>
+                </>
+              ) : (
+                <EmptyState title={t('empty.identityTitle')} body={t('empty.identityBody')} />
+              )}
+            </DisclosurePanel>
+            <DisclosurePanel title={t('identity.exportNsec')}>
+              <SafetyNotice>{t('identity.nsecWarning')}</SafetyNotice>
+              {canExportNsec ? (
+                <>
+                  <button className="subtle" onClick={() => setNsecVisible((current) => !current)} type="button">
+                    {nsecVisible ? <EyeOff size={16} /> : <Eye size={16} />} {nsecVisible ? t('identity.hideNsec') : t('identity.revealNsec')}
+                  </button>
+                  {nsecVisible ? (
+                    <label>
+                      {t('identity.nsec')}
+                      <div className="copy-field">
+                        <input readOnly value={visibleNsec} />
+                        <button className="subtle" onClick={() => copyToClipboard(visibleNsec)} type="button">
+                          <Copy size={16} /> {t('identity.copyNsec')}
+                        </button>
+                      </div>
+                    </label>
+                  ) : null}
+                </>
+              ) : (
+                <p className="muted">{identity && localIdentity ? t('identity.unlockForNsec') : t('identity.signerNoNsec')}</p>
+              )}
+            </DisclosurePanel>
+            <DisclosurePanel title={t('identity.metadataTitle')}>
+              <p className="muted">{t('identity.metadataBody')}</p>
+              <button disabled={!identity} onClick={() => void fetchMetadata()} type="button">
+                <Download size={16} /> {t('identity.metadataFetch')}
+              </button>
+              {metadataMessage ? <StatusMessage>{metadataMessage}</StatusMessage> : null}
+            </DisclosurePanel>
+            {identity ? (
+              <DisclosurePanel title={t('identity.forget')}>
+                <SafetyNotice>{t('identity.forgetBody')}</SafetyNotice>
+                <button className="danger" onClick={() => void forgetIdentity()} type="button">
+                  <LockKeyhole size={16} /> {t('identity.forget')}
                 </button>
-                <StatusMessage className={identityBackedUp ? 'ok' : 'warning'}>
-                  {identityBackedUp ? t('identity.backupConfirmed') : t('identity.backupMissing')}
-                </StatusMessage>
-              </>
-            ) : identity && extensionIdentity ? (
-              <>
-                <ActionHint>{t('identity.extensionBackup')}</ActionHint>
-                <button disabled title={t('identity.extensionNoPrivateKey')} type="button">
-                  <Download size={16} /> {t('identity.export')}
-                </button>
-              </>
-            ) : (
-              <EmptyState title={t('empty.identityTitle')} body={t('empty.identityBody')} />
-            )}
+              </DisclosurePanel>
+            ) : null}
           </section>
         ) : null}
       </div>
@@ -6854,7 +7003,7 @@ function MediatorPage({
                 <AvatarCircle avatarUrl={record.payload.avatarUrl} label={record.payload.displayName} />
                 <div>
                   <h2>{record.payload.displayName}</h2>
-                  <SupporterBadge receipt={supportReceiptForPublicKey(record.payload.publicKey, operatorSupportReceipts)} />
+                  <SupporterBadge receipt={supportReceiptForPublicKeys([record.payload.publicKey, record.authorPublicKey], operatorSupportReceipts)} />
                 </div>
               </div>
               <p className="muted">{record.payload.region || t('common.region')} · {record.payload.languages.join(', ')}</p>
@@ -9388,7 +9537,7 @@ function SettingsPage({
                       <AvatarCircle avatarUrl={record.payload.avatarUrl} label={record.payload.displayName} />
                       <div>
                         <h2>{record.payload.displayName}</h2>
-                        <SupporterBadge receipt={supportReceiptForPublicKey(record.payload.publicKey, operatorSupportReceipts)} />
+                        <SupporterBadge receipt={supportReceiptForPublicKeys([record.payload.publicKey, record.authorPublicKey], operatorSupportReceipts)} />
                       </div>
                     </div>
                     <p>{record.payload.bio}</p>

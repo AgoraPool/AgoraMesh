@@ -4552,16 +4552,38 @@ function ListingPage({
       text: `${listing.title} · ${formatListingPrice(listing)}`,
       url: shareUrl
     };
+    const copyShareUrl = async (): Promise<void> => {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = shareUrl;
+      textarea.readOnly = true;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.append(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      textarea.remove();
+      if (!copied) throw new Error('copy failed');
+    };
+
+    setShareStatus('');
     try {
       if (navigator.share) {
         await navigator.share(shareData);
         setShareStatus(t('listing.shareDone'));
         return;
       }
-      await navigator.clipboard?.writeText(shareUrl);
-      setShareStatus(t('listing.shareCopied'));
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
+    }
+
+    try {
+      await copyShareUrl();
+      setShareStatus(t('listing.shareCopied'));
+    } catch {
       setShareStatus(t('listing.shareFailed'));
     }
   };
@@ -4572,11 +4594,7 @@ function ListingPage({
         <button className="subtle" onClick={onBack} type="button">
           {t('listing.backToMarketplace')}
         </button>
-        <button className="subtle" onClick={() => void shareListing()} type="button">
-          <Share2 size={16} /> {t('listing.share')}
-        </button>
       </div>
-      {shareStatus ? <p className="muted compact-meta">{shareStatus}</p> : null}
       {editing && localListing ? (
         <ListingCreatePanel
           identity={identity}
@@ -4657,7 +4675,7 @@ function ListingPage({
               </DisclosurePanel>
             </section>
           </article>
-          <aside className="panel listing-actions">
+          <aside className="listing-actions" aria-label={t('listing.sidebarActions')}>
             <ListingContactPayPanel
               contactTarget={
                 nostrContact
@@ -4688,78 +4706,100 @@ function ListingPage({
               onUnlockNwcConnection={onUnlockNwcConnection}
               onPayLightningAttemptWithNwc={onPayLightningAttemptWithNwc}
             />
-          {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
-            <ListingZapReceiptsPanel
-              receipts={listingZaps}
-              onCheck={() => onCheckListingZapReceipts(listing, sellerProfile)}
-            />
-          ) : null}
-          {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
-            <OperatorSupportPanel
-              config={operatorSupport}
-              identity={identity}
-              privateKeyHex={privateKeyHex}
-              nostrSigner={nostrSigner}
-              relays={relays}
-              attempts={lightningPaymentAttempts}
-              receipts={operatorSupportReceipts}
-              nwcConnections={nwcConnections}
-              unlockedNwcConnectionIds={unlockedNwcConnectionIds}
-              onConnectSigner={onConnectSigner}
-              onCreatePaymentAttempt={onCreateOperatorSupportPaymentAttempt}
-              onCheckReceipt={onCheckOperatorSupportReceipt}
-              onSaveNwcConnection={onSaveNwcConnection}
-              onUnlockNwcConnection={onUnlockNwcConnection}
-              onPayWithNwc={onPayLightningAttemptWithNwc}
-            />
-          ) : null}
-          <button onClick={() => onStartTrade(listingRef)} type="button">
-            <Handshake size={16} /> {t('marketplace.startTrade')}
-          </button>
-          {canReviewSeller ? (
-            <button
-              className="subtle"
-              onClick={() =>
-                onReviewSeller({
-                  subjectPublicKey: listing.authorPublicKey,
-                  role: 'seller',
-                  listingId: listing.id,
-                  listingTitle: listing.title,
-                  listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
-                })
-              }
-              type="button"
-            >
-              <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
-            </button>
-          ) : null}
-          {canEdit ? (
-            <button className="subtle" onClick={() => setEditing(true)} type="button">
-              <Pencil size={16} /> {t('listing.edit')}
-            </button>
-          ) : null}
-          {localListing && listing.visibility === 'public' ? (
-            <DisclosurePanel title={t('listing.publishOptions')}>
-              <PublishReceiptSummaryView summary={receiptSummary} />
-              {!canPublish ? <ActionHint>{t('marketplace.noEnabledRelays')}</ActionHint> : null}
-              <DisclosurePanel title={t('ui.whyMatters')}>
-                <SafetyNotice>{t('safety.publicPublish')}</SafetyNotice>
-                <InlineHelp>{t('safety.nip99Publish')}</InlineHelp>
-              </DisclosurePanel>
-              <button disabled={!canPublish} onClick={() => onPublish(listing)} title={!canPublish ? t('marketplace.noEnabledRelays') : undefined} type="button">
-                <Radio size={16} /> {t('listing.publishNip99')}
-              </button>
-            </DisclosurePanel>
-          ) : null}
-          {syncedRecord ? (
-            <SyncedRecordActions
-              conflict={isRecordConflicted(syncedRecord, conflictGroups)}
-              preferred={isPreferredConflictRecord(syncedRecord, conflictGroups)}
-              record={syncedRecord}
-              onToggleHidden={onToggleHidden}
-            />
-          ) : null}
-        </aside>
+            <section className="listing-action-group" aria-labelledby="listing-actions-primary">
+              <h2 id="listing-actions-primary">{t('listing.actionGroupActions')}</h2>
+              <div className="listing-action-buttons">
+                <button className="subtle" onClick={() => void shareListing()} type="button">
+                  <Share2 size={16} /> {t('listing.share')}
+                </button>
+                <button onClick={() => onStartTrade(listingRef)} type="button">
+                  <Handshake size={16} /> {t('marketplace.startTrade')}
+                </button>
+                {canReviewSeller ? (
+                  <button
+                    className="subtle"
+                    onClick={() =>
+                      onReviewSeller({
+                        subjectPublicKey: listing.authorPublicKey,
+                        role: 'seller',
+                        listingId: listing.id,
+                        listingTitle: listing.title,
+                        listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
+                      })
+                    }
+                    type="button"
+                  >
+                    <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
+                  </button>
+                ) : null}
+                {canEdit ? (
+                  <button className="subtle" onClick={() => setEditing(true)} type="button">
+                    <Pencil size={16} /> {t('listing.edit')}
+                  </button>
+                ) : null}
+              </div>
+              {shareStatus ? <p className="muted compact-meta listing-share-status">{shareStatus}</p> : null}
+            </section>
+            {localListing && listing.visibility === 'public' ? (
+              <section className="listing-action-group" aria-labelledby="listing-actions-publish">
+                <h2 id="listing-actions-publish">{t('listing.actionGroupPublish')}</h2>
+                <DisclosurePanel title={t('listing.publishOptions')}>
+                  <PublishReceiptSummaryView summary={receiptSummary} />
+                  {!canPublish ? <ActionHint>{t('marketplace.noEnabledRelays')}</ActionHint> : null}
+                  <DisclosurePanel title={t('ui.whyMatters')}>
+                    <SafetyNotice>{t('safety.publicPublish')}</SafetyNotice>
+                    <InlineHelp>{t('safety.nip99Publish')}</InlineHelp>
+                  </DisclosurePanel>
+                  <button disabled={!canPublish} onClick={() => onPublish(listing)} title={!canPublish ? t('marketplace.noEnabledRelays') : undefined} type="button">
+                    <Radio size={16} /> {t('listing.publishNip99')}
+                  </button>
+                </DisclosurePanel>
+              </section>
+            ) : null}
+            {publicKeysMatch(identity?.publicKey, listing.authorPublicKey) ? (
+              <section className="listing-action-group" aria-labelledby="listing-actions-receipts">
+                <h2 id="listing-actions-receipts">{t('listing.actionGroupReceiptsSupport')}</h2>
+                <ListingZapReceiptsPanel
+                  receipts={listingZaps}
+                  onCheck={() => onCheckListingZapReceipts(listing, sellerProfile)}
+                />
+                <OperatorSupportPanel
+                  config={operatorSupport}
+                  identity={identity}
+                  privateKeyHex={privateKeyHex}
+                  nostrSigner={nostrSigner}
+                  relays={relays}
+                  attempts={lightningPaymentAttempts}
+                  receipts={operatorSupportReceipts}
+                  nwcConnections={nwcConnections}
+                  unlockedNwcConnectionIds={unlockedNwcConnectionIds}
+                  onConnectSigner={onConnectSigner}
+                  onCreatePaymentAttempt={onCreateOperatorSupportPaymentAttempt}
+                  onCheckReceipt={onCheckOperatorSupportReceipt}
+                  onSaveNwcConnection={onSaveNwcConnection}
+                  onUnlockNwcConnection={onUnlockNwcConnection}
+                  onPayWithNwc={onPayLightningAttemptWithNwc}
+                />
+              </section>
+            ) : null}
+            {syncedRecord ? (
+              <section className="listing-action-group" aria-labelledby="listing-actions-source">
+                <h2 id="listing-actions-source">{t('listing.actionGroupSource')}</h2>
+                <p className="muted compact-meta">{listingSourceLabel}</p>
+                <SyncedQualityBadges
+                  conflict={isRecordConflicted(syncedRecord, conflictGroups)}
+                  hidden={syncedRecord.hidden}
+                  preferred={isPreferredConflictRecord(syncedRecord, conflictGroups)}
+                />
+                <SyncedRecordActions
+                  conflict={isRecordConflicted(syncedRecord, conflictGroups)}
+                  preferred={isPreferredConflictRecord(syncedRecord, conflictGroups)}
+                  record={syncedRecord}
+                  onToggleHidden={onToggleHidden}
+                />
+              </section>
+            ) : null}
+          </aside>
       </div>
       )}
     </section>

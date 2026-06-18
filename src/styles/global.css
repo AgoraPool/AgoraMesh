@@ -1401,32 +1401,63 @@ dd {
 }
 
 .listing-actions {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.listing-actions > * {
-  min-width: 0;
-}
-
-.listing-actions .inline-card,
-.listing-actions .contact-pay-panel,
-.listing-actions .operator-support-panel {
-  border-color: var(--line);
-  background: transparent;
-}
-
-.listing-actions .disclosure-body {
-  padding: var(--space-3);
-}
-
-.listing-actions {
   position: sticky;
   top: calc(var(--space-6) + 4rem);
   display: grid;
   gap: var(--space-4);
   align-content: start;
   min-width: 0;
+}
+
+.listing-actions > * {
+  min-width: 0;
+}
+
+.listing-action-group,
+.listing-actions > .contact-pay-panel {
+  display: grid;
+  gap: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: clamp(0.9rem, 2vw, 1.1rem);
+}
+
+.listing-action-group h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.listing-action-buttons {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.listing-action-buttons button,
+.listing-action-group > button {
+  width: 100%;
+}
+
+.listing-share-status {
+  margin: 0;
+}
+
+.listing-action-group .inline-card,
+.listing-action-group .operator-support-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.listing-action-group .inline-card + .operator-support-panel,
+.listing-action-group .operator-support-panel + .inline-card {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+}
+
+.listing-actions .disclosure-body {
+  padding: var(--space-3);
 }
 
 .listing-page > button:first-child {
@@ -1871,25 +1902,18 @@ dd {
   margin: 0;
 }
 
-.marketplace-guidance,
-.receipt-summary {
+.marketplace-guidance {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
 }
 
-.marketplace-guidance div,
-.receipt-summary {
+.marketplace-guidance div {
   min-width: 0;
 }
 
-.receipt-summary {
-  flex-wrap: wrap;
-}
-
-.marketplace-guidance strong,
-.receipt-summary strong {
+.marketplace-guidance strong {
   display: block;
   margin-bottom: var(--space-1);
   color: #f5e7c8;
@@ -2043,8 +2067,16 @@ dd {
 
 .receipt-summary {
   display: grid;
+  gap: var(--space-2);
   align-items: start;
   justify-content: stretch;
+  min-width: 0;
+}
+
+.receipt-summary strong {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: #f5e7c8;
 }
 
 .result-toolbar,
@@ -2924,13 +2956,11 @@ dd {
   }
 
   .marketplace-guidance,
-  .receipt-summary,
   .row.between {
     align-items: stretch;
   }
 
-  .marketplace-guidance,
-  .receipt-summary {
+  .marketplace-guidance {
     flex-direction: column;
   }
 

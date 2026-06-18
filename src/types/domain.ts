@@ -355,6 +355,30 @@ export interface RelayFetchSummary {
   message: string;
 }
 
+export interface NostrTrustContact {
+  publicKey: string;
+  relayUrl?: string;
+  petname?: string;
+}
+
+export interface NostrTrustRecord {
+  ownerPublicKey: string;
+  contacts: NostrTrustContact[];
+  eventId: string;
+  relayUrls: string[];
+  createdAt: string;
+  fetchedAt: string;
+}
+
+export interface WebOfTrustEntry {
+  publicKey: string;
+  distance: 0 | 1 | 2;
+  paths: string[][];
+  referencedBy: string[];
+  contactCount: number;
+  seed: boolean;
+}
+
 export interface MarketplaceRankReason {
   code: string;
   label: string;

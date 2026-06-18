@@ -21,6 +21,8 @@ import type {
   MediatorProfile,
   NostrProfileMetadata,
   NostrReviewItem,
+  NostrTrustContact,
+  NostrTrustRecord,
   PublicDisputeOutcome,
   PublicProfile,
   PublishObjectType,
@@ -45,6 +47,8 @@ export const AGORAMESH_EVENT_KINDS = {
   disputeOutcome: 39005,
   communityList: 30004
 } as const;
+
+export const NOSTR_CONTACT_LIST_KIND = 3;
 
 type CacheablePayload =
   | PublicProfile
@@ -88,6 +92,12 @@ interface NostrMetadataFilter {
   kinds: [0];
   authors: string[];
   limit: 1;
+}
+
+interface NostrContactListFilter {
+  kinds: [3];
+  authors: string[];
+  limit: number;
 }
 
 export type NostrLiveSubscription = () => void;
@@ -686,6 +696,23 @@ export async function fetchNostrProfileMetadata(relays: RelayConfig[], publicKey
   return newest ? profileFromNostrMetadata(newest.content) : undefined;
 }
 
+export async function fetchNostrContactListsFromRelays(relays: RelayConfig[], authors: string[]): Promise<NostrTrustRecord[]> {
+  const enabled = relays.filter((relay) => relay.enabled);
+  const normalizedAuthors = [...new Set(authors.map((author) => author.toLowerCase()).filter(isPublicKeyHex))];
+  if (enabled.length === 0 || normalizedAuthors.length === 0) return [];
+
+  const batches = chunk(normalizedAuthors, 50);
+  const fetched = (
+    await Promise.all(
+      enabled.flatMap((relay) =>
+        batches.map((batch) => fetchNostrContactListsFromRelay(relay.url, batch).catch(() => [] as NostrTrustRecord[]))
+      )
+    )
+  ).flat();
+
+  return mergeNostrTrustRecords(fetched);
+}
+
 export function publishReceiptsFromStatuses(
   objectType: PublishObjectType,
   objectId: string,
@@ -1050,6 +1077,113 @@ function fetchAgoraEventsFromRelay(
       } catch (error) {
         items.push(reviewItemFromMalformed(raw, relay, error instanceof Error ? error.message : 'Malformed relay message.'));
       }
+    };
+  });
+}
+
+function isPublicKeyHex(value: string): boolean {
+  return /^[0-9a-f]{64}$/i.test(value);
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    batches.push(items.slice(index, index + size));
+  }
+  return batches;
+}
+
+function contactFromPTag(tag: string[]): NostrTrustContact | undefined {
+  if (tag[0] !== 'p' || !tag[1] || !isPublicKeyHex(tag[1])) return undefined;
+  const relayUrl = tag[2]?.trim();
+  const petname = tag[3]?.trim();
+  return {
+    publicKey: tag[1].toLowerCase(),
+    ...(relayUrl ? { relayUrl } : {}),
+    ...(petname ? { petname: petname.slice(0, 80) } : {})
+  };
+}
+
+function trustRecordFromContactListEvent(event: NostrEvent, relayUrl: string): NostrTrustRecord | undefined {
+  if (event.kind !== NOSTR_CONTACT_LIST_KIND || !isPublicKeyHex(event.pubkey) || !verifyNostrEvent(event)) return undefined;
+  const contactMap = new Map<string, NostrTrustContact>();
+  for (const tag of event.tags) {
+    const contact = contactFromPTag(tag);
+    if (contact && contact.publicKey !== event.pubkey.toLowerCase()) {
+      contactMap.set(contact.publicKey, contact);
+    }
+  }
+  return {
+    ownerPublicKey: event.pubkey.toLowerCase(),
+    contacts: [...contactMap.values()],
+    eventId: event.id,
+    relayUrls: [relayUrl],
+    createdAt: new Date(event.created_at * 1000).toISOString(),
+    fetchedAt: nowIso()
+  };
+}
+
+function mergeNostrTrustRecords(records: NostrTrustRecord[]): NostrTrustRecord[] {
+  const grouped = new Map<string, NostrTrustRecord>();
+  for (const record of records) {
+    const key = record.ownerPublicKey.toLowerCase();
+    const current = grouped.get(key);
+    if (!current || record.createdAt.localeCompare(current.createdAt) > 0) {
+      grouped.set(key, {
+        ...record,
+        ownerPublicKey: key,
+        relayUrls: [...new Set([...(current?.relayUrls ?? []), ...record.relayUrls])]
+      });
+      continue;
+    }
+    if (current.eventId === record.eventId) {
+      grouped.set(key, {
+        ...current,
+        relayUrls: [...new Set([...current.relayUrls, ...record.relayUrls])],
+        fetchedAt: record.fetchedAt.localeCompare(current.fetchedAt) > 0 ? record.fetchedAt : current.fetchedAt
+      });
+    }
+  }
+  return [...grouped.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function fetchNostrContactListsFromRelay(relay: string, authors: string[]): Promise<NostrTrustRecord[]> {
+  return new Promise((resolve) => {
+    const socket = new WebSocket(relay);
+    const subscriptionId = newId('wot');
+    const filter: NostrContactListFilter = { kinds: [NOSTR_CONTACT_LIST_KIND], authors, limit: Math.max(1, authors.length * 2) };
+    const records: NostrTrustRecord[] = [];
+    let resolved = false;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      socket.close();
+      resolve(mergeNostrTrustRecords(records));
+    };
+    const timeout = globalThis.setTimeout(finish, 7000);
+    socket.onopen = () => {
+      socket.send(JSON.stringify(['REQ', subscriptionId, filter]));
+    };
+    socket.onmessage = (message) => {
+      try {
+        const parsed: unknown = JSON.parse(String(message.data));
+        if (!isUnknownArray(parsed)) return;
+        if (parsed[0] === 'EVENT' && parsed[1] === subscriptionId) {
+          const event = parseNostrEvent(parsed[2]);
+          const record = trustRecordFromContactListEvent(event, relay);
+          if (record) records.push(record);
+        }
+        if (parsed[0] === 'EOSE' && parsed[1] === subscriptionId) {
+          globalThis.clearTimeout(timeout);
+          finish();
+        }
+      } catch {
+        // This is an optional social trust signal; malformed relay messages are ignored.
+      }
+    };
+    socket.onerror = () => {
+      globalThis.clearTimeout(timeout);
+      finish();
     };
   });
 }

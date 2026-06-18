@@ -74,6 +74,7 @@ import {
   communityCurationListPayload,
   dedupeReviewItems,
   fetchAgoraEventsFromRelays,
+  fetchNostrContactListsFromRelays,
   fetchNostrProfileMetadata,
   isoToNostrTimestamp,
   importablePayloadFromReviewItem,
@@ -208,6 +209,7 @@ import type {
   NwcConnection,
   NostrSignerState,
   NostrReviewItem,
+  NostrTrustRecord,
   OperatorSupportReceipt,
   PaymentIntent,
   PaymentPreference,
@@ -224,7 +226,8 @@ import type {
   SyncSettings,
   SyncStatus,
   SyncedPublicRecord,
-  TrustFilter
+  TrustFilter,
+  WebOfTrustEntry
 } from '../types/domain';
 
 type Page = 'home' | 'browse' | 'listing' | 'profile' | 'inbox' | 'mediators' | 'trade' | 'reputation' | 'settings';
@@ -284,6 +287,8 @@ type SendNostrContactIntroArgs = NostrContactTarget & {
 type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
 type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type SupportFilter = 'all' | 'supporters' | 'non-supporters';
+type WebTrustFilter = 'all' | 'direct' | 'network';
+type MarketplaceSort = 'newest' | 'expiring' | 'web-trust';
 type ReputationDraftRequest = {
   subjectPublicKey: string;
   role: 'buyer' | 'seller' | 'mediator';
@@ -869,6 +874,163 @@ function supportFilterLabel(filter: SupportFilter, t: (key: string) => string): 
   return t('support.all');
 }
 
+function isHexPublicKey(value?: string): value is string {
+  return Boolean(value && /^[0-9a-f]{64}$/i.test(value));
+}
+
+function normalizedPublicKey(value?: string): string | undefined {
+  return isHexPublicKey(value) ? value.toLowerCase() : undefined;
+}
+
+function webTrustSeedKeys(identity: IdentityRecord | undefined, allowlist: CommunityAllowlistEntry[]): string[] {
+  return [
+    identity?.publicKey,
+    ...allowlist.map((entry) => entry.publicKey)
+  ]
+    .map(normalizedPublicKey)
+    .filter((key): key is string => Boolean(key));
+}
+
+function mergeWebTrustRecords(records: NostrTrustRecord[]): NostrTrustRecord[] {
+  const grouped = new Map<string, NostrTrustRecord>();
+  for (const record of records) {
+    const owner = normalizedPublicKey(record.ownerPublicKey);
+    if (!owner) continue;
+    const current = grouped.get(owner);
+    if (!current || record.createdAt.localeCompare(current.createdAt) > 0) {
+      grouped.set(owner, {
+        ...record,
+        ownerPublicKey: owner,
+        contacts: record.contacts
+          .map((contact) => ({ ...contact, publicKey: contact.publicKey.toLowerCase() }))
+          .filter((contact) => normalizedPublicKey(contact.publicKey)),
+        relayUrls: [...new Set([...(current?.relayUrls ?? []), ...record.relayUrls])]
+      });
+      continue;
+    }
+    if (current.eventId === record.eventId) {
+      grouped.set(owner, {
+        ...current,
+        relayUrls: [...new Set([...current.relayUrls, ...record.relayUrls])],
+        fetchedAt: record.fetchedAt.localeCompare(current.fetchedAt) > 0 ? record.fetchedAt : current.fetchedAt
+      });
+    }
+  }
+  return [...grouped.values()];
+}
+
+function buildWebOfTrustEntries(
+  identity: IdentityRecord | undefined,
+  allowlist: CommunityAllowlistEntry[],
+  records: NostrTrustRecord[]
+): WebOfTrustEntry[] {
+  const seeds = new Set(webTrustSeedKeys(identity, allowlist));
+  const recordMap = new Map(mergeWebTrustRecords(records).map((record) => [record.ownerPublicKey, record]));
+  const entries = new Map<string, WebOfTrustEntry>();
+
+  const upsertEntry = (publicKey: string, distance: 0 | 1 | 2, path: string[], referencedBy?: string): void => {
+    const key = publicKey.toLowerCase();
+    const current = entries.get(key);
+    const record = recordMap.get(key);
+    const nextPath = path.map((part) => part.toLowerCase());
+    if (!current || distance < current.distance) {
+      entries.set(key, {
+        publicKey: key,
+        distance,
+        paths: [nextPath],
+        referencedBy: referencedBy ? [referencedBy.toLowerCase()] : [],
+        contactCount: record?.contacts.length ?? 0,
+        seed: distance === 0
+      });
+      return;
+    }
+    if (distance === current.distance) {
+      const pathKey = nextPath.join(':');
+      const pathKeys = new Set(current.paths.map((entry) => entry.join(':')));
+      const referencedBySet = new Set(current.referencedBy);
+      if (referencedBy) referencedBySet.add(referencedBy.toLowerCase());
+      entries.set(key, {
+        ...current,
+        paths: pathKeys.has(pathKey) ? current.paths : [...current.paths, nextPath].slice(0, 5),
+        referencedBy: [...referencedBySet].slice(0, 12),
+        contactCount: record?.contacts.length ?? current.contactCount,
+        seed: current.seed || distance === 0
+      });
+    }
+  };
+
+  for (const seed of seeds) {
+    upsertEntry(seed, 0, [seed]);
+  }
+
+  for (const seed of seeds) {
+    const seedRecord = recordMap.get(seed);
+    if (!seedRecord) continue;
+    for (const contact of seedRecord.contacts) {
+      const contactKey = normalizedPublicKey(contact.publicKey);
+      if (!contactKey) continue;
+      upsertEntry(contactKey, seeds.has(contactKey) ? 0 : 1, [seed, contactKey], seed);
+    }
+  }
+
+  const directKeys = [...entries.values()].filter((entry) => entry.distance === 1).map((entry) => entry.publicKey);
+  for (const directKey of directKeys) {
+    const directRecord = recordMap.get(directKey);
+    if (!directRecord) continue;
+    const directPaths = entries.get(directKey)?.paths ?? [[directKey]];
+    for (const contact of directRecord.contacts) {
+      const contactKey = normalizedPublicKey(contact.publicKey);
+      if (!contactKey || seeds.has(contactKey)) continue;
+      const basePath = directPaths[0] ?? [directKey];
+      upsertEntry(contactKey, 2, [...basePath, contactKey], directKey);
+    }
+  }
+
+  return [...entries.values()].sort((left, right) => left.distance - right.distance || right.referencedBy.length - left.referencedBy.length || left.publicKey.localeCompare(right.publicKey));
+}
+
+function webTrustEntryForPublicKeys(publicKeys: Array<string | undefined>, webTrust: Map<string, WebOfTrustEntry>): WebOfTrustEntry | undefined {
+  const matches = publicKeys
+    .map((publicKey) => normalizedPublicKey(publicKey))
+    .filter((publicKey): publicKey is string => Boolean(publicKey))
+    .flatMap((publicKey) => {
+      const entry = webTrust.get(publicKey);
+      return entry ? [entry] : [];
+    })
+    .sort((left, right) => left.distance - right.distance || right.referencedBy.length - left.referencedBy.length);
+  return matches[0];
+}
+
+function webTrustFilterMatches(publicKeys: Array<string | undefined>, webTrust: Map<string, WebOfTrustEntry>, filter: WebTrustFilter): boolean {
+  if (filter === 'all') return true;
+  const entry = webTrustEntryForPublicKeys(publicKeys, webTrust);
+  if (!entry) return false;
+  return filter === 'direct' ? entry.distance <= 1 : entry.distance <= 2;
+}
+
+function webTrustFilterLabel(filter: WebTrustFilter, t: (key: string) => string): string {
+  if (filter === 'direct') return t('wot.directFilter');
+  if (filter === 'network') return t('wot.networkFilter');
+  return t('wot.all');
+}
+
+function webTrustEntryLabel(entry: WebOfTrustEntry, t: (key: string) => string): string {
+  if (entry.distance === 0) return t('wot.seed');
+  if (entry.distance === 1) return t('wot.direct');
+  return t('wot.secondHop');
+}
+
+function webTrustSortLabel(sort: MarketplaceSort, t: (key: string) => string): string {
+  if (sort === 'expiring') return t('common.expiring');
+  if (sort === 'web-trust') return t('wot.sort');
+  return t('common.newest');
+}
+
+function webTrustSortScore(publicKeys: Array<string | undefined>, webTrust: Map<string, WebOfTrustEntry>): { distance: number; references: number } {
+  const entry = webTrustEntryForPublicKeys(publicKeys, webTrust);
+  return entry ? { distance: entry.distance, references: entry.referencedBy.length } : { distance: 3, references: 0 };
+}
+
 function listingCoordinateForZap(listing: Listing): string {
   return nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id);
 }
@@ -950,6 +1112,8 @@ export function App(): ReactNode {
   const [disputes, setDisputes] = useState<DisputeCase[]>([]);
   const [attestations, setAttestations] = useState<ReputationAttestation[]>([]);
   const [relays, setRelays] = useState<RelayConfig[]>([]);
+  const [nostrTrustRecords, setNostrTrustRecords] = useState<NostrTrustRecord[]>([]);
+  const [webOfTrustStatus, setWebOfTrustStatus] = useState('');
   const [reviewItems, setReviewItems] = useState<NostrReviewItem[]>([]);
   const [syncedProfiles, setSyncedProfiles] = useState<SyncedPublicRecord<PublicProfile>[]>([]);
   const [syncedListings, setSyncedListings] = useState<SyncedPublicRecord<Listing>[]>([]);
@@ -1053,6 +1217,35 @@ export function App(): ReactNode {
   const mobileNavItems = [...primaryNavItems, settingsNavItem];
   const secondaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode }[] = [];
   const activeNavKey = routeHash === 'browse:create' ? 'post' : page === 'listing' || page === 'browse' ? 'browse' : page;
+  const webOfTrustEntries = useMemo(() => buildWebOfTrustEntries(identity, allowlist, nostrTrustRecords), [allowlist, identity, nostrTrustRecords]);
+  const webOfTrustMap = useMemo(() => new Map(webOfTrustEntries.map((entry) => [entry.publicKey, entry])), [webOfTrustEntries]);
+  const fetchWebOfTrust = useCallback(async (): Promise<void> => {
+    const seeds = [...new Set(webTrustSeedKeys(identity, allowlist))];
+    const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+    if (enabledRelayCount === 0) {
+      setWebOfTrustStatus(t('wot.noRelays'));
+      return;
+    }
+    if (seeds.length === 0) {
+      setWebOfTrustStatus(t('wot.noSeeds'));
+      return;
+    }
+
+    setWebOfTrustStatus(t('wot.fetching'));
+    const directRecords = await fetchNostrContactListsFromRelays(relays, seeds);
+    const directContacts = new Set(directRecords.flatMap((record) => record.contacts.map((contact) => contact.publicKey)));
+    const secondHopAuthors = [...directContacts].filter((publicKey) => !seeds.includes(publicKey)).slice(0, 80);
+    const secondHopRecords = secondHopAuthors.length > 0 ? await fetchNostrContactListsFromRelays(relays, secondHopAuthors) : [];
+    const merged = mergeWebTrustRecords([...nostrTrustRecords, ...directRecords, ...secondHopRecords]);
+    setNostrTrustRecords(merged);
+    const entries = buildWebOfTrustEntries(identity, allowlist, merged);
+    setWebOfTrustStatus(
+      t('wot.fetched')
+        .replace('{lists}', String(merged.length))
+        .replace('{people}', String(entries.length))
+        .replace('{relays}', String(enabledRelayCount))
+    );
+  }, [allowlist, identity, nostrTrustRecords, relays, t]);
   const renderNavButton = (item: { key: string; label: string; route: RouteTarget; icon: ReactNode; badgeCount?: number }, compact = false): ReactNode => {
     const active = activeNavKey === item.key;
     const badgeLabel = item.badgeCount ? (item.badgeCount > 9 ? '9+' : String(item.badgeCount)) : '';
@@ -2360,6 +2553,9 @@ export function App(): ReactNode {
             blossomServers={blossomServers}
             relays={relays}
             syncSettings={syncSettings}
+            webOfTrustEntries={webOfTrustEntries}
+            webOfTrustMap={webOfTrustMap}
+            webOfTrustStatus={webOfTrustStatus}
             privateKeyHex={privateKeyHex}
             nostrSigner={nostrSigner}
             go={go}
@@ -2367,6 +2563,7 @@ export function App(): ReactNode {
             onUseConnectedSignerAsIdentity={() => void useConnectedSignerAsIdentity()}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onFetchMarketplace={(scope) => fetchMarketplacePublicData(scope)}
+            onFetchWebOfTrust={fetchWebOfTrust}
             onListingDiscoveryScopeChange={(scope) => void saveListingDiscoveryScope(scope)}
             onListingSaved={(listing) => {
               setListings((current) => [listing, ...current.filter((entry) => entry.id !== listing.id)]);
@@ -2430,6 +2627,7 @@ export function App(): ReactNode {
             unlockedNwcConnectionIds={Object.keys(unlockedNwcSecrets)}
             relays={relays}
             syncSettings={syncSettings}
+            webOfTrustMap={webOfTrustMap}
             communityLists={communityLists}
             syncedCommunityLists={syncedCommunityLists}
             onBack={() => go('browse')}
@@ -2702,6 +2900,9 @@ export function App(): ReactNode {
             syncedDisputeOutcomes={syncedDisputeOutcomes}
             syncedCommunityLists={syncedCommunityLists}
             syncSettings={syncSettings}
+            webOfTrustEntries={webOfTrustEntries}
+            webOfTrustMap={webOfTrustMap}
+            webOfTrustStatus={webOfTrustStatus}
             syncStatuses={syncStatuses}
             relayFetchSummaries={relayFetchSummaries}
             blossomServers={blossomServers}
@@ -2713,6 +2914,7 @@ export function App(): ReactNode {
             onNostrConnectConnected={setNostrSigner}
             onUseConnectedSignerAsIdentity={() => void useConnectedSignerAsIdentity()}
             onRelayFetchSummaries={setRelayFetchSummaries}
+            onFetchWebOfTrust={fetchWebOfTrust}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onFetchNostrInbox={fetchNostrInbox}
             onNostrThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
@@ -2905,13 +3107,32 @@ function SupporterBadge({ receipt, compact = false }: { receipt?: OperatorSuppor
   );
 }
 
+function WebOfTrustBadge({ entry, compact = false }: { entry?: WebOfTrustEntry; compact?: boolean }): ReactNode {
+  const { t } = useI18n();
+  if (!entry) return null;
+  const label = compact
+    ? entry.distance === 0
+      ? t('wot.seedShort')
+      : entry.distance === 1
+        ? t('wot.directShort')
+        : t('wot.secondHopShort')
+    : webTrustEntryLabel(entry, t);
+  return (
+    <span className={compact ? 'wot-badge compact' : 'wot-badge'} title={t('wot.badgeTitle').replace('{count}', String(entry.referencedBy.length))}>
+      <ShieldCheck size={14} aria-hidden="true" /> {label}
+    </span>
+  );
+}
+
 function SellerSummaryCard({
   summary,
   supportReceipt,
+  webTrust,
   onReview
 }: {
   summary: SellerSummary;
   supportReceipt?: OperatorSupportReceipt;
+  webTrust?: WebOfTrustEntry;
   onReview?: () => void;
 }): ReactNode {
   const { t } = useI18n();
@@ -2924,6 +3145,7 @@ function SellerSummaryCard({
           <span className="pill">{summary.trusted ? t('sync.trusted') : t('sync.untrusted')}</span>
           {summary.mediatorAvailable ? <span className="pill">{t('profile.mediatorAvailable')}</span> : null}
           <SupporterBadge receipt={supportReceipt} />
+          <WebOfTrustBadge entry={webTrust} />
         </div>
         <p className="key">{summary.shortKey}</p>
         {summary.region || summary.languages.length > 0 ? (
@@ -4188,6 +4410,7 @@ function ListingPage({
   unlockedNwcConnectionIds,
   relays,
   syncSettings,
+  webOfTrustMap,
   communityLists,
   syncedCommunityLists,
   onBack,
@@ -4230,6 +4453,7 @@ function ListingPage({
   unlockedNwcConnectionIds: string[];
   relays: RelayConfig[];
   syncSettings: SyncSettings;
+  webOfTrustMap: Map<string, WebOfTrustEntry>;
   communityLists: CommunityCurationList[];
   syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   onBack: () => void;
@@ -4279,6 +4503,7 @@ function ListingPage({
       ? profile
       : syncedProfiles.find((record) => record.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
   const sellerSupportReceipt = supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey], operatorSupportReceipts);
+  const sellerWebTrust = webTrustEntryForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, sellerSummary.publicKey], webOfTrustMap);
   const listingZaps = listingZapReceiptsForListing(listing, listingZapReceipts);
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
@@ -4342,6 +4567,7 @@ function ListingPage({
               <SellerSummaryCard
                 summary={sellerSummary}
                 supportReceipt={sellerSupportReceipt}
+                webTrust={sellerWebTrust}
                 onReview={
                   canReviewSeller
                     ? () =>
@@ -4504,6 +4730,9 @@ function BrowsePage({
   blossomServers,
   relays,
   syncSettings,
+  webOfTrustEntries,
+  webOfTrustMap,
+  webOfTrustStatus,
   privateKeyHex,
   nostrSigner,
   go,
@@ -4511,6 +4740,7 @@ function BrowsePage({
   onUseConnectedSignerAsIdentity,
   onToggleHidden,
   onFetchMarketplace,
+  onFetchWebOfTrust,
   onListingDiscoveryScopeChange,
   onListingSaved,
   onPublishCommunityList,
@@ -4528,6 +4758,9 @@ function BrowsePage({
   blossomServers: BlossomServerConfig[];
   relays: RelayConfig[];
   syncSettings: SyncSettings;
+  webOfTrustEntries: WebOfTrustEntry[];
+  webOfTrustMap: Map<string, WebOfTrustEntry>;
+  webOfTrustStatus: string;
   privateKeyHex: string;
   nostrSigner: NostrSignerState;
   go: (page: RouteTarget) => void;
@@ -4535,6 +4768,7 @@ function BrowsePage({
   onUseConnectedSignerAsIdentity: () => void;
   onToggleHidden: (record: SyncedPublicRecord<Listing>, hidden: boolean) => void;
   onFetchMarketplace: (scope: ListingDiscoveryScope) => Promise<MarketplaceFetchSummary>;
+  onFetchWebOfTrust: () => Promise<void>;
   onListingDiscoveryScopeChange: (scope: ListingDiscoveryScope) => void;
   onListingSaved: (listing: Listing) => void;
   onPublishCommunityList: (list: CommunityCurationList) => void;
@@ -4549,9 +4783,10 @@ function BrowsePage({
   const [payment, setPayment] = useState('all');
   const [fulfillment, setFulfillment] = useState('all');
   const [region, setRegion] = useState('');
-  const [sort, setSort] = useState<'newest' | 'expiring'>('newest');
+  const [sort, setSort] = useState<MarketplaceSort>('newest');
   const [source, setSource] = useState<DataSourceFilter>(syncSettings.defaultBrowseSource);
   const [trust, setTrust] = useState<TrustFilter>('all');
+  const [webTrust, setWebTrust] = useState<WebTrustFilter>('all');
   const [support, setSupport] = useState<SupportFilter>('all');
   const [hidden, setHidden] = useState<HiddenFilter>('visible');
   const [imageOnly, setImageOnly] = useState(false);
@@ -4561,6 +4796,7 @@ function BrowsePage({
   const [curationForm, setCurationForm] = useState({ title: '', description: '', selectedCoordinates: [] as string[] });
   const [failedListingImages, setFailedListingImages] = useState<string[]>([]);
   const [fetchingMarketplace, setFetchingMarketplace] = useState(false);
+  const [fetchingWebTrust, setFetchingWebTrust] = useState(false);
   const [prefetchingMarketplace, setPrefetchingMarketplace] = useState(false);
   const [marketplacePrefetchSummary, setMarketplacePrefetchSummary] = useState<MarketplaceFetchSummary | undefined>();
   const [marketplacePrefetchError, setMarketplacePrefetchError] = useState('');
@@ -4600,7 +4836,7 @@ function BrowsePage({
 
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
-  }, [category, curationFilter, fulfillment, hidden, imageOnly, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type]);
+  }, [category, curationFilter, fulfillment, hidden, imageOnly, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type, webTrust]);
 
   useEffect(() => {
     if (activeBrowseTab !== 'discover') return;
@@ -4645,14 +4881,26 @@ function BrowsePage({
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
+      .filter(({ listing }) => webTrustFilterMatches([listing.authorPublicKey], webOfTrustMap, webTrust))
       .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
     if (sort === 'expiring') return ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt));
+    if (sort === 'web-trust') {
+      return ranked
+        .map((row, index) => ({ row, index, score: webTrustSortScore([row.listing.authorPublicKey], webOfTrustMap) }))
+        .sort(
+          (left, right) =>
+            left.score.distance - right.score.distance ||
+            right.score.references - left.score.references ||
+            left.index - right.index
+        )
+        .map(({ row }) => row);
+    }
     return ranked;
-  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, imageOnly, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type]);
+  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, imageOnly, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type, webOfTrustMap, webTrust]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -4675,11 +4923,12 @@ function BrowsePage({
       .filter(({ listing }) => (region ? listing.region.toLowerCase().includes(region.toLowerCase()) : true))
       .filter(({ listing }) => (showExpired ? true : !isListingExpired(listing)))
       .filter(({ listing }) => listing.status !== 'deleted')
+      .filter(({ listing }) => webTrustFilterMatches([listing.authorPublicKey], webOfTrustMap, webTrust))
       .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
       .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
     return dedupeMarketplaceListings(filteredRows).duplicates.length;
-  }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type]);
+  }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type, webOfTrustMap, webTrust]);
   const visibleFiltered = filtered.slice(0, visibleLimit);
   const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => {
     const sellerProfile =
@@ -4698,10 +4947,11 @@ function BrowsePage({
     region ? `${t('common.region')}: ${region}` : undefined,
     fulfillment !== 'all' ? `${t('listing.fulfillment')}: ${t(`fulfillment.${fulfillment}`)}` : undefined,
     payment !== 'all' ? `${t('listing.paymentIntentMethod')}: ${paymentBadgeLabel(payment as PaymentPreference, t)}` : undefined,
-    sort !== 'newest' ? `${t('common.sort')}: ${t('common.expiring')}` : undefined,
+    sort !== 'newest' ? `${t('common.sort')}: ${webTrustSortLabel(sort, t)}` : undefined,
     imageOnly ? t('marketplace.imagesOnly') : undefined,
     source !== syncSettings.defaultBrowseSource ? `${t('sync.source')}: ${source}` : undefined,
     trust !== 'all' ? `${t('sync.trust')}: ${trust}` : undefined,
+    webTrust !== 'all' ? `${t('wot.filter')}: ${webTrustFilterLabel(webTrust, t)}` : undefined,
     support !== 'all' ? `${t('support.filter')}: ${supportFilterLabel(support, t)}` : undefined,
     hidden !== 'visible' ? `${t('sync.hiddenFilter')}: ${hidden}` : undefined,
     curationFilter !== 'all' ? `${t('curation.filter')}: ${visibleCommunityLists.find((record) => record.id === curationFilter)?.payload.title ?? curationFilter}` : undefined,
@@ -4716,6 +4966,7 @@ function BrowsePage({
                         setImageOnly(false);
     setSource(syncSettings.defaultBrowseSource);
     setTrust('all');
+    setWebTrust('all');
     setSupport('all');
     setHidden('visible');
     setCurationFilter('all');
@@ -4777,6 +5028,15 @@ function BrowsePage({
       setMarketplaceFetchError(t('marketplace.fetchFailed'));
     } finally {
       setFetchingMarketplace(false);
+    }
+  };
+
+  const fetchTrustGraph = async (): Promise<void> => {
+    setFetchingWebTrust(true);
+    try {
+      await onFetchWebOfTrust();
+    } finally {
+      setFetchingWebTrust(false);
     }
   };
 
@@ -4862,6 +5122,7 @@ function BrowsePage({
         ? profile
         : syncedProfiles.find((entry) => entry.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
     const supportReceipt = supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, seller.publicKey], operatorSupportReceipts);
+    const sellerWebTrust = webTrustEntryForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, seller.publicKey], webOfTrustMap);
     return (
       <article className="card listing-card" key={listingKey}>
         {renderListingThumb(listing)}
@@ -4888,6 +5149,7 @@ function BrowsePage({
             <AvatarCircle avatarUrl={seller.avatarUrl} label={seller.displayName} size="small" />
             <span>{seller.displayName}</span>
             <SupporterBadge receipt={supportReceipt} compact />
+            <WebOfTrustBadge entry={sellerWebTrust} compact />
           </div>
           <p className="muted listing-card-source">{sourceLabel}</p>
           <button onClick={() => onNavigateListing(listingRef)} type="button">
@@ -4984,6 +5246,14 @@ function BrowsePage({
             <button disabled={fetchingMarketplace || prefetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
               <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
             </button>
+            <button className="subtle" disabled={fetchingWebTrust || enabledRelays.length === 0} onClick={() => void fetchTrustGraph()} type="button">
+              <ShieldCheck size={16} /> {fetchingWebTrust ? t('wot.fetching') : t('wot.fetch')}
+            </button>
+            {webOfTrustEntries.length > 0 || webOfTrustStatus ? (
+              <p className="muted marketplace-fetch-summary">
+                {webOfTrustStatus || t('wot.marketplaceSummary').replace('{count}', String(webOfTrustEntries.length))}
+              </p>
+            ) : null}
             {prefetchingMarketplace ? <p className="muted marketplace-fetch-summary">{t('marketplace.prefetching')}</p> : null}
             {marketplacePrefetchSummary ? (
               <p className="muted marketplace-fetch-summary">
@@ -5060,9 +5330,10 @@ function BrowsePage({
                     ))}
                   </select>
                   <input aria-label={t('common.region')} placeholder={t('common.region')} value={region} onChange={(event) => setRegion(event.target.value)} />
-                  <select aria-label={t('common.sort')} value={sort} onChange={(event) => setSort(event.target.value as 'newest' | 'expiring')}>
+                  <select aria-label={t('common.sort')} value={sort} onChange={(event) => setSort(event.target.value as MarketplaceSort)}>
                     <option value="newest">{t('common.newest')}</option>
                     <option value="expiring">{t('common.expiring')}</option>
+                    <option value="web-trust">{t('wot.sort')}</option>
                   </select>
                   <span className="checkbox-row">
                     <input aria-label={t('marketplace.imagesOnly')} type="checkbox" checked={imageOnly} onChange={(event) => setImageOnly(event.target.checked)} />
@@ -5082,6 +5353,11 @@ function BrowsePage({
                     <option value="all">{t('common.all')}</option>
                     <option value="trusted">{t('sync.trusted')}</option>
                     <option value="untrusted">{t('sync.untrusted')}</option>
+                  </select>
+                  <select aria-label={t('wot.filter')} value={webTrust} onChange={(event) => setWebTrust(event.target.value as WebTrustFilter)}>
+                    <option value="all">{t('wot.all')}</option>
+                    <option value="direct">{t('wot.directFilter')}</option>
+                    <option value="network">{t('wot.networkFilter')}</option>
                   </select>
                   <select aria-label={t('support.filter')} value={support} onChange={(event) => setSupport(event.target.value as SupportFilter)}>
                     <option value="all">{t('support.all')}</option>
@@ -8783,6 +9059,9 @@ function SettingsPage({
   syncedDisputeOutcomes,
   syncedCommunityLists,
   syncSettings,
+  webOfTrustEntries,
+  webOfTrustMap,
+  webOfTrustStatus,
   syncStatuses,
   relayFetchSummaries,
   blossomServers,
@@ -8794,6 +9073,7 @@ function SettingsPage({
   onNostrConnectConnected,
   onUseConnectedSignerAsIdentity,
   onRelayFetchSummaries,
+  onFetchWebOfTrust,
   onToggleHidden,
   onFetchNostrInbox,
   onNostrThreadChange,
@@ -8829,6 +9109,9 @@ function SettingsPage({
   syncedDisputeOutcomes: SyncedPublicRecord<PublicDisputeOutcome>[];
   syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   syncSettings: SyncSettings;
+  webOfTrustEntries: WebOfTrustEntry[];
+  webOfTrustMap: Map<string, WebOfTrustEntry>;
+  webOfTrustStatus: string;
   syncStatuses: SyncStatus[];
   relayFetchSummaries: RelayFetchSummary[];
   blossomServers: BlossomServerConfig[];
@@ -8840,6 +9123,7 @@ function SettingsPage({
   onNostrConnectConnected: (state: NostrSignerState) => void;
   onUseConnectedSignerAsIdentity: () => void;
   onRelayFetchSummaries: (summaries: RelayFetchSummary[]) => void;
+  onFetchWebOfTrust: () => Promise<void>;
   onToggleHidden: (
     record: SyncedPublicRecord<PublicProfile> | SyncedPublicRecord<Listing> | SyncedPublicRecord<PublicDisputeOutcome> | SyncedPublicRecord<CommunityCurationList>,
     hidden: boolean
@@ -8865,6 +9149,7 @@ function SettingsPage({
   const [selectedReviewItemIds, setSelectedReviewItemIds] = useState<string[]>([]);
   const [bulkReviewMessage, setBulkReviewMessage] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [fetchingWebTrust, setFetchingWebTrust] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>(settingsTabFromHash);
   const shouldOpenAdvancedReview = window.location.hash === '#settings:review';
   const signerStatus = signerIdentityStatus(identity, nostrSigner);
@@ -8901,6 +9186,9 @@ function SettingsPage({
     syncedAttestations.length +
     syncedDisputeOutcomes.length +
     syncedCommunityLists.length;
+  const webTrustSeeds = webOfTrustEntries.filter((entry) => entry.distance === 0).length;
+  const webTrustNetwork = webOfTrustEntries.filter((entry) => entry.distance > 0).length;
+  const visibleWebTrustEntries = webOfTrustEntries.filter((entry) => entry.distance > 0).slice(0, 12);
   const publishableListingCount = listings.filter((listing) => listing.visibility === 'public').length;
   const publicSyncSteps: PublicSyncStep[] = [
     {
@@ -9060,6 +9348,15 @@ function SettingsPage({
       });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const fetchWebTrustGraph = async (): Promise<void> => {
+    setFetchingWebTrust(true);
+    try {
+      await onFetchWebOfTrust();
+    } finally {
+      setFetchingWebTrust(false);
     }
   };
 
@@ -9538,6 +9835,7 @@ function SettingsPage({
                       <div>
                         <h2>{record.payload.displayName}</h2>
                         <SupporterBadge receipt={supportReceiptForPublicKeys([record.payload.publicKey, record.authorPublicKey], operatorSupportReceipts)} />
+                        <WebOfTrustBadge entry={webTrustEntryForPublicKeys([record.payload.publicKey, record.authorPublicKey], webOfTrustMap)} />
                       </div>
                     </div>
                     <p>{record.payload.bio}</p>
@@ -9648,6 +9946,53 @@ function SettingsPage({
         {activeTab === 'trust' ? (
           <section className="settings-section" aria-labelledby="settings-trust">
             <h2 id="settings-trust">{t('sync.allowlist')}</h2>
+            <section className="inline-card web-trust-panel" aria-labelledby="web-trust-title">
+              <div className="row between">
+                <div>
+                  <h3 id="web-trust-title">{t('wot.title')}</h3>
+                  <p className="muted">{t('wot.body')}</p>
+                </div>
+                <button disabled={fetchingWebTrust || enabledRelayCount === 0} onClick={() => void fetchWebTrustGraph()} type="button">
+                  <Radio size={16} /> {fetchingWebTrust ? t('wot.fetching') : t('wot.fetch')}
+                </button>
+              </div>
+              <p className="muted">{t('wot.privacy')}</p>
+              <div className="web-trust-stats" aria-label={t('wot.summary')}>
+                <span>
+                  <strong>{webTrustSeeds}</strong>
+                  <small>{t('wot.seeds')}</small>
+                </span>
+                <span>
+                  <strong>{webOfTrustEntries.length}</strong>
+                  <small>{t('wot.reachable')}</small>
+                </span>
+                <span>
+                  <strong>{webTrustNetwork}</strong>
+                  <small>{t('wot.networkPeople')}</small>
+                </span>
+              </div>
+              {webOfTrustStatus ? <p className="muted">{webOfTrustStatus}</p> : null}
+              {visibleWebTrustEntries.length > 0 ? (
+                <div className="compact-list web-trust-list">
+                  {visibleWebTrustEntries.map((entry) => (
+                    <div className="web-trust-row" key={entry.publicKey}>
+                      <div>
+                        <strong>{shortPublicKey(entry.publicKey)}</strong>
+                        <p className="key">{entry.publicKey}</p>
+                      </div>
+                      <div className="row">
+                        <WebOfTrustBadge entry={entry} />
+                        <span className="pill">
+                          {t('wot.referencedBy')}: {entry.referencedBy.length}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState title={t('wot.noEntriesTitle')} body={t('wot.noEntriesBody')} />
+              )}
+            </section>
             <form className="stack-form" onSubmit={(event) => void addAllowlistEntry(event)}>
               <label>
                 {t('common.publicKey')}

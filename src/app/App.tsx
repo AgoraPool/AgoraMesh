@@ -135,6 +135,7 @@ import {
   detectNostrSigner,
   encryptWithNostrSigner,
   resumeNostrConnectPairing,
+  restoreNostrSignerSession,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
   startNostrConnectPairing,
@@ -333,6 +334,7 @@ const emptyContact = (): ContactMethod => ({ id: newId('contact'), kind: 'matrix
 const marketplacePageSize = 24;
 const marketplaceNativePrefetchKey = 'agoramesh.marketplace.prefetchedNative.v1';
 const operatorSupport = operatorSupportConfig();
+const quickZapAmounts = [21, 100, 500, 1000];
 
 function defaultListingExpirationDate(): string {
   return new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
@@ -3440,6 +3442,7 @@ function LightningPaymentPanel({
   const watchedAttemptStatus = activeAttempt?.status;
   const canGenerate = Boolean(identity && enabledRelayCount > 0 && Number(amountSats) > 0 && (canUseLocal || canUseSigner));
   const canPayWithWallet = Boolean(source && canGenerate && walletConnection && walletUnlocked);
+  const canPrimaryZap = Boolean(walletUnlocked ? canPayWithWallet : canGenerate);
   const duplicatePaymentSent = Boolean(visibleAttempt?.nwcRequestEventId && visibleAttempt.status !== 'failed');
   const generate = async (): Promise<LightningPaymentAttempt> => {
     setError('');
@@ -3551,103 +3554,106 @@ function LightningPaymentPanel({
   }, [watchedAttemptId, watchedAttemptStatus]);
   if (!source) return null;
   return (
-    <section className={embedded ? 'lightning-payment-panel embedded-panel' : 'lightning-payment-panel'}>
+    <section className={embedded ? 'lightning-payment-panel zap-panel embedded-panel' : 'lightning-payment-panel zap-panel'}>
       {!embedded ? (
         <div className="row">
           <ReceiptText size={16} aria-hidden="true" />
           <strong>{t('payment.lightningTitle')}</strong>
         </div>
       ) : null}
-      <p className="muted compact-meta">{walletConnection ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
-      <label>
-        {t('payment.amountSats')}
-        <input inputMode="numeric" min="1" type="number" value={amountSats} onChange={(event) => setAmountSats(event.target.value)} />
-      </label>
-      <label>
-        {t('payment.publicNote')}
-        <input maxLength={240} placeholder={t('payment.publicNotePlaceholder')} value={publicNote} onChange={(event) => setPublicNote(event.target.value)} />
-      </label>
+      <div className="zap-amount-row" role="group" aria-label={t('payment.amountSats')}>
+        {quickZapAmounts.map((amount) => (
+          <button className={Number(amountSats) === amount ? 'filter-chip active' : 'filter-chip'} key={amount} onClick={() => setAmountSats(String(amount))} type="button">
+            {amount}
+          </button>
+        ))}
+        <input aria-label={t('payment.amountSats')} inputMode="numeric" min="1" type="number" value={amountSats} onChange={(event) => setAmountSats(event.target.value)} />
+      </div>
+      <input
+        aria-label={t('payment.publicNote')}
+        className="zap-note"
+        maxLength={240}
+        placeholder={t('payment.publicNotePlaceholder')}
+        value={publicNote}
+        onChange={(event) => setPublicNote(event.target.value)}
+      />
       {!identity ? <p className="warning compact-warning">{t('payment.identityRequired')}</p> : null}
       {identity && enabledRelayCount === 0 ? <p className="warning compact-warning">{t('nostrContact.relaysRequired')}</p> : null}
       {identity && !canUseLocal && !canUseSigner ? <p className="warning compact-warning">{t('payment.signerRequired')}</p> : null}
-      {walletConnection && !walletUnlocked ? <p className="warning compact-warning">{t('nwc.unlockRequired')}</p> : null}
       {error ? <p className="warning" role="alert">{error}</p> : null}
-      {showWalletConnect || !walletConnection ? (
-        <div className="compact-wallet-panel">
-          <strong>{t('nwc.title')}</strong>
-          <label>
-            {t('nwc.uri')}
-            <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
-          </label>
-          <label>
-            {t('nwc.passphrase')}
-            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
-          </label>
-          <p className="muted">{t('nwc.notBackedUp')}</p>
-          <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
-            {t('nwc.connect')}
-          </button>
-        </div>
-      ) : !walletUnlocked ? (
-        <div className="compact-wallet-panel">
-          <strong>{walletConnection.label}</strong>
-          <label>
-            {t('nwc.passphrase')}
-            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
-          </label>
-          <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
-            {t('nwc.unlock')}
-          </button>
-        </div>
-      ) : (
-        <p className="ok compact-warning">{t('nwc.connectedCompact')}</p>
-      )}
       <div className="actions small">
         {identity && !canUseLocal && !canUseSigner ? (
           <button className="subtle" onClick={onConnectSigner} type="button">
             <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
           </button>
         ) : null}
-        <button disabled={!canPayWithWallet || working || duplicatePaymentSent} onClick={() => void pay()} type="button">
+        <button disabled={!canPrimaryZap || working || duplicatePaymentSent} onClick={() => void (walletUnlocked ? pay() : generate())} type="button">
           {working
             ? t('payment.working')
-            : visibleAttempt?.status === 'failed'
-              ? t('nwc.retryPayment')
-              : visibleAttempt?.status === 'paid'
-                ? t('nwc.paymentPaid')
-                : t('nwc.pay')}
+            : walletUnlocked
+              ? visibleAttempt?.status === 'failed'
+                ? t('nwc.retryPayment')
+                : visibleAttempt?.status === 'paid'
+                  ? t('nwc.paymentPaid')
+                  : t('payment.zap')
+              : t('payment.generateInvoice')}
         </button>
       </div>
       {visibleAttempt ? (
-        <article className="inline-card">
+        <article className="zap-status">
           <div className="row between">
             <strong>{t(`payment.status.${visibleAttempt.status}`)}</strong>
             {visibleAttempt.status === 'failed' && visibleAttempt.nwcConnectionId ? <span className="warning mini">{t('nwc.retryWarning')}</span> : null}
           </div>
           {visibleAttempt.error ? <p className="muted">{visibleAttempt.error}</p> : null}
           {visibleAttempt.statusDetail ? <p className="muted">{visibleAttempt.statusDetail}</p> : null}
+          {visibleAttempt.status === 'invoice-created' ? (
+            <div className="actions small">
+              <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
+                {t('payment.copyInvoice')}
+              </button>
+              <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
+                {t('payment.openInvoice')}
+              </button>
+              <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
+                {t('payment.checkReceipt')}
+              </button>
+            </div>
+          ) : null}
         </article>
       ) : null}
       <DisclosurePanel title={t('payment.details')}>
         <SafetyNotice>{t('payment.metadataWarning')}</SafetyNotice>
         <p className="key">{source}</p>
-        {visibleAttempt ? (
-          <div className="actions small">
-            <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
-              {t('payment.copyInvoice')}
-            </button>
-            <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
-              {t('payment.openInvoice')}
-            </button>
-            <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
-              {t('payment.checkReceipt')}
+        <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+        {showWalletConnect || !walletConnection ? (
+          <div className="compact-wallet-panel">
+            <strong>{t('nwc.title')}</strong>
+            <label>
+              {t('nwc.uri')}
+              <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
+            </label>
+            <label>
+              {t('nwc.passphrase')}
+              <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+            </label>
+            <p className="muted">{t('nwc.notBackedUp')}</p>
+            <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
+              {t('nwc.connect')}
             </button>
           </div>
-        ) : (
-          <button disabled={!canGenerate || working} onClick={() => void generate()} type="button">
-            {working ? t('payment.working') : t('payment.generateInvoice')}
-          </button>
-        )}
+        ) : !walletUnlocked ? (
+          <div className="compact-wallet-panel">
+            <strong>{walletConnection.label}</strong>
+            <label>
+              {t('nwc.passphrase')}
+              <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+            </label>
+            <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
+              {t('nwc.unlock')}
+            </button>
+          </div>
+        ) : null}
         {visibleAttempt?.nwcRequestEventId ? <p className="key">{visibleAttempt.nwcRequestEventId}</p> : null}
         {visibleAttempt?.nwcResponseEventId ? <p className="key">{visibleAttempt.nwcResponseEventId}</p> : null}
         {listingAttempts.slice(0, 3).map((attempt) => (
@@ -3767,6 +3773,7 @@ function OperatorSupportPanel({
   const walletUnlocked = Boolean(walletConnection && unlockedNwcConnectionIds.includes(walletConnection.id));
   const canGenerate = Boolean(identity && enabledRelayCount > 0 && Number(amountSats) >= config.minimumSats && (canUseLocal || canUseSigner));
   const canPayWithWallet = Boolean(canGenerate && walletConnection && walletUnlocked);
+  const canPrimaryZap = Boolean(walletUnlocked ? canPayWithWallet : canGenerate);
   const duplicatePaymentSent = Boolean(visibleAttempt?.nwcRequestEventId && visibleAttempt.status !== 'failed');
 
   const generate = async (): Promise<LightningPaymentAttempt> => {
@@ -3885,7 +3892,7 @@ function OperatorSupportPanel({
     );
   }
   return (
-    <section className="operator-support-panel">
+    <section className="operator-support-panel zap-panel">
       <div className="row between">
         <div>
           <strong>{t('support.title')}</strong>
@@ -3893,78 +3900,92 @@ function OperatorSupportPanel({
         </div>
         <SupporterBadge receipt={supportReceipt} />
       </div>
-      <label>
-        {t('payment.amountSats')}
-        <input inputMode="numeric" min={config.minimumSats} type="number" value={amountSats} onChange={(event) => setAmountSats(Number(event.target.value))} />
-      </label>
-      <label>
-        {t('payment.publicNote')}
-        <input maxLength={240} placeholder={t('support.publicNotePlaceholder')} value={publicNote} onChange={(event) => setPublicNote(event.target.value)} />
-      </label>
+      <div className="zap-amount-row" role="group" aria-label={t('payment.amountSats')}>
+        {[config.minimumSats, ...quickZapAmounts.filter((amount) => amount > config.minimumSats)].slice(0, 4).map((amount) => (
+          <button className={Number(amountSats) === amount ? 'filter-chip active' : 'filter-chip'} key={amount} onClick={() => setAmountSats(amount)} type="button">
+            {amount}
+          </button>
+        ))}
+        <input aria-label={t('payment.amountSats')} inputMode="numeric" min={config.minimumSats} type="number" value={amountSats} onChange={(event) => setAmountSats(Number(event.target.value))} />
+      </div>
+      <input
+        aria-label={t('payment.publicNote')}
+        className="zap-note"
+        maxLength={240}
+        placeholder={t('support.publicNotePlaceholder')}
+        value={publicNote}
+        onChange={(event) => setPublicNote(event.target.value)}
+      />
       {!identity ? <p className="warning compact-warning">{t('payment.identityRequired')}</p> : null}
       {identity && enabledRelayCount === 0 ? <p className="warning compact-warning">{t('nostrContact.relaysRequired')}</p> : null}
       {identity && !canUseLocal && !canUseSigner ? <p className="warning compact-warning">{t('payment.signerRequired')}</p> : null}
-      {walletConnection && !walletUnlocked ? <p className="warning compact-warning">{t('nwc.unlockRequired')}</p> : null}
       {error ? <p className="warning" role="alert">{error}</p> : null}
-      {showWalletConnect || !walletConnection ? (
-        <DisclosurePanel title={t('nwc.title')}>
-          <label>
-            {t('nwc.uri')}
-            <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
-          </label>
-          <label>
-            {t('nwc.passphrase')}
-            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
-          </label>
-          <p className="muted">{t('nwc.notBackedUp')}</p>
-          <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
-            {t('nwc.connect')}
-          </button>
-        </DisclosurePanel>
-      ) : !walletUnlocked ? (
-        <DisclosurePanel title={walletConnection.label}>
-          <label>
-            {t('nwc.passphrase')}
-            <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
-          </label>
-          <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
-            {t('nwc.unlock')}
-          </button>
-        </DisclosurePanel>
-      ) : null}
       <div className="actions small">
         {identity && !canUseLocal && !canUseSigner ? (
           <button className="subtle" onClick={onConnectSigner} type="button">
             <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
           </button>
         ) : null}
-        <button disabled={!canPayWithWallet || working || duplicatePaymentSent} onClick={() => void pay()} type="button">
-          {working ? t('payment.working') : t('support.pay')}
+        <button disabled={!canPrimaryZap || working || duplicatePaymentSent} onClick={() => void (walletUnlocked ? pay() : generate())} type="button">
+          {working ? t('payment.working') : walletUnlocked ? t('support.pay') : t('payment.generateInvoice')}
         </button>
         <button className="subtle" disabled={working || !identity} onClick={() => void check()} type="button">
           {t('support.checkReceipts')}
         </button>
       </div>
+      {visibleAttempt ? (
+        <article className="zap-status">
+          <div className="row between">
+            <strong>{t(`payment.status.${visibleAttempt.status}`)}</strong>
+            {visibleAttempt.status === 'failed' && visibleAttempt.nwcConnectionId ? <span className="warning mini">{t('nwc.retryWarning')}</span> : null}
+          </div>
+          {visibleAttempt.status === 'invoice-created' ? (
+            <div className="actions small">
+              <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
+                {t('payment.copyInvoice')}
+              </button>
+              <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
+                {t('payment.openInvoice')}
+              </button>
+              <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
+                {t('payment.checkReceipt')}
+              </button>
+            </div>
+          ) : null}
+        </article>
+      ) : null}
       <DisclosurePanel title={t('payment.details')}>
         <SafetyNotice>{t('support.metadataWarning')}</SafetyNotice>
         <p className="key">{config.lnurl}</p>
-        {visibleAttempt ? (
-          <div className="actions small">
-            <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
-              {t('payment.copyInvoice')}
-            </button>
-            <button className="subtle" onClick={() => window.open(`lightning:${visibleAttempt.bolt11}`, '_blank', 'noopener,noreferrer')} type="button">
-              {t('payment.openInvoice')}
-            </button>
-            <button className="subtle" onClick={() => void check(visibleAttempt)} disabled={working} type="button">
-              {t('payment.checkReceipt')}
+        <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+        {showWalletConnect || !walletConnection ? (
+          <div className="compact-wallet-panel">
+            <strong>{t('nwc.title')}</strong>
+            <label>
+              {t('nwc.uri')}
+              <input placeholder={t('nwc.uriPlaceholder')} value={walletUri} onChange={(event) => setWalletUri(event.target.value)} />
+            </label>
+            <label>
+              {t('nwc.passphrase')}
+              <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+            </label>
+            <p className="muted">{t('nwc.notBackedUp')}</p>
+            <button disabled={working || !walletUri || walletPassphrase.length < 10} onClick={() => void connectWallet()} type="button">
+              {t('nwc.connect')}
             </button>
           </div>
-        ) : (
-          <button disabled={!canGenerate || working} onClick={() => void generate()} type="button">
-            {working ? t('payment.working') : t('payment.generateInvoice')}
-          </button>
-        )}
+        ) : !walletUnlocked ? (
+          <div className="compact-wallet-panel">
+            <strong>{walletConnection.label}</strong>
+            <label>
+              {t('nwc.passphrase')}
+              <input type="password" value={walletPassphrase} onChange={(event) => setWalletPassphrase(event.target.value)} />
+            </label>
+            <button disabled={working || walletPassphrase.length < 10} onClick={() => void unlockWallet()} type="button">
+              {t('nwc.unlock')}
+            </button>
+          </div>
+        ) : null}
         {visibleAttempt ? (
           <p className="muted">
             {visibleAttempt.createdAt} · {visibleAttempt.amountSats} sats · {t(`payment.status.${visibleAttempt.status}`)}
@@ -4295,7 +4316,7 @@ function ListingContactPayPanel({
   const { t } = useI18n();
   const hasMessage = Boolean(contactTarget);
   const hasLightning = Boolean(listingLightningSource(listing, sellerProfile));
-  const [mode, setMode] = useState<'message' | 'lightning'>(hasMessage ? 'message' : 'lightning');
+  const [mode, setMode] = useState<'message' | 'lightning'>(hasLightning ? 'lightning' : 'message');
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -4327,14 +4348,14 @@ function ListingContactPayPanel({
         <div className="contact-pay-summary">
           <p className="muted">{t('listing.contactPayCollapsed')}</p>
           <div className="actions small">
-            {hasMessage ? (
-              <button onClick={() => openMode('message')} type="button">
-                <Radio size={16} /> {t('listing.actionMessage')}
+            {hasLightning ? (
+              <button onClick={() => openMode('lightning')} type="button">
+                <ReceiptText size={16} /> {t('listing.actionLightning')}
               </button>
             ) : null}
-            {hasLightning ? (
-              <button className={hasMessage ? 'subtle' : undefined} onClick={() => openMode('lightning')} type="button">
-                <ReceiptText size={16} /> {t('listing.actionLightning')}
+            {hasMessage ? (
+              <button className={hasLightning ? 'subtle' : undefined} onClick={() => openMode('message')} type="button">
+                <Radio size={16} /> {t('listing.actionMessage')}
               </button>
             ) : null}
           </div>

@@ -33,6 +33,8 @@ const NOSTR_CONNECT_KIND = 24133;
 const NOSTR_CONNECT_PENDING_KEY = 'agoramesh:nip46:pending';
 const NOSTR_CONNECT_POLL_MS = 2_000;
 const NOSTR_CONNECT_REQUEST_TIMEOUT_MS = 180_000;
+const NOSTR_CONNECT_SESSION_KEY = 'agoramesh:nip46:session';
+const NOSTR_EXTENSION_SESSION_KEY = 'agoramesh:nip07:connected';
 
 let activeSignerProvider: NostrSignerState['provider'];
 let activeNostrConnectSession: NostrConnectSession | undefined;
@@ -48,6 +50,16 @@ interface NostrConnectSession {
 interface PendingNostrConnectPairing extends Omit<NostrConnectSession, 'remotePubkey'> {
   uri: string;
   createdAtMs: number;
+}
+
+interface StoredNostrConnectSession extends NostrConnectSession {
+  publicKey: string;
+  connectedAtMs: number;
+}
+
+interface StoredExtensionSession {
+  publicKey: string;
+  connectedAtMs: number;
 }
 
 function extension(): NostrExtension | undefined {
@@ -92,6 +104,101 @@ function clearPendingPairing(): void {
   if (typeof sessionStorage === 'undefined') return;
   try {
     sessionStorage.removeItem(NOSTR_CONNECT_PENDING_KEY);
+  } catch {
+    // Ignore storage access failures.
+  }
+}
+
+function storeNostrConnectSession(session: StoredNostrConnectSession): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(NOSTR_CONNECT_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // The active in-memory session can still be used until the page unloads.
+  }
+}
+
+function readStoredNostrConnectSession(): StoredNostrConnectSession | undefined {
+  if (typeof sessionStorage === 'undefined') return undefined;
+  let raw: string | null;
+  try {
+    raw = sessionStorage.getItem(NOSTR_CONNECT_SESSION_KEY);
+  } catch {
+    return undefined;
+  }
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const parsedRelays = isRecord(parsed) ? parsed.relays : undefined;
+    if (
+      isRecord(parsed) &&
+      typeof parsed.clientSecretHex === 'string' &&
+      /^[0-9a-f]{64}$/i.test(parsed.clientSecretHex) &&
+      typeof parsed.clientPubkey === 'string' &&
+      /^[0-9a-f]{64}$/i.test(parsed.clientPubkey) &&
+      typeof parsed.remotePubkey === 'string' &&
+      /^[0-9a-f]{64}$/i.test(parsed.remotePubkey) &&
+      typeof parsed.publicKey === 'string' &&
+      /^[0-9a-f]{64}$/i.test(parsed.publicKey) &&
+      Array.isArray(parsedRelays) &&
+      typeof parsed.secret === 'string' &&
+      typeof parsed.connectedAtMs === 'number'
+    ) {
+      return {
+        clientSecretHex: parsed.clientSecretHex.toLowerCase(),
+        clientPubkey: parsed.clientPubkey.toLowerCase(),
+        remotePubkey: parsed.remotePubkey.toLowerCase(),
+        publicKey: parsed.publicKey.toLowerCase(),
+        relays: uniqueRelays(parsedRelays.filter((relay): relay is string => typeof relay === 'string')),
+        secret: parsed.secret,
+        connectedAtMs: parsed.connectedAtMs
+      };
+    }
+  } catch {
+    // Ignore malformed stale session data.
+  }
+  clearStoredNostrConnectSession();
+  return undefined;
+}
+
+function clearStoredNostrConnectSession(): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(NOSTR_CONNECT_SESSION_KEY);
+  } catch {
+    // Ignore storage access failures.
+  }
+}
+
+function storeExtensionSession(publicKey: string): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(NOSTR_EXTENSION_SESSION_KEY, JSON.stringify({ publicKey: publicKey.toLowerCase(), connectedAtMs: Date.now() }));
+  } catch {
+    // The extension can still be used while the current page stays alive.
+  }
+}
+
+function readStoredExtensionSession(): StoredExtensionSession | undefined {
+  if (typeof sessionStorage === 'undefined') return undefined;
+  try {
+    const raw = sessionStorage.getItem(NOSTR_EXTENSION_SESSION_KEY);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed) && typeof parsed.publicKey === 'string' && /^[0-9a-f]{64}$/i.test(parsed.publicKey) && typeof parsed.connectedAtMs === 'number') {
+      return { publicKey: parsed.publicKey.toLowerCase(), connectedAtMs: parsed.connectedAtMs };
+    }
+  } catch {
+    // Ignore malformed stale session data.
+  }
+  clearStoredExtensionSession();
+  return undefined;
+}
+
+function clearStoredExtensionSession(): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(NOSTR_EXTENSION_SESSION_KEY);
   } catch {
     // Ignore storage access failures.
   }
@@ -164,6 +271,7 @@ async function activateNostrConnectSession(session: NostrConnectSession): Promis
   activeSignerProvider = 'nip46';
   clearPendingPairing();
   const publicKey = (await sendNostrConnectRequest(session, 'get_public_key', [])).toLowerCase();
+  storeNostrConnectSession({ ...session, publicKey, connectedAtMs: Date.now() });
   return { available: true, connected: true, publicKey, provider: 'nip46' as const };
 }
 
@@ -487,6 +595,7 @@ async function connectNostrConnectSigner(): Promise<NostrSignerState> {
 export function detectNostrSigner(): NostrSignerState {
   const nostr = extension();
   if (nostr?.getPublicKey && nostr.signEvent) return { available: true, connected: false, provider: 'nip07' };
+  if (readStoredNostrConnectSession()) return { available: true, connected: false, provider: 'nip46' };
   return { available: false, connected: false };
 }
 
@@ -496,6 +605,7 @@ export async function connectNostrSigner(): Promise<NostrSignerState> {
   try {
     const publicKey = (await nostr.getPublicKey()).toLowerCase();
     activeSignerProvider = 'nip07';
+    storeExtensionSession(publicKey);
     return { available: true, connected: true, publicKey, provider: 'nip07' };
   } catch (error) {
     return {
@@ -505,6 +615,50 @@ export async function connectNostrSigner(): Promise<NostrSignerState> {
       lastError: error instanceof Error ? error.message : 'Signer connection was rejected.'
     };
   }
+}
+
+export async function restoreNostrSignerSession(): Promise<NostrSignerState> {
+  const nostr = extension();
+  const storedExtension = readStoredExtensionSession();
+  if (storedExtension && nostr?.getPublicKey && nostr.signEvent) {
+    try {
+      const publicKey = (await nostr.getPublicKey()).toLowerCase();
+      if (publicKey === storedExtension.publicKey) {
+        activeSignerProvider = 'nip07';
+        storeExtensionSession(publicKey);
+        return { available: true, connected: true, publicKey, provider: 'nip07' };
+      }
+      clearStoredExtensionSession();
+    } catch {
+      return { available: true, connected: false, provider: 'nip07' };
+    }
+  }
+
+  const storedNostrConnect = readStoredNostrConnectSession();
+  if (storedNostrConnect) {
+    activeNostrConnectSession = storedNostrConnect;
+    activeSignerProvider = 'nip46';
+    try {
+      const publicKey = (await sendNostrConnectRequest(storedNostrConnect, 'get_public_key', [])).toLowerCase();
+      if (publicKey !== storedNostrConnect.publicKey) {
+        activeNostrConnectSession = undefined;
+        clearStoredNostrConnectSession();
+        return { available: true, connected: false, provider: 'nip46', lastError: 'Nostr Connect signer public key changed.' };
+      }
+      storeNostrConnectSession({ ...storedNostrConnect, publicKey, connectedAtMs: Date.now() });
+      return { available: true, connected: true, publicKey, provider: 'nip46' };
+    } catch (error) {
+      activeNostrConnectSession = undefined;
+      return {
+        available: true,
+        connected: false,
+        provider: 'nip46',
+        lastError: error instanceof Error ? error.message : 'Could not restore Nostr Connect signer.'
+      };
+    }
+  }
+
+  return detectNostrSigner();
 }
 
 export async function signWithNostrSigner(event: NostrUnsignedEvent, expectedPublicKey: string): Promise<NostrEvent> {

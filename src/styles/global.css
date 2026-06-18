@@ -1931,6 +1931,38 @@ dd {
   padding: clamp(0.85rem, 2vw, 1rem);
 }
 
+.zap-panel {
+  gap: var(--space-2);
+}
+
+.zap-amount-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(3.25rem, auto)) minmax(5rem, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.zap-amount-row input {
+  min-width: 0;
+  min-height: 2.35rem;
+  text-align: right;
+}
+
+.zap-note {
+  min-height: 2.35rem;
+}
+
+.zap-status {
+  display: grid;
+  gap: var(--space-2);
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
+}
+
+.zap-status p {
+  margin: 0;
+}
+
 .contact-pay-panel {
   display: grid;
   gap: var(--space-3);
@@ -2795,6 +2827,14 @@ dd {
   .quick-filter-group,
   .badge-row {
     align-items: stretch;
+  }
+
+  .zap-amount-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .zap-amount-row input {
+    grid-column: 1 / -1;
   }
 
   .filter-chip {

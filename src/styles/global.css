@@ -1392,6 +1392,34 @@ dd {
   margin: 0;
 }
 
+.listing-top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.listing-actions {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.listing-actions > * {
+  min-width: 0;
+}
+
+.listing-actions .inline-card,
+.listing-actions .contact-pay-panel,
+.listing-actions .operator-support-panel {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.listing-actions .disclosure-body {
+  padding: var(--space-3);
+}
+
 .listing-actions {
   position: sticky;
   top: calc(var(--space-6) + 4rem);

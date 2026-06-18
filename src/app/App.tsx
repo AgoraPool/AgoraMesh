@@ -22,6 +22,7 @@ import {
   Scale,
   Search,
   Settings as SettingsIcon,
+  Share2,
   ShieldCheck,
   ShoppingBag,
   Upload,
@@ -135,7 +136,6 @@ import {
   detectNostrSigner,
   encryptWithNostrSigner,
   resumeNostrConnectPairing,
-  restoreNostrSignerSession,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
   startNostrConnectPairing,
@@ -4498,6 +4498,7 @@ function ListingPage({
 }): ReactNode {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
+  const [shareStatus, setShareStatus] = useState('');
   const conflictGroups = useMemo(() => findSyncedConflictGroups(syncedListings), [syncedListings]);
   const localListing = route?.source === 'local' ? listings.find((listing) => listing.id === route.id) : undefined;
   const syncedRecord = route?.source === 'synced' ? syncedListings.find((record) => record.id === route.id) : undefined;
@@ -4544,12 +4545,38 @@ function ListingPage({
         }`
       : t('sync.localData')
     : listing.visibility;
+  const shareListing = async (): Promise<void> => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}#${listingRouteForRef(listingRef)}`;
+    const shareData = {
+      title: listing.title,
+      text: `${listing.title} · ${formatListingPrice(listing)}`,
+      url: shareUrl
+    };
+    try {
+      if (navigator.share) {
+        await navigator.share(shareData);
+        setShareStatus(t('listing.shareDone'));
+        return;
+      }
+      await navigator.clipboard?.writeText(shareUrl);
+      setShareStatus(t('listing.shareCopied'));
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setShareStatus(t('listing.shareFailed'));
+    }
+  };
 
   return (
     <section className="page listing-page">
-      <button className="subtle" onClick={onBack} type="button">
-        {t('listing.backToMarketplace')}
-      </button>
+      <div className="listing-top-actions">
+        <button className="subtle" onClick={onBack} type="button">
+          {t('listing.backToMarketplace')}
+        </button>
+        <button className="subtle" onClick={() => void shareListing()} type="button">
+          <Share2 size={16} /> {t('listing.share')}
+        </button>
+      </div>
+      {shareStatus ? <p className="muted compact-meta">{shareStatus}</p> : null}
       {editing && localListing ? (
         <ListingCreatePanel
           identity={identity}

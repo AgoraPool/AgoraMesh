@@ -6,6 +6,7 @@ import type {
   CommunityAllowlistEntry,
   DataSourceFilter,
   HiddenFilter,
+  Listing,
   ReputationAttestation,
   SyncedPublicRecord,
   TrustFilter
@@ -100,6 +101,25 @@ export function reputationReviewKey(attestation: ReputationAttestation): string 
     attestation.subjectPublicKey.toLowerCase(),
     attestation.listingCoordinate || attestation.listingId || attestation.agreementHash || 'seller'
   ].join(':');
+}
+
+export function listingReviewCoordinate(listing: Pick<Listing, 'authorPublicKey' | 'id'>): string {
+  return `30402:${listing.authorPublicKey.toLowerCase()}:${listing.id}`;
+}
+
+export function listingReviewMatches(listing: Pick<Listing, 'authorPublicKey' | 'id'>, attestation: ReputationAttestation): boolean {
+  if (attestation.subjectPublicKey.toLowerCase() !== listing.authorPublicKey.toLowerCase()) return false;
+  if (attestation.listingCoordinate) return attestation.listingCoordinate.toLowerCase() === listingReviewCoordinate(listing).toLowerCase();
+  return attestation.listingId === listing.id;
+}
+
+export function listingReviewRows(
+  listing: Pick<Listing, 'authorPublicKey' | 'id'>,
+  localAttestations: ReputationAttestation[],
+  syncedAttestations: SyncedPublicRecord<ReputationAttestation>[],
+  hidden: HiddenFilter = 'visible'
+): ReputationRow[] {
+  return dedupeReputationRows(reputationRows(localAttestations, syncedAttestations, hidden).filter((row) => listingReviewMatches(listing, row.attestation)));
 }
 
 export function dedupeReputationRows(rows: ReputationRow[]): ReputationRow[] {

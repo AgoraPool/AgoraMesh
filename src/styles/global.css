@@ -1460,6 +1460,60 @@ dd {
   padding: var(--space-3);
 }
 
+.listing-reviews-section {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.listing-review-composer,
+.listing-review-thread {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.listing-review-composer {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
+}
+
+.listing-review-composer h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.listing-review-composer label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.listing-review-composer textarea {
+  min-height: 7rem;
+}
+
+.listing-review-card {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: var(--space-3);
+}
+
+.listing-review-card p {
+  margin: 0;
+}
+
+.review-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
 .listing-page > button:first-child {
   margin-bottom: var(--space-5);
 }

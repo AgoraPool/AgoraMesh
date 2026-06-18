@@ -161,12 +161,16 @@ import {
 import {
   agreementReputationCandidates,
   filterReputationRows,
+  listingReviewCoordinate,
+  listingReviewMatches,
+  listingReviewRows,
   reputationReviewKey,
   reputationRows,
   reputationSubjectSummaries,
   shortPublicKey,
   type AgreementReputationCandidate,
-  type ReputationFilterState
+  type ReputationFilterState,
+  type ReputationRow
 } from '../lib/reputation/summary';
 import {
   agreementSchema,
@@ -226,6 +230,7 @@ import type {
   SignerIdentityStatus,
   SyncSettings,
   SyncStatus,
+  SyncedConflictGroup,
   SyncedPublicRecord,
   TrustFilter,
   WebOfTrustEntry
@@ -2668,15 +2673,31 @@ export function App(): ReactNode {
             onSaveNwcConnection={saveNwcConnection}
             onUnlockNwcConnection={unlockNwcConnection}
             onPayLightningAttemptWithNwc={payLightningAttemptWithNwc}
-            onReviewSeller={(request) => {
-              setReputationDraftRequest(request);
-              go('reputation');
+            onReviewSaved={(attestation) => {
+              setAttestations((current) => [attestation, ...current.filter((entry) => entry.id !== attestation.id)]);
+              showNotice(t('notice.reputationSaved'), { body: t('listingReviews.saved') });
+              void reload();
             }}
+            onPublishReview={(attestation) =>
+              publishEvent(
+                'reputation',
+                attestation.id,
+                (key) => signReputation(attestation, key),
+                () =>
+                  unsignedAgoraEvent(
+                    AGORAMESH_EVENT_KINDS.reputation,
+                    reputationEventTags(attestation),
+                    publicReputationPayload(attestation)
+                  ),
+                attestation.reviewerPublicKey
+              )
+            }
             onStartTrade={(listingRef) => {
               setTradeListingRef(listingRef);
               go('trade');
             }}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
+            onToggleReviewHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
           />
         ) : null}
         {page === 'profile' ? (
@@ -3717,6 +3738,245 @@ function ListingZapReceiptsPanel({
   );
 }
 
+function ListingReviewComposer({
+  listing,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  localAttestations,
+  onConnectSigner,
+  onSaved
+}: {
+  listing: Listing;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  localAttestations: ReputationAttestation[];
+  onConnectSigner: () => void;
+  onSaved: (attestation: ReputationAttestation) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const [score, setScore] = useState(5);
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+  const canUseSigner = Boolean(identity && nostrSigner.connected && nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase());
+  const signingDisabledReason = (): string | undefined => {
+    if (!identity) return t('listingReviews.identityRequired');
+    if (publicKeysMatch(identity.publicKey, listing.authorPublicKey)) return t('listingReviews.sellerCannotReview');
+    if (nostrSigner.connected && nostrSigner.publicKey && nostrSigner.publicKey.toLowerCase() !== identity.publicKey.toLowerCase()) {
+      if (canUseLocal) return undefined;
+      return t('reputation.signerMismatch');
+    }
+    if (canUseSigner || canUseLocal) return undefined;
+    if ((identity.keySource ?? 'local') === 'nostr-extension') return t('reputation.signerRequired');
+    return t('reputation.unlockRequired');
+  };
+
+  const save = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    const disabledReason = signingDisabledReason();
+    if (!identity || disabledReason) {
+      setMessage(disabledReason ?? t('listingReviews.identityRequired'));
+      return;
+    }
+    const draft = {
+      reviewerPublicKey: identity.publicKey,
+      subjectPublicKey: listing.authorPublicKey.toLowerCase(),
+      role: 'seller' as const,
+      score,
+      listingId: listing.id,
+      listingTitle: listing.title,
+      listingCoordinate: listingReviewCoordinate(listing),
+      tags: [] as AttestationTag[],
+      text: sanitizePlainText(text)
+    };
+    const duplicateKey = reputationReviewKey({ ...draft, id: 'draft', timestamp: 1, signature: '', eventId: '' });
+    if (localAttestations.some((attestation) => reputationReviewKey(attestation) === duplicateKey)) {
+      setMessage(t('listingReviews.duplicate'));
+      return;
+    }
+    setSaving(true);
+    setMessage('');
+    try {
+      const attestation =
+        canUseSigner
+          ? await (async () => {
+              const prepared = prepareAttestationEvent(draft);
+              const signed = await signWithNostrSigner(prepared.event, identity.publicKey);
+              return attestationFromSignedEvent(draft, prepared, signed as AttestationSignedEvent);
+            })()
+          : createSignedAttestation(draft, privateKeyHex);
+      await db.attestations.put(attestation);
+      setText('');
+      setScore(5);
+      setMessage(t('listingReviews.saved'));
+      onSaved(attestation);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t('signer.rejected'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const disabledReason = signingDisabledReason();
+  return (
+    <form className="listing-review-composer" onSubmit={(event) => void save(event)}>
+      <div>
+        <h3>{t('listingReviews.composerTitle')}</h3>
+        <p className="muted compact-meta">{t('listingReviews.composerBody')}</p>
+      </div>
+      <label>
+        {t('listingReviews.score')}
+        <select value={score} onChange={(event) => setScore(Number(event.target.value))}>
+          {[5, 4, 3, 2, 1].map((value) => (
+            <option value={value} key={value}>
+              {t(`reputation.score.${value}`)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        {t('listingReviews.text')}
+        <textarea
+          maxLength={1000}
+          placeholder={t('listingReviews.textPlaceholder')}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+      </label>
+      <div className="actions small">
+        {identity && !canUseLocal && !canUseSigner ? (
+          <button className="subtle" onClick={onConnectSigner} type="button">
+            <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
+          </button>
+        ) : null}
+        <button disabled={saving || Boolean(disabledReason) || !text.trim()} title={disabledReason} type="submit">
+          {saving ? t('payment.working') : t('listingReviews.save')}
+        </button>
+      </div>
+      {disabledReason ? <ActionHint>{disabledReason}</ActionHint> : null}
+      {message ? <StatusMessage className="notice inline">{message}</StatusMessage> : null}
+    </form>
+  );
+}
+
+function ListingReviewsPanel({
+  listing,
+  rows,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  localAttestations,
+  syncSettings,
+  conflictGroups,
+  onConnectSigner,
+  onSaved,
+  onPublish,
+  onToggleHidden
+}: {
+  listing: Listing;
+  rows: ReputationRow[];
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  localAttestations: ReputationAttestation[];
+  syncSettings: SyncSettings;
+  conflictGroups: SyncedConflictGroup<ReputationAttestation>[];
+  onConnectSigner: () => void;
+  onSaved: (attestation: ReputationAttestation) => void;
+  onPublish: (attestation: ReputationAttestation) => void;
+  onToggleHidden: (record: SyncedPublicRecord<ReputationAttestation>, hidden: boolean) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const existingLocalReview = identity
+    ? localAttestations.find((attestation) => publicKeysMatch(attestation.reviewerPublicKey, identity.publicKey) && listingReviewMatches(listing, attestation))
+    : undefined;
+  const canWriteReview = Boolean(identity && !publicKeysMatch(identity.publicKey, listing.authorPublicKey) && !existingLocalReview);
+  return (
+    <div className="listing-reviews-section">
+      <div className="row between">
+        <div>
+          <h2>{t('listingReviews.title')}</h2>
+          <p className="muted compact-meta">{t('listingReviews.body')}</p>
+        </div>
+        <span className="pill">{rows.length}</span>
+      </div>
+      {canWriteReview || !identity || publicKeysMatch(identity.publicKey, listing.authorPublicKey) ? (
+        <ListingReviewComposer
+          listing={listing}
+          identity={identity}
+          privateKeyHex={privateKeyHex}
+          nostrSigner={nostrSigner}
+          localAttestations={localAttestations}
+          onConnectSigner={onConnectSigner}
+          onSaved={onSaved}
+        />
+      ) : existingLocalReview ? (
+        <ActionHint>{t('listingReviews.publishHint')}</ActionHint>
+      ) : null}
+      <div className="listing-review-thread">
+        {rows.map(({ attestation, source, trusted, verified, record }) => (
+          <article className="listing-review-card" key={record?.id ?? `${source}-${attestation.id}`}>
+            <div className="review-score-row">
+              <strong>{formatReviewScore(attestation.score)}</strong>
+              <span className={verified ? 'ok mini' : 'warning mini'}>{verified ? t('reputation.verified') : t('reputation.invalid')}</span>
+            </div>
+            <p>{attestation.text || t('reputation.noText')}</p>
+            <p className="muted compact-meta">
+              {t('listingReviews.reviewer')}: {shortPublicKey(attestation.reviewerPublicKey)} ·{' '}
+              {source === 'local'
+                ? t('listingReviews.local')
+                : `${t('listingReviews.synced')} · ${trusted ? t('listingReviews.trusted') : t('listingReviews.untrusted')}`}{' '}
+              · {new Date(attestation.timestamp * 1000).toLocaleString()}
+            </p>
+            {attestation.tags.length > 0 ? (
+              <div className="tags compact-tags">
+                {attestation.tags.map((tag) => (
+                  <span key={tag}>{t(`reputation.tag.${tag}`)}</span>
+                ))}
+              </div>
+            ) : null}
+            <DisclosurePanel title={t('listing.details')}>
+              <p className="key">{attestation.eventId}</p>
+              <p className="key">{attestation.reviewerPublicKey}</p>
+              <p className="key">{attestation.subjectPublicKey}</p>
+              {attestation.listingCoordinate ? <p className="key">{attestation.listingCoordinate}</p> : null}
+              <div className="actions small">
+                <button onClick={() => downloadJson(`agoramesh-attestation-${attestation.id}.json`, attestation)} type="button">
+                  <Download size={16} /> {t('common.export')}
+                </button>
+                {source === 'local' ? (
+                  <button onClick={() => onPublish(attestation)} type="button">
+                    <Radio size={16} /> {t('common.publish')}
+                  </button>
+                ) : null}
+                {record ? (
+                  <SyncedRecordActions
+                    conflict={isRecordConflicted(record, conflictGroups)}
+                    preferred={isPreferredConflictRecord(record, conflictGroups)}
+                    record={record}
+                    onToggleHidden={onToggleHidden}
+                  />
+                ) : null}
+              </div>
+            </DisclosurePanel>
+            {record && syncSettings.showDataSource ? (
+              <SyncedQualityBadges
+                conflict={isRecordConflicted(record, conflictGroups)}
+                hidden={record.hidden}
+                preferred={isPreferredConflictRecord(record, conflictGroups)}
+              />
+            ) : null}
+          </article>
+        ))}
+        {rows.length === 0 ? <EmptyState title={t('listingReviews.emptyTitle')} body={t('listingReviews.emptyBody')} /> : null}
+      </div>
+    </div>
+  );
+}
+
 function OperatorSupportPanel({
   config,
   identity,
@@ -4449,9 +4709,11 @@ function ListingPage({
   onSaveNwcConnection,
   onUnlockNwcConnection,
   onPayLightningAttemptWithNwc,
-  onReviewSeller,
+  onReviewSaved,
+  onPublishReview,
   onStartTrade,
-  onToggleHidden
+  onToggleHidden,
+  onToggleReviewHidden
 }: {
   route?: { source: 'local' | 'synced'; id: string };
   listings: Listing[];
@@ -4492,17 +4754,25 @@ function ListingPage({
   onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
   onUnlockNwcConnection: (connection: NwcConnection, passphrase: string) => Promise<void>;
   onPayLightningAttemptWithNwc: (attempt: LightningPaymentAttempt, connectionId: string) => Promise<LightningPaymentAttempt>;
-  onReviewSeller: (request: ReputationDraftRequest) => void;
+  onReviewSaved: (attestation: ReputationAttestation) => void;
+  onPublishReview: (attestation: ReputationAttestation) => void;
   onStartTrade: (listingRef: ListingSourceRef) => void;
   onToggleHidden: (record: SyncedPublicRecord<Listing>, hidden: boolean) => void;
+  onToggleReviewHidden: (record: SyncedPublicRecord<ReputationAttestation>, hidden: boolean) => void;
 }): ReactNode {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
   const [shareStatus, setShareStatus] = useState('');
+  const reviewsSectionRef = useRef<HTMLElement | null>(null);
   const conflictGroups = useMemo(() => findSyncedConflictGroups(syncedListings), [syncedListings]);
+  const reviewConflictGroups = useMemo(() => findSyncedConflictGroups(syncedAttestations), [syncedAttestations]);
   const localListing = route?.source === 'local' ? listings.find((listing) => listing.id === route.id) : undefined;
   const syncedRecord = route?.source === 'synced' ? syncedListings.find((record) => record.id === route.id) : undefined;
   const listing = localListing ?? syncedRecord?.payload;
+  const listingReviews = useMemo(
+    () => (listing ? listingReviewRows(listing, attestations, syncedAttestations, 'visible') : []),
+    [attestations, listing, syncedAttestations]
+  );
   if (!route || !listing) {
     return (
       <section className="page listing-page">
@@ -4636,14 +4906,7 @@ function ListingPage({
                 webTrust={sellerWebTrust}
                 onReview={
                   canReviewSeller
-                    ? () =>
-                        onReviewSeller({
-                          subjectPublicKey: listing.authorPublicKey,
-                          role: 'seller',
-                          listingId: listing.id,
-                          listingTitle: listing.title,
-                          listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
-                        })
+                    ? () => reviewsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                     : undefined
                 }
               />
@@ -4673,6 +4936,22 @@ function ListingPage({
                   <p className="muted">{t('sync.localData')}</p>
                 )}
               </DisclosurePanel>
+            </section>
+            <section className="listing-section" ref={reviewsSectionRef}>
+              <ListingReviewsPanel
+                listing={listing}
+                rows={listingReviews}
+                identity={identity}
+                privateKeyHex={privateKeyHex}
+                nostrSigner={nostrSigner}
+                localAttestations={attestations}
+                syncSettings={syncSettings}
+                conflictGroups={reviewConflictGroups}
+                onConnectSigner={onConnectSigner}
+                onSaved={onReviewSaved}
+                onPublish={onPublishReview}
+                onToggleHidden={onToggleReviewHidden}
+              />
             </section>
           </article>
           <aside className="listing-actions" aria-label={t('listing.sidebarActions')}>
@@ -4715,23 +4994,11 @@ function ListingPage({
                 <button onClick={() => onStartTrade(listingRef)} type="button">
                   <Handshake size={16} /> {t('marketplace.startTrade')}
                 </button>
-                {canReviewSeller ? (
-                  <button
-                    className="subtle"
-                    onClick={() =>
-                      onReviewSeller({
-                        subjectPublicKey: listing.authorPublicKey,
-                        role: 'seller',
-                        listingId: listing.id,
-                        listingTitle: listing.title,
-                        listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id)
-                      })
-                    }
-                    type="button"
-                  >
-                    <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
-                  </button>
-                ) : null}
+	                {canReviewSeller ? (
+	                  <button className="subtle" onClick={() => reviewsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} type="button">
+	                    <BadgeCheck size={16} /> {t('reputation.reviewSeller')}
+	                  </button>
+	                ) : null}
                 {canEdit ? (
                   <button className="subtle" onClick={() => setEditing(true)} type="button">
                     <Pencil size={16} /> {t('listing.edit')}

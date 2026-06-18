@@ -1,10 +1,19 @@
 import { bytesToHex } from '@noble/hashes/utils';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import type { Agreement, AgreementAcceptanceReceipt, CommunityAllowlistEntry, SyncedPublicRecord } from '../../types/domain';
+import type { Agreement, AgreementAcceptanceReceipt, CommunityAllowlistEntry, Listing, ReputationAttestation, SyncedPublicRecord } from '../../types/domain';
 import { createSignedAttestation } from '../crypto/attestations';
 import { generateAgreementHash } from '../crypto/hash';
-import { agreementReputationCandidates, dedupeReputationRows, filterReputationRows, reputationRows, reputationSubjectSummaries } from './summary';
+import {
+  agreementReputationCandidates,
+  dedupeReputationRows,
+  filterReputationRows,
+  listingReviewCoordinate,
+  listingReviewMatches,
+  listingReviewRows,
+  reputationRows,
+  reputationSubjectSummaries
+} from './summary';
 
 function keypair(): { privateKeyHex: string; publicKey: string } {
   const privateKey = generateSecretKey();
@@ -36,6 +45,47 @@ function agreementFixture(overrides: Partial<Agreement> = {}): Agreement {
     ...overrides
   } satisfies Agreement;
   return { ...agreement, hash: generateAgreementHash(agreement) };
+}
+
+function listingFixture(overrides: Partial<Listing> = {}): Listing {
+  return {
+    id: 'listing_1',
+    title: 'Repair work',
+    description: 'Fix a bike.',
+    type: 'offer',
+    category: 'services',
+    price: { amount: '100', currency: 'SAT' },
+    region: 'Prague',
+    fulfillmentType: 'local-pickup',
+    fulfillmentNotes: '',
+    contactMethod: { id: 'contact_1', kind: 'nostr', value: 'f'.repeat(64) },
+    paymentPreferences: ['lightning'],
+    barterAccepted: false,
+    status: 'active',
+    visibility: 'public',
+    authorPublicKey: 'a'.repeat(64),
+    createdAt: '2026-05-31T00:00:00.000Z',
+    updatedAt: '2026-05-31T00:00:00.000Z',
+    expiresAt: '2026-06-30T00:00:00.000Z',
+    tags: [],
+    ...overrides
+  };
+}
+
+function syncedRecord(attestation: ReputationAttestation, overrides: Partial<SyncedPublicRecord<ReputationAttestation>> = {}): SyncedPublicRecord<ReputationAttestation> {
+  return {
+    id: `synced_${attestation.id}`,
+    eventId: attestation.eventId,
+    kind: 39004,
+    authorPublicKey: attestation.reviewerPublicKey,
+    relayUrls: ['wss://relay.example'],
+    receivedAt: '2026-05-31T00:00:00.000Z',
+    importedAt: '2026-05-31T00:00:00.000Z',
+    payload: attestation,
+    trusted: false,
+    hidden: false,
+    ...overrides
+  };
 }
 
 describe('reputation summaries', () => {
@@ -182,5 +232,126 @@ describe('reputation summaries', () => {
       listingId: agreement.listingId,
       listingCoordinate: `${30402}:${agreement.sellerPublicKey}:${agreement.listingId}`
     });
+  });
+
+  it('matches listing reviews by coordinate first, then listing id, and requires the seller subject', () => {
+    const reviewer = keypair();
+    const idOnlyReviewer = keypair();
+    const wrongSubjectReviewer = keypair();
+    const wrongCoordinateReviewer = keypair();
+    const listing = listingFixture();
+    const coordinateReview = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 5,
+        listingId: 'wrong_id',
+        listingTitle: listing.title,
+        listingCoordinate: listingReviewCoordinate(listing),
+        tags: ['clear-communication'],
+        text: 'Clear and reliable.'
+      },
+      reviewer.privateKeyHex
+    );
+    const idOnlyReview = createSignedAttestation(
+      {
+        reviewerPublicKey: idOnlyReviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 4,
+        listingId: listing.id,
+        tags: ['fulfilled-agreement'],
+        text: 'Matched by id.'
+      },
+      idOnlyReviewer.privateKeyHex
+    );
+    const wrongSubject = createSignedAttestation(
+      {
+        reviewerPublicKey: wrongSubjectReviewer.publicKey,
+        subjectPublicKey: 'b'.repeat(64),
+        role: 'seller',
+        score: 5,
+        listingCoordinate: listingReviewCoordinate(listing),
+        tags: ['fulfilled-agreement'],
+        text: 'Wrong seller.'
+      },
+      wrongSubjectReviewer.privateKeyHex
+    );
+    const wrongCoordinate = createSignedAttestation(
+      {
+        reviewerPublicKey: wrongCoordinateReviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 3,
+        listingId: listing.id,
+        listingCoordinate: `30402:${listing.authorPublicKey}:other_listing`,
+        tags: ['other'],
+        text: 'Wrong coordinate.'
+      },
+      wrongCoordinateReviewer.privateKeyHex
+    );
+
+    expect(listingReviewMatches(listing, coordinateReview)).toBe(true);
+    expect(listingReviewMatches(listing, wrongCoordinate)).toBe(false);
+    expect(listingReviewRows(listing, [coordinateReview, idOnlyReview, wrongSubject, wrongCoordinate], [])).toHaveLength(2);
+  });
+
+  it('dedupes listing reviews, prefers verified rows, and sorts newest first', () => {
+    const listing = listingFixture();
+    const reviewer = keypair();
+    const trustedReviewer = keypair();
+    const older = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 2,
+        listingId: listing.id,
+        listingCoordinate: listingReviewCoordinate(listing),
+        tags: ['late'],
+        text: 'Older review.'
+      },
+      reviewer.privateKeyHex
+    );
+    const newer = createSignedAttestation(
+      {
+        reviewerPublicKey: reviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 5,
+        listingId: listing.id,
+        listingCoordinate: listingReviewCoordinate(listing),
+        tags: ['fulfilled-agreement'],
+        text: 'Updated review.'
+      },
+      reviewer.privateKeyHex
+    );
+    const trusted = createSignedAttestation(
+      {
+        reviewerPublicKey: trustedReviewer.publicKey,
+        subjectPublicKey: listing.authorPublicKey,
+        role: 'seller',
+        score: 4,
+        listingId: listing.id,
+        listingCoordinate: listingReviewCoordinate(listing),
+        tags: ['clear-communication'],
+        text: 'Synced review.'
+      },
+      trustedReviewer.privateKeyHex
+    );
+    const tampered = { ...newer, id: 'tampered', signature: older.signature, timestamp: newer.timestamp + 10 };
+
+    const rows = listingReviewRows(
+      listing,
+      [{ ...older, timestamp: 1 }, tampered],
+      [syncedRecord({ ...newer, timestamp: 2 }, { trusted: true }), syncedRecord({ ...trusted, timestamp: 3 }, { trusted: true })]
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].attestation.text).toBe('Synced review.');
+    expect(rows[0].verified).toBe(true);
+    expect(rows[1].attestation.text).toBe('Updated review.');
+    expect(rows[1].verified).toBe(true);
   });
 });

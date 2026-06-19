@@ -35,6 +35,7 @@ const NOSTR_CONNECT_POLL_MS = 2_000;
 const NOSTR_CONNECT_REQUEST_TIMEOUT_MS = 180_000;
 const NOSTR_CONNECT_SESSION_KEY = 'agoramesh:nip46:session';
 const NOSTR_EXTENSION_SESSION_KEY = 'agoramesh:nip07:connected';
+const AMBER_ANDROID_PACKAGE = 'com.greenart7c3.nostrsigner';
 
 let activeSignerProvider: NostrSignerState['provider'];
 let activeNostrConnectSession: NostrConnectSession | undefined;
@@ -613,15 +614,46 @@ export function cancelNostrConnectPairing(): void {
   clearPendingPairing();
 }
 
+export function nostrConnectAndroidIntentUri(uri: string): string | undefined {
+  if (!uri.toLowerCase().startsWith('nostrconnect://')) return undefined;
+  try {
+    const parsed = new URL(uri);
+    const target = `${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    if (!target) return undefined;
+    return `intent://${target}#Intent;scheme=nostrconnect;package=${AMBER_ANDROID_PACKAGE};end`;
+  } catch {
+    const target = uri.slice('nostrconnect://'.length);
+    return target ? `intent://${target}#Intent;scheme=nostrconnect;package=${AMBER_ANDROID_PACKAGE};end` : undefined;
+  }
+}
+
+function openHrefFromUserAction(href: string): void {
+  if (typeof window === 'undefined') return;
+  const link = window.document.createElement('a');
+  link.href = href;
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  window.document.body.append(link);
+  link.click();
+  link.remove();
+}
+
 export function openNostrConnectPairingUri(uri: string): void {
   if (typeof window === 'undefined') return;
+  const isAndroid = /Android/i.test(window.navigator.userAgent);
+  const intentUri = isAndroid ? nostrConnectAndroidIntentUri(uri) : undefined;
   try {
-    window.location.assign(uri);
+    openHrefFromUserAction(intentUri ?? uri);
   } catch {
-    const link = window.document.createElement('a');
-    link.href = uri;
-    link.rel = 'noopener noreferrer';
-    link.click();
+    if (intentUri) {
+      try {
+        window.location.href = intentUri;
+        return;
+      } catch {
+        // Fall through to the raw URI as a last resort.
+      }
+    }
+    window.location.href = uri;
   }
 }
 

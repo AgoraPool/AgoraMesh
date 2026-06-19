@@ -1,7 +1,7 @@
 import { bytesToHex } from '@noble/hashes/utils';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detectNostrSigner, connectNostrSigner, disconnectNostrSigner, signWithNostrSigner } from './signer';
+import { detectNostrSigner, connectNostrSigner, disconnectNostrSigner, nostrConnectAndroidIntentUri, signWithNostrSigner } from './signer';
 import { unsignedAgoraEvent, AGORAMESH_EVENT_KINDS } from './events';
 
 describe('NIP-07 browser signer helpers', () => {
@@ -43,6 +43,13 @@ describe('NIP-07 browser signer helpers', () => {
     expect(window.localStorage.getItem('agoramesh:nip46:session')).toBeNull();
     expect(window.localStorage.getItem('agoramesh:nip46:pending')).toBeNull();
     expect(window.sessionStorage.getItem('agoramesh:nip07:connected')).toBeNull();
+  });
+
+  it('builds Android intent links for Amber Nostr Connect handoff', () => {
+    expect(nostrConnectAndroidIntentUri('nostrconnect://abc123?relay=wss%3A%2F%2Frelay.example&secret=pair')).toBe(
+      'intent://abc123?relay=wss%3A%2F%2Frelay.example&secret=pair#Intent;scheme=nostrconnect;package=com.greenart7c3.nostrsigner;end'
+    );
+    expect(nostrConnectAndroidIntentUri('https://example.com')).toBeUndefined();
   });
 
   it('connects to an available signer public key', async () => {

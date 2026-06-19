@@ -2155,6 +2155,8 @@ export function App(): ReactNode {
           kind: 'trade-room-update',
           roomId: room.id,
           senderPublicKey: identity.publicKey.toLowerCase(),
+          workflowAction: 'agreement-created',
+          clientActionId: newId('room_action'),
           agreementHash: agreement.hash,
           agreementPacket: agreementTermsPacket(agreement),
           listingId: listing.id,
@@ -2165,10 +2167,13 @@ export function App(): ReactNode {
           createdAt: at
         })
       });
-    } catch {
-      // Room selection stays local-first; failed private notification is visible through room sync diagnostics.
+      showNotice(t('buyerOffers.selected'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('tradeRoom.notifyFailed');
+      showNotice(t('agreement.syncFailed').replace('{reason}', message));
+      go('trade');
+      return;
     }
-    showNotice(t('buyerOffers.selected'));
     go('trade');
   };
 
@@ -9459,7 +9464,6 @@ function TradeRoomDetail({
   const { t } = useI18n();
   const { room, agreement, listing, paymentAttempts, zapReceipts, deliveries } = row;
   const dealSheet = row.dealSheet;
-  const [notifyCounterparty, setNotifyCounterparty] = useState(true);
   const [stateStatus, setStateStatus] = useState('');
   const deliveryDrawerRef = useRef<HTMLDivElement | null>(null);
   const ownerKey = identity?.publicKey.toLowerCase();
@@ -9496,10 +9500,6 @@ function TradeRoomDetail({
     liveState
   });
   const notifyRoomUpdate = async (nextRoom: TradeRoom, payload: Partial<TradeRoomUpdatePayload>): Promise<void> => {
-    if (!notifyCounterparty) {
-      setStateStatus(t('tradeRoom.unsyncedLocal'));
-      return;
-    }
     if (!identity || !counterpartyPublicKey) {
       setStateStatus(t('tradeRoom.notifyUnavailable'));
       return;
@@ -9592,7 +9592,21 @@ function TradeRoomDetail({
         void saveDeliveryState('confirmed');
         return;
       case 'write-review':
-        onReviewRoom(room);
+        void (async () => {
+          if (identity) {
+            const subjectPublicKey = publicKeysMatch(identity.publicKey, room.sellerPublicKey) ? room.buyerPublicKey : room.sellerPublicKey;
+            await notifyRoomUpdate(room, {
+              workflowAction: 'review-requested',
+              clientActionId: newId('room_action'),
+              reviewPrompt: {
+                subjectPublicKey,
+                listingId: room.listingId,
+                agreementHash: room.agreementHash
+              }
+            });
+          }
+          onReviewRoom(room);
+        })();
         return;
       case 'complete':
         setStateStatus(t('tradeRoom.flowComplete'));
@@ -9665,10 +9679,6 @@ function TradeRoomDetail({
         {stateStatus ? <StatusMessage className="notice inline">{stateStatus}</StatusMessage> : null}
         <DisclosurePanel title={t('tradeRoom.privateSyncStatus')}>
           <p className="muted compact-meta">{t('tradeRoom.notifyDefault')}</p>
-          <label className="checkbox">
-            <input checked={notifyCounterparty} onChange={(event) => setNotifyCounterparty(event.target.checked)} type="checkbox" />
-            {t('tradeRoom.notifyCounterparty')}
-          </label>
         </DisclosurePanel>
       </section>
       {blockers.length > 0 ? (
@@ -10227,6 +10237,7 @@ function TradePage({
   const advancedToolsRef = useRef<HTMLDivElement>(null);
   const [selectedAgreementHash, setSelectedAgreementHash] = useState(agreements[0]?.hash ?? '');
   const [selectedRoomId, setSelectedRoomId] = useState(openRoomId || tradeRooms[0]?.id || '');
+  const [agreementRoomId, setAgreementRoomId] = useState('');
   const [bundlePassphrase, setBundlePassphrase] = useState('');
   const [source, setSource] = useState<DataSourceFilter>(syncSettings.defaultBrowseSource);
   const [trust, setTrust] = useState<TrustFilter>('all');
@@ -10401,7 +10412,39 @@ function TradePage({
   }, [agreementReceipts, agreements, attestations, buyerRequestOffers, communityLists, identity, lightningPaymentAttempts, listingSourceRefs, listingZapReceipts, operatorSupportReceipts, relays, syncedCommunityLists, tradeRoomDeliveries, tradeRooms, webOfTrustMap]);
   const selectedRoomRow = roomRows.find((row) => row.room.id === selectedRoomId) ?? roomRows[0];
 
+  const agreementFormFromRoom = (row: TradeRoomRow): typeof agreementForm => {
+    const listingRef = row.listing ? listingSourceRefs.find((entry) => entry.listing.id === row.listing?.id) : undefined;
+    return {
+      buyer: row.room.buyerLabel || shortPublicKey(row.room.buyerPublicKey),
+      seller: row.room.sellerLabel || shortPublicKey(row.room.sellerPublicKey),
+      buyerPublicKey: row.room.buyerPublicKey,
+      sellerPublicKey: row.room.sellerPublicKey,
+      buyerLabel: row.room.buyerLabel || shortPublicKey(row.room.buyerPublicKey),
+      sellerLabel: row.room.sellerLabel || shortPublicKey(row.room.sellerPublicKey),
+      listingId: listingRef ? listingSourceValue(listingRef) : row.room.listingId ?? '',
+      exchangeDescription: row.agreement?.exchangeDescription || row.offer?.requestTitle || row.listing?.title || row.room.listingTitle || '',
+      priceAndPayment:
+        row.agreement?.priceAndPayment ||
+        (row.offer ? `${row.offer.amount} ${row.offer.currency} · ${row.offer.paymentPreferences.join(', ')}` : row.dealSheet.price || row.dealSheet.payment),
+      fulfillmentTerms: row.agreement?.fulfillmentTerms || row.offer?.fulfillmentNotes || row.listing?.fulfillmentNotes || row.listing?.description || '',
+      deadline: row.agreement?.deadline || row.listing?.expiresAt || '',
+      refundTerms: row.agreement?.refundTerms || t('buyerOffers.defaultRefundTerms'),
+      mediator: row.agreement?.mediator || row.room.mediator || row.listing?.mediatorPreference || '',
+      evidenceExpectations: row.agreement?.evidenceExpectations || t('buyerOffers.defaultEvidenceExpectations'),
+      buyerAccepted: false,
+      sellerAccepted: false,
+      hashVersion: 2 as const
+    };
+  };
+
   const openAdvancedTradeTool = (tab: Exclude<TradeTab, 'rooms'>, row?: TradeRoomRow): void => {
+    if (row) {
+      setAgreementRoomId(row.room.id);
+      setSelectedRoomId(row.room.id);
+      if (tab === 'agreement') {
+        setAgreementForm(agreementFormFromRoom(row));
+      }
+    }
     if (row?.agreement) {
       setSelectedAgreementHash(row.agreement.hash);
       setDisputeForm((current) => ({
@@ -10447,6 +10490,53 @@ function TradePage({
     return '';
   };
 
+  const sendAgreementRoomUpdate = async ({
+    room,
+    agreement,
+    receipt,
+    workflowAction
+  }: {
+    room: TradeRoom;
+    agreement: Agreement;
+    receipt?: AgreementAcceptanceReceipt;
+    workflowAction: 'agreement-created' | 'agreement-signed';
+  }): Promise<NostrContactReceipt> => {
+    const counterpartyPublicKey = identity
+      ? publicKeysMatch(identity.publicKey, room.buyerPublicKey)
+        ? room.sellerPublicKey
+        : publicKeysMatch(identity.publicKey, room.sellerPublicKey)
+          ? room.buyerPublicKey
+          : ''
+      : '';
+    if (!identity || !counterpartyPublicKey) throw new Error(t('tradeRoom.notifyUnavailable'));
+    const at = nowIso();
+    return onSendNostrIntro({
+      recipientPublicKey: counterpartyPublicKey,
+      label: room.listingTitle || agreement.exchangeDescription || room.id,
+      contextType: 'trade-room',
+      contextId: room.id,
+      contextTitle: room.listingTitle || agreement.exchangeDescription || agreement.hash,
+      includeContext: true,
+      message: encodeTradeRoomUpdateMessage({
+        schemaVersion: 1,
+        kind: 'trade-room-update',
+        roomId: room.id,
+        senderPublicKey: identity.publicKey.toLowerCase(),
+        workflowAction,
+        clientActionId: newId('room_action'),
+        agreementHash: agreement.hash,
+        agreementPacket: agreementTermsPacket(agreement),
+        agreementReceipt: receipt,
+        listingId: agreement.listingId,
+        listingCoordinate: room.listingCoordinate,
+        state: room.state,
+        paymentState: room.paymentState,
+        deliveryState: room.deliveryState,
+        createdAt: at
+      })
+    });
+  };
+
   const saveReceipt = async (receipt: AgreementAcceptanceReceipt, agreement: Agreement): Promise<void> => {
     if (isDuplicateAgreementReceipt(receipt, agreementReceipts)) {
       setAgreementMessage(t('agreement.receiptDuplicate'));
@@ -10456,6 +10546,7 @@ function TradePage({
       setAgreementMessage(t('agreement.receiptInvalid'));
       return;
     }
+    let nextAgreementMessage = t('agreement.receiptImported');
     await db.agreementReceipts.put(receipt);
     if (agreementHasTradeRoomParties(agreement)) {
       const existingRooms = await db.tradeRooms.toArray();
@@ -10468,42 +10559,16 @@ function TradePage({
         )
       );
       await db.tradeRooms.put(room);
-      const counterpartyPublicKey = identity
-        ? publicKeysMatch(identity.publicKey, room.buyerPublicKey)
-          ? room.sellerPublicKey
-          : publicKeysMatch(identity.publicKey, room.sellerPublicKey)
-            ? room.buyerPublicKey
-            : ''
-        : '';
-      if (identity && counterpartyPublicKey) {
-        const at = nowIso();
-        await onSendNostrIntro({
-          recipientPublicKey: counterpartyPublicKey,
-          label: room.listingTitle || agreement.exchangeDescription || room.id,
-          contextType: 'trade-room',
-          contextId: room.id,
-          contextTitle: room.listingTitle || agreement.exchangeDescription || agreement.hash,
-          includeContext: true,
-          message: encodeTradeRoomUpdateMessage({
-            schemaVersion: 1,
-            kind: 'trade-room-update',
-            roomId: room.id,
-            senderPublicKey: identity.publicKey.toLowerCase(),
-            agreementHash: agreement.hash,
-            agreementPacket: agreementTermsPacket(agreement),
-            agreementReceipt: receipt,
-            listingId: agreement.listingId,
-            listingCoordinate: room.listingCoordinate,
-            state: room.state,
-            paymentState: room.paymentState,
-            deliveryState: room.deliveryState,
-            createdAt: at
-          })
-        }).catch(() => undefined);
+      try {
+        await sendAgreementRoomUpdate({ room, agreement, receipt, workflowAction: 'agreement-signed' });
+        nextAgreementMessage = t('agreement.synced');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('tradeRoom.notifyFailed');
+        nextAgreementMessage = t('agreement.syncFailed').replace('{reason}', message);
       }
       onRoomSaved(room);
     }
-    setAgreementMessage(t('agreement.receiptImported'));
+    setAgreementMessage(nextAgreementMessage);
     onReceiptSaved();
   };
 
@@ -10588,6 +10653,7 @@ function TradePage({
   const selectListing = (listingId: string): void => {
     const listingRef = listingSourceRefs.find((entry) => listingSourceValue(entry) === listingId);
     const listing = listingRef?.listing;
+    setAgreementRoomId('');
     setAgreementForm({
       ...agreementForm,
       listingId,
@@ -10605,6 +10671,7 @@ function TradePage({
   useEffect(() => {
     if (!selectedListingRef) return;
     const listing = selectedListingRef.listing;
+    setAgreementRoomId('');
     setAgreementForm((current) => ({
       ...current,
       listingId: listingSourceValue(selectedListingRef),
@@ -10636,41 +10703,27 @@ function TradePage({
       updatedAt: at
     };
     const agreement: Agreement = agreementSchema.parse({ ...draft, hash: generateAgreementHash({ ...draft, hash: '' }) });
-    const room = upsertTradeRoom(await db.tradeRooms.toArray(), tradeRoomFromAgreement(agreement));
+    const existingRooms = await db.tradeRooms.toArray();
+    const activeRoomCandidate = agreementRoomId ? existingRooms.find((entry) => entry.id === agreementRoomId) : undefined;
+    const activeRoom =
+      activeRoomCandidate &&
+      publicKeysMatch(activeRoomCandidate.buyerPublicKey, agreement.buyerPublicKey) &&
+      publicKeysMatch(activeRoomCandidate.sellerPublicKey, agreement.sellerPublicKey)
+        ? activeRoomCandidate
+        : undefined;
+    const room = upsertTradeRoom(existingRooms, tradeRoomFromAgreement(agreement, activeRoom));
     await db.agreements.put(agreement);
     await db.tradeRooms.put(room);
-    const counterpartyPublicKey = identity
-      ? publicKeysMatch(identity.publicKey, room.buyerPublicKey)
-        ? room.sellerPublicKey
-        : publicKeysMatch(identity.publicKey, room.sellerPublicKey)
-          ? room.buyerPublicKey
-          : ''
-      : '';
-    if (identity && counterpartyPublicKey) {
-      await onSendNostrIntro({
-        recipientPublicKey: counterpartyPublicKey,
-        label: room.listingTitle || agreement.exchangeDescription || room.id,
-        contextType: 'trade-room',
-        contextId: room.id,
-        contextTitle: room.listingTitle || agreement.exchangeDescription || agreement.hash,
-        includeContext: true,
-        message: encodeTradeRoomUpdateMessage({
-          schemaVersion: 1,
-          kind: 'trade-room-update',
-          roomId: room.id,
-          senderPublicKey: identity.publicKey.toLowerCase(),
-          agreementHash: agreement.hash,
-          agreementPacket: agreementTermsPacket(agreement),
-          listingId: agreement.listingId,
-          listingCoordinate: room.listingCoordinate,
-          state: room.state,
-          paymentState: room.paymentState,
-          deliveryState: room.deliveryState,
-          createdAt: at
-        })
-      }).catch(() => undefined);
+    try {
+      await sendAgreementRoomUpdate({ room, agreement, workflowAction: 'agreement-created' });
+      setAgreementMessage(t('agreement.synced'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('tradeRoom.notifyFailed');
+      setAgreementMessage(t('agreement.syncFailed').replace('{reason}', message));
     }
     setSelectedAgreementHash(agreement.hash);
+    setSelectedRoomId(room.id);
+    setAgreementRoomId(room.id);
     setDisputeForm((current) => ({
       ...current,
       agreementHash: agreement.hash,

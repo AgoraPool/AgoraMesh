@@ -53,8 +53,19 @@ import { generateAgreementHash } from '../lib/crypto/hash';
 import { activeSigningPublicKey, createExtensionIdentity, createIdentity, decryptPrivateKey, identityCanUseLocalUnlock, signerIdentityStatus } from '../lib/crypto/identity';
 import { decryptLocalSecret, encryptLocalSecret } from '../lib/crypto/localSecret';
 import {
+  activeBuyerRequestOffersForListing,
+  agreementDraftFromBuyerRequestOffer,
+  buyerRequestOfferFromPayload,
+  buyerRequestOfferPayloadMatches,
+  encodeBuyerRequestOfferMessage,
+  parseBuyerRequestOfferPayload,
+  withSupersededBuyerRequestOffers,
+  type BuyerRequestOfferPayload
+} from '../lib/marketplace/buyerRequestOffers';
+import {
   categoryLabel,
   fulfillmentBadgeForListing,
+  fulfillmentTypes,
   fulfillmentMatchesListing,
   paymentBadgeLabel,
   paymentMatchesListing,
@@ -85,6 +96,7 @@ import {
   parseNostrEvent,
   publishToRelays,
   publishReceiptsFromStatuses,
+  publicListingPayload,
   publicMediatorPayload,
   publicProfilePayload,
   publicReputationPayload,
@@ -189,6 +201,7 @@ import type {
   AgreementAcceptanceReceipt,
   AttestationTag,
   BlossomServerConfig,
+  BuyerRequestOffer,
   CommunityAllowlistEntry,
   CommunityCurationList,
   ContactKind,
@@ -199,6 +212,7 @@ import type {
   IdentityRecord,
   Listing,
   ListingDiscoveryScope,
+  ListingFulfillmentType,
   ListingImage,
   ListingStatus,
   ListingType,
@@ -290,6 +304,16 @@ type SendNostrContactIntroArgs = NostrContactTarget & {
   includeContext: boolean;
   cachePassphrase?: string;
 };
+type SendBuyerRequestOfferRequest = {
+  listing: Listing;
+  amount: string;
+  currency: string;
+  fulfillmentNotes: string;
+  timeline: string;
+  paymentPreferences: PaymentPreference[];
+  contactMethod?: ContactMethod;
+  message: string;
+};
 type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
 type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type SupportFilter = 'all' | 'supporters' | 'non-supporters';
@@ -324,6 +348,7 @@ type InboxNotification = {
 };
 
 const categories = listingCategorySchema.options;
+const paymentPreferenceOptions: PaymentPreference[] = ['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other'];
 const attestationTags: AttestationTag[] = [
   'fulfilled-agreement',
   'clear-communication',
@@ -1138,6 +1163,7 @@ export function App(): ReactNode {
   const [lightningPaymentAttempts, setLightningPaymentAttempts] = useState<LightningPaymentAttempt[]>([]);
   const [operatorSupportReceipts, setOperatorSupportReceipts] = useState<OperatorSupportReceipt[]>([]);
   const [listingZapReceipts, setListingZapReceipts] = useState<ListingZapReceipt[]>([]);
+  const [buyerRequestOffers, setBuyerRequestOffers] = useState<BuyerRequestOffer[]>([]);
   const [nwcConnections, setNwcConnections] = useState<NwcConnection[]>([]);
   const [unlockedNwcSecrets, setUnlockedNwcSecrets] = useState<Record<string, string>>({});
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
@@ -1307,6 +1333,7 @@ export function App(): ReactNode {
     setLightningPaymentAttempts((await db.lightningPaymentAttempts.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setOperatorSupportReceipts((await db.operatorSupportReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
     setListingZapReceipts((await db.listingZapReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
+    setBuyerRequestOffers((await db.buyerRequestOffers.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setNwcConnections((await db.nwcConnections.toArray()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
@@ -1691,6 +1718,51 @@ export function App(): ReactNode {
     await reload();
   };
 
+  const knownRequestListings = (): Listing[] => [
+    ...listings,
+    ...syncedListings.map((record) => record.payload)
+  ];
+
+  const upsertBuyerRequestOffer = async (offer: BuyerRequestOffer): Promise<void> => {
+    const existing = await db.buyerRequestOffers.toArray();
+    const next = withSupersededBuyerRequestOffers(existing, offer);
+    await db.buyerRequestOffers.bulkPut(next);
+    setBuyerRequestOffers(next);
+  };
+
+  const cacheBuyerRequestOfferFromMessage = async (record: NostrMessageRecord, plaintext: string): Promise<void> => {
+    const payload = parseBuyerRequestOfferPayload(plaintext);
+    if (!payload) return;
+    if (record.direction !== 'incoming') return;
+    if (!publicKeysMatch(record.ownerPublicKey, payload.buyerPublicKey)) return;
+    if (!publicKeysMatch(record.senderPublicKey, payload.sellerPublicKey)) return;
+    if (
+      !knownRequestListings().some((listing) => {
+        const coordinate = nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id);
+        return buyerRequestOfferPayloadMatches({
+          payload,
+          listing,
+          requestCoordinate: coordinate,
+          senderPublicKey: record.senderPublicKey,
+          buyerPublicKey: record.ownerPublicKey
+        });
+      })
+    ) {
+      return;
+    }
+    await upsertBuyerRequestOffer(
+      buyerRequestOfferFromPayload({
+        id: `buyer_offer_${record.eventId}`,
+        payload,
+        direction: 'incoming',
+        status: 'received',
+        sourceEventIds: [record.eventId],
+        sourceMessageId: record.id,
+        updatedAt: record.receivedAt
+      })
+    );
+  };
+
   const sendNostrContactIntro = async (args: SendNostrContactIntroArgs): Promise<NostrContactReceipt> => {
     const recipient = normalizeNostrContact(args.recipientPublicKey);
     if (!recipient) throw new Error(t('nostrContact.invalidRecipient'));
@@ -1796,6 +1868,88 @@ export function App(): ReactNode {
     return receipt;
   };
 
+  const sendBuyerRequestOffer = async (request: SendBuyerRequestOfferRequest): Promise<BuyerRequestOffer> => {
+    if (!identity) throw new Error(t('nostrContact.identityRequired'));
+    if (request.listing.type !== 'request') throw new Error(t('buyerOffers.requestOnly'));
+    if (publicKeysMatch(identity.publicKey, request.listing.authorPublicKey)) throw new Error(t('buyerOffers.sellerOnly'));
+    const recipient = nostrContactForMethod(request.listing.contactMethod, request.listing.authorPublicKey);
+    if (!recipient) throw new Error(t('nostrContact.invalidRecipient'));
+    const at = nowIso();
+    const payload: BuyerRequestOfferPayload = {
+      schemaVersion: 1,
+      kind: 'buyer-request-offer',
+      requestListingId: request.listing.id,
+      requestCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, request.listing.authorPublicKey, request.listing.id),
+      requestTitle: request.listing.title,
+      buyerPublicKey: request.listing.authorPublicKey.toLowerCase(),
+      sellerPublicKey: identity.publicKey.toLowerCase(),
+      amount: sanitizePlainText(request.amount),
+      currency: sanitizePlainText(request.currency),
+      fulfillmentNotes: sanitizePlainText(request.fulfillmentNotes),
+      timeline: sanitizePlainText(request.timeline),
+      paymentPreferences: request.paymentPreferences.length > 0 ? request.paymentPreferences : ['other'],
+      contactMethod: request.contactMethod,
+      message: sanitizePlainText(request.message),
+      createdAt: at
+    };
+    const receipt = await sendNostrContactIntro({
+      recipientPublicKey: recipient.publicKey,
+      label: request.listing.title,
+      contextType: 'listing',
+      contextId: request.listing.id,
+      contextTitle: request.listing.title,
+      includeContext: true,
+      message: encodeBuyerRequestOfferMessage(payload)
+    });
+    const offer = buyerRequestOfferFromPayload({
+      id: `buyer_offer_${receipt.eventIds[0] ?? receipt.id}`,
+      payload,
+      direction: 'outgoing',
+      status: 'sent',
+      sourceEventIds: receipt.eventIds,
+      sourceReceiptId: receipt.id,
+      updatedAt: receipt.sentAt
+    });
+    await upsertBuyerRequestOffer(offer);
+    showNotice(t('buyerOffers.sent'));
+    return offer;
+  };
+
+  const chooseBuyerRequestOffer = async (offer: BuyerRequestOffer, listing: Listing): Promise<void> => {
+    if (!identity || !publicKeysMatch(identity.publicKey, listing.authorPublicKey)) throw new Error(t('buyerOffers.ownerOnly'));
+    const at = nowIso();
+    const draft = agreementDraftFromBuyerRequestOffer({
+      offer,
+      listing,
+      buyerLabel: profile?.displayName || shortPublicKey(listing.authorPublicKey),
+      sellerLabel: shortPublicKey(offer.sellerPublicKey),
+      at
+    });
+    const localizedDraft = {
+      ...draft,
+      refundTerms: t('buyerOffers.defaultRefundTerms'),
+      evidenceExpectations: t('buyerOffers.defaultEvidenceExpectations')
+    };
+    const agreement: Agreement = agreementSchema.parse({
+      ...localizedDraft,
+      hash: generateAgreementHash({ ...localizedDraft, hash: '' })
+    });
+    const existingOffers = await db.buyerRequestOffers.toArray();
+    const updatedOffers = existingOffers.map((entry) => {
+      if (entry.id === offer.id) return { ...entry, status: 'selected' as const, selectedAt: at, updatedAt: at };
+      if (entry.requestCoordinate === offer.requestCoordinate && entry.status === 'selected') {
+        return { ...entry, status: entry.direction === 'incoming' ? ('received' as const) : ('sent' as const), selectedAt: undefined, updatedAt: at };
+      }
+      return entry;
+    });
+    await db.agreements.put(agreement);
+    await db.buyerRequestOffers.bulkPut(updatedOffers);
+    setAgreements((current) => [agreement, ...current.filter((entry) => entry.id !== agreement.id)]);
+    setBuyerRequestOffers(updatedOffers.sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    showNotice(t('buyerOffers.selected'));
+    go('trade');
+  };
+
   const rebuildNostrThread = async (threadKey: string): Promise<void> => {
     const messages = (await db.nostrMessages.where('threadKey').equals(threadKey).toArray()).sort((left, right) =>
       right.messageCreatedAt.localeCompare(left.messageCreatedAt)
@@ -1878,6 +2032,11 @@ export function App(): ReactNode {
       archived: false
     };
     await db.nostrMessages.put(record);
+    try {
+      await cacheBuyerRequestOfferFromMessage(record, unwrapped.rumor.content);
+    } catch {
+      // Offer payload parsing is best-effort; the encrypted message itself remains valid inbox content.
+    }
     await rebuildNostrThread(threadKey);
     return 'imported';
   };
@@ -2627,6 +2786,7 @@ export function App(): ReactNode {
             nostrSigner={nostrSigner}
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
+            buyerRequestOffers={buyerRequestOffers}
             lightningPaymentAttempts={lightningPaymentAttempts}
             operatorSupportReceipts={operatorSupportReceipts}
             listingZapReceipts={listingZapReceipts}
@@ -2665,6 +2825,8 @@ export function App(): ReactNode {
               )
             }
             onSendNostrIntro={sendNostrContactIntro}
+            onSendBuyerRequestOffer={sendBuyerRequestOffer}
+            onChooseBuyerRequestOffer={(offer, listing) => void chooseBuyerRequestOffer(offer, listing)}
             onCreateLightningPaymentAttempt={createLightningPaymentAttempt}
             onCheckLightningPaymentReceipt={checkLightningPaymentReceipt}
             onCheckListingZapReceipts={checkListingZapReceipts}
@@ -3399,6 +3561,32 @@ function defaultLightningAmountSats(listing: Listing): string {
   return '100';
 }
 
+type ListingContactPayMode = 'message' | 'lightning' | 'cashu';
+
+function listingCashuIntents(listing: Listing): PaymentIntent[] {
+  return (listing.paymentIntents ?? []).filter((intent) => intent.method === 'cashu' && intent.value.trim());
+}
+
+function listingHasCashuHandoff(listing: Listing): boolean {
+  return listing.paymentPreferences.includes('cashu') || listingCashuIntents(listing).length > 0;
+}
+
+function walletStatusKey(walletConnection: NwcConnection | undefined, walletUnlocked: boolean, attempt?: LightningPaymentAttempt): string {
+  if (attempt?.status === 'receipt-found') return 'payment.walletStatus.receipt';
+  if (attempt?.status === 'paid') return 'payment.walletStatus.paid';
+  if (attempt?.status === 'wallet-payment-pending') return 'payment.walletStatus.pending';
+  if (attempt?.status === 'invoice-created') return 'payment.walletStatus.invoice';
+  if (attempt?.status === 'failed') return 'payment.walletStatus.failed';
+  if (!walletConnection) return 'payment.walletStatus.noWallet';
+  if (!walletUnlocked) return 'payment.walletStatus.locked';
+  return 'payment.walletStatus.ready';
+}
+
+function attemptStatusDetail(attempt: LightningPaymentAttempt | undefined, t: (key: string) => string): string {
+  if (!attempt) return t('payment.noAttemptStatus');
+  return `${attempt.amountSats} sats · ${t(`payment.status.${attempt.status}`)}`;
+}
+
 function LightningPaymentPanel({
   listing,
   sellerProfile,
@@ -3574,14 +3762,30 @@ function LightningPaymentPanel({
     };
   }, [watchedAttemptId, watchedAttemptStatus]);
   if (!source) return null;
+  const walletStatus = t(walletStatusKey(walletConnection, walletUnlocked, visibleAttempt));
+  const primaryActionLabel = working
+    ? t('payment.working')
+    : walletUnlocked
+      ? visibleAttempt?.status === 'failed'
+        ? t('nwc.retryPayment')
+        : visibleAttempt?.status === 'paid'
+          ? t('nwc.paymentPaid')
+          : t('payment.zap')
+      : t('payment.generateInvoice');
   return (
-    <section className={embedded ? 'lightning-payment-panel zap-panel embedded-panel' : 'lightning-payment-panel zap-panel'}>
+    <section className={embedded ? 'lightning-payment-panel zap-panel payment-flow-panel embedded-panel' : 'lightning-payment-panel zap-panel payment-flow-panel'}>
       {!embedded ? (
-        <div className="row">
-          <ReceiptText size={16} aria-hidden="true" />
-          <strong>{t('payment.lightningTitle')}</strong>
+        <div className="payment-panel-heading">
+          <div>
+            <strong>{t('payment.lightningTitle')}</strong>
+            <p className="muted compact-meta">{t('payment.invoiceHandoffShort')}</p>
+          </div>
         </div>
       ) : null}
+      <div className="payment-status-strip">
+        <span className="pill">{walletStatus}</span>
+        <span className="muted">{attemptStatusDetail(visibleAttempt, t)}</span>
+      </div>
       <div className="zap-amount-row" role="group" aria-label={t('payment.amountSats')}>
         {quickZapAmounts.map((amount) => (
           <button className={Number(amountSats) === amount ? 'filter-chip active' : 'filter-chip'} key={amount} onClick={() => setAmountSats(String(amount))} type="button">
@@ -3609,15 +3813,7 @@ function LightningPaymentPanel({
           </button>
         ) : null}
         <button disabled={!canPrimaryZap || working || duplicatePaymentSent} onClick={() => void (walletUnlocked ? pay() : generate())} type="button">
-          {working
-            ? t('payment.working')
-            : walletUnlocked
-              ? visibleAttempt?.status === 'failed'
-                ? t('nwc.retryPayment')
-                : visibleAttempt?.status === 'paid'
-                  ? t('nwc.paymentPaid')
-                  : t('payment.zap')
-              : t('payment.generateInvoice')}
+          {primaryActionLabel}
         </button>
       </div>
       {visibleAttempt ? (
@@ -3628,7 +3824,12 @@ function LightningPaymentPanel({
           </div>
           {visibleAttempt.error ? <p className="muted">{visibleAttempt.error}</p> : null}
           {visibleAttempt.statusDetail ? <p className="muted">{visibleAttempt.statusDetail}</p> : null}
-          {visibleAttempt.status === 'invoice-created' ? (
+        </article>
+      ) : null}
+      <DisclosurePanel title={t('payment.invoiceActions')}>
+        {visibleAttempt?.status === 'invoice-created' ? (
+          <>
+            <p className="muted">{t('payment.invoiceReady')}</p>
             <div className="actions small">
               <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
                 {t('payment.copyInvoice')}
@@ -3640,13 +3841,24 @@ function LightningPaymentPanel({
                 {t('payment.checkReceipt')}
               </button>
             </div>
-          ) : null}
-        </article>
-      ) : null}
+            <p className="key">{visibleAttempt.bolt11}</p>
+          </>
+        ) : (
+          <p className="muted">{t('payment.invoiceActionsEmpty')}</p>
+        )}
+      </DisclosurePanel>
       <DisclosurePanel title={t('payment.details')}>
         <SafetyNotice>{t('payment.metadataWarning')}</SafetyNotice>
-        <p className="key">{source}</p>
-        <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+        <div className="payment-detail-grid">
+          <div>
+            <span className="form-eyebrow">{t('payment.lightningTarget')}</span>
+            <p className="key">{source}</p>
+          </div>
+          <div>
+            <span className="form-eyebrow">{t('nwc.title')}</span>
+            <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+          </div>
+        </div>
         {showWalletConnect || !walletConnection ? (
           <div className="compact-wallet-panel">
             <strong>{t('nwc.title')}</strong>
@@ -4035,6 +4247,7 @@ function OperatorSupportPanel({
   const canPayWithWallet = Boolean(canGenerate && walletConnection && walletUnlocked);
   const canPrimaryZap = Boolean(walletUnlocked ? canPayWithWallet : canGenerate);
   const duplicatePaymentSent = Boolean(visibleAttempt?.nwcRequestEventId && visibleAttempt.status !== 'failed');
+  const walletStatus = t(walletStatusKey(walletConnection, walletUnlocked, visibleAttempt));
 
   const generate = async (): Promise<LightningPaymentAttempt> => {
     setError('');
@@ -4152,13 +4365,17 @@ function OperatorSupportPanel({
     );
   }
   return (
-    <section className="operator-support-panel zap-panel">
+    <section className="operator-support-panel zap-panel payment-flow-panel">
       <div className="row between">
         <div>
           <strong>{t('support.title')}</strong>
           <p className="muted">{t('support.body').replace('{amount}', String(config.minimumSats)).replace('{operator}', config.label)}</p>
         </div>
         <SupporterBadge receipt={supportReceipt} />
+      </div>
+      <div className="payment-status-strip">
+        <span className="pill">{walletStatus}</span>
+        <span className="muted">{attemptStatusDetail(visibleAttempt, t)}</span>
       </div>
       <div className="zap-amount-row" role="group" aria-label={t('payment.amountSats')}>
         {[config.minimumSats, ...quickZapAmounts.filter((amount) => amount > config.minimumSats)].slice(0, 4).map((amount) => (
@@ -4199,7 +4416,13 @@ function OperatorSupportPanel({
             <strong>{t(`payment.status.${visibleAttempt.status}`)}</strong>
             {visibleAttempt.status === 'failed' && visibleAttempt.nwcConnectionId ? <span className="warning mini">{t('nwc.retryWarning')}</span> : null}
           </div>
-          {visibleAttempt.status === 'invoice-created' ? (
+          {visibleAttempt.error ? <p className="muted">{visibleAttempt.error}</p> : null}
+        </article>
+      ) : null}
+      <DisclosurePanel title={t('payment.invoiceActions')}>
+        {visibleAttempt?.status === 'invoice-created' ? (
+          <>
+            <p className="muted">{t('payment.invoiceReady')}</p>
             <div className="actions small">
               <button className="subtle" onClick={() => void navigator.clipboard?.writeText(visibleAttempt.bolt11)} type="button">
                 {t('payment.copyInvoice')}
@@ -4211,13 +4434,24 @@ function OperatorSupportPanel({
                 {t('payment.checkReceipt')}
               </button>
             </div>
-          ) : null}
-        </article>
-      ) : null}
+            <p className="key">{visibleAttempt.bolt11}</p>
+          </>
+        ) : (
+          <p className="muted">{t('payment.invoiceActionsEmpty')}</p>
+        )}
+      </DisclosurePanel>
       <DisclosurePanel title={t('payment.details')}>
         <SafetyNotice>{t('support.metadataWarning')}</SafetyNotice>
-        <p className="key">{config.lnurl}</p>
-        <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+        <div className="payment-detail-grid">
+          <div>
+            <span className="form-eyebrow">{t('payment.lightningTarget')}</span>
+            <p className="key">{config.lnurl}</p>
+          </div>
+          <div>
+            <span className="form-eyebrow">{t('nwc.title')}</span>
+            <p className="muted">{walletConnection && walletUnlocked ? t('nwc.compactReady') : t('nwc.noWalletInline')}</p>
+          </div>
+        </div>
         {showWalletConnect || !walletConnection ? (
           <div className="compact-wallet-panel">
             <strong>{t('nwc.title')}</strong>
@@ -4416,6 +4650,13 @@ function NostrContactPanel({
       : !canUseLocal && !canUseSigner
         ? t('nostrContact.signerRequired')
         : '';
+  const messageStatus = lastSentReceipt
+    ? lastSentReceipt.status === 'failed'
+      ? t('nostrContact.status.failed')
+      : t('nostrContact.status.sent')
+    : sendBlocker
+      ? t('nostrContact.status.blocked')
+      : t('nostrContact.status.ready');
   const copy = (value: string): void => {
     void navigator.clipboard?.writeText(value);
   };
@@ -4440,10 +4681,18 @@ function NostrContactPanel({
     }
   };
 
-  if (!normalized) return null;
+  if (!normalized) {
+    return (
+      <section className={embedded ? 'nostr-contact embedded-panel message-flow-panel' : 'nostr-contact message-flow-panel'}>
+        <p className="warning compact-warning" role="alert">
+          {t('nostrContact.invalidRecipient')}
+        </p>
+      </section>
+    );
+  }
 
   return (
-    <section className={embedded ? 'nostr-contact embedded-panel' : 'nostr-contact'}>
+    <section className={embedded ? 'nostr-contact embedded-panel message-flow-panel' : 'nostr-contact message-flow-panel'}>
       {!embedded ? (
         <button className="subtle" onClick={() => setOpen((current) => !current)} type="button">
           <Radio size={16} /> {t('nostrContact.messageAction')}
@@ -4451,11 +4700,12 @@ function NostrContactPanel({
       ) : null}
       {open ? (
         <div className="nostr-contact-panel">
-          <div className="row between">
+          <div className="contact-recipient-row">
             <div>
               <strong>{target.label}</strong>
-              <p className="muted">{t('nostrContact.title')}</p>
+              <p className="muted key">{shortPublicKey(normalized.publicKey)}</p>
             </div>
+            <span className="pill">{messageStatus}</span>
           </div>
           {target.contextTitle ? (
             <div className="message-context">
@@ -4482,7 +4732,7 @@ function NostrContactPanel({
           <p className="muted compact-meta">{t('nostrContact.length').replace('{count}', String(message.length)).replace('{limit}', String(NOSTR_INTRO_MESSAGE_LIMIT))}</p>
           {sendBlocker ? <p className="warning compact-warning">{sendBlocker}</p> : null}
           {error ? <p className="warning" role="alert">{error}</p> : null}
-          <div className="actions small">
+          <div className="actions small primary-action-row">
             {identity && !canUseLocal && !canUseSigner ? (
               <button className="subtle" onClick={onConnectSigner} type="button">
                 <KeyRound size={16} /> {nostrSigner.connected ? t('signer.reconnect') : t('signer.connect')}
@@ -4490,9 +4740,6 @@ function NostrContactPanel({
             ) : null}
             <button disabled={!canSend || sending} onClick={() => void send()} type="button">
               {sending ? t('nostrContact.sending') : t('nostrContact.send')}
-            </button>
-            <button className="subtle" onClick={() => (window.location.hash = 'inbox')} type="button">
-              {t('nostrInbox.open')}
             </button>
           </div>
           {lastSentReceipt ? (
@@ -4505,6 +4752,9 @@ function NostrContactPanel({
             <p className="muted">{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
             {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrContact.copyFallback')}</ActionHint> : null}
             <div className="actions small">
+              <button className="subtle" onClick={() => (window.location.hash = 'inbox')} type="button">
+                {t('nostrInbox.open')}
+              </button>
               <button className="subtle" onClick={() => copy(normalized.npub)} type="button">
                 {t('nostrContact.copyNpub')}
               </button>
@@ -4530,6 +4780,43 @@ function NostrContactPanel({
           </DisclosurePanel>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function CashuHandoffPanel({ listing }: { listing: Listing }): ReactNode {
+  const { t } = useI18n();
+  const intents = listingCashuIntents(listing);
+  const copy = (value: string): void => {
+    void navigator.clipboard?.writeText(value);
+  };
+
+  return (
+    <section className="cashu-handoff-panel embedded-panel">
+      <div className="payment-status-strip">
+        <span className="pill">{t('cashu.manual')}</span>
+        <span className="muted">{intents.length > 0 ? t('cashu.intentAvailable') : t('cashu.preferenceOnly')}</span>
+      </div>
+      <p className="muted compact-meta">{t('cashu.body')}</p>
+      {intents.length > 0 ? (
+        <div className="cashu-intent-list">
+          {intents.map((intent) => (
+            <article className="cashu-intent" key={intent.id}>
+              {intent.note ? <p className="muted">{intent.note}</p> : null}
+              <p className="key">{intent.value}</p>
+              <button className="subtle" onClick={() => copy(intent.value)} type="button">
+                <Copy size={16} /> {t('cashu.copy')}
+              </button>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <ActionHint>{t('cashu.noIntent')}</ActionHint>
+      )}
+      <DisclosurePanel title={t('cashu.nutzapTitle')}>
+        <SafetyNotice>{t('cashu.nutzapUnavailable')}</SafetyNotice>
+        <p className="muted">{t('cashu.metadataWarning')}</p>
+      </DisclosurePanel>
     </section>
   );
 }
@@ -4576,17 +4863,29 @@ function ListingContactPayPanel({
   const { t } = useI18n();
   const hasMessage = Boolean(contactTarget);
   const hasLightning = Boolean(listingLightningSource(listing, sellerProfile));
-  const [mode, setMode] = useState<'message' | 'lightning'>(hasLightning ? 'lightning' : 'message');
+  const hasCashu = listingHasCashuHandoff(listing);
+  const availableModes = useMemo<ListingContactPayMode[]>(
+    () => [
+      ...(hasMessage ? (['message'] as const) : []),
+      ...(hasLightning ? (['lightning'] as const) : []),
+      ...(hasCashu ? (['cashu'] as const) : [])
+    ],
+    [hasCashu, hasLightning, hasMessage]
+  );
+  const [mode, setMode] = useState<ListingContactPayMode>(hasLightning ? 'lightning' : hasMessage ? 'message' : 'cashu');
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    if (mode === 'message' && !hasMessage && hasLightning) setMode('lightning');
-    if (mode === 'lightning' && !hasLightning && hasMessage) setMode('message');
-  }, [hasLightning, hasMessage, mode]);
+    if (!availableModes.includes(mode) && availableModes.length > 0) setMode(availableModes[0]);
+  }, [availableModes, mode]);
 
-  if (!hasMessage && !hasLightning) return null;
+  if (availableModes.length === 0) return null;
 
-  const openMode = (nextMode: 'message' | 'lightning'): void => {
+  const modeLabel = (entry: ListingContactPayMode): string =>
+    entry === 'message' ? t('listing.actionMessage') : entry === 'lightning' ? t('listing.actionLightning') : t('cashu.title');
+  const modeIcon = (entry: ListingContactPayMode): ReactNode =>
+    entry === 'message' ? <Radio size={16} /> : entry === 'lightning' ? <ReceiptText size={16} /> : <Copy size={16} />;
+  const openMode = (nextMode: ListingContactPayMode): void => {
     setMode(nextMode);
     setExpanded(true);
   };
@@ -4607,28 +4906,22 @@ function ListingContactPayPanel({
       {!expanded ? (
         <div className="contact-pay-summary">
           <p className="muted">{t('listing.contactPayCollapsed')}</p>
-          <div className="actions small">
-            {hasLightning ? (
-              <button onClick={() => openMode('lightning')} type="button">
-                <ReceiptText size={16} /> {t('listing.actionLightning')}
+          <div className="contact-pay-actions">
+            {availableModes.map((entry, index) => (
+              <button className={index === 0 ? undefined : 'subtle'} key={entry} onClick={() => openMode(entry)} type="button">
+                {modeIcon(entry)} {modeLabel(entry)}
               </button>
-            ) : null}
-            {hasMessage ? (
-              <button className={hasLightning ? 'subtle' : undefined} onClick={() => openMode('message')} type="button">
-                <Radio size={16} /> {t('listing.actionMessage')}
-              </button>
-            ) : null}
+            ))}
           </div>
         </div>
       ) : null}
-      {expanded && hasMessage && hasLightning ? (
+      {expanded && availableModes.length > 1 ? (
         <div className="segmented-control compact" aria-label={t('listing.contactPay')}>
-          <button className={mode === 'message' ? 'active' : ''} onClick={() => setMode('message')} type="button">
-            {t('listing.actionMessage')}
-          </button>
-          <button className={mode === 'lightning' ? 'active' : ''} onClick={() => setMode('lightning')} type="button">
-            {t('listing.actionLightning')}
-          </button>
+          {availableModes.map((entry) => (
+            <button className={mode === entry ? 'active' : ''} key={entry} onClick={() => setMode(entry)} type="button">
+              {modeLabel(entry)}
+            </button>
+          ))}
         </div>
       ) : null}
       {expanded && mode === 'message' && contactTarget ? (
@@ -4665,6 +4958,259 @@ function ListingContactPayPanel({
           embedded
         />
       ) : null}
+      {expanded && mode === 'cashu' && hasCashu ? <CashuHandoffPanel listing={listing} /> : null}
+    </section>
+  );
+}
+
+function BuyerRequestOfferComposer({
+  listing,
+  identity,
+  profile,
+  sentOffers,
+  onSend
+}: {
+  listing: Listing;
+  identity?: IdentityRecord;
+  profile?: PublicProfile;
+  sentOffers: BuyerRequestOffer[];
+  onSend: (request: SendBuyerRequestOfferRequest) => Promise<BuyerRequestOffer>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState('');
+  const [form, setForm] = useState({
+    amount: listing.price.amount && listing.price.amount !== '0' ? listing.price.amount : '',
+    currency: listing.price.currency && listing.price.currency !== 'FREE' ? listing.price.currency : 'CZK',
+    fulfillmentNotes: '',
+    timeline: listing.expiresAt,
+    sellerMessage: '',
+    paymentPreferences: profile?.lightningAddress || profile?.lnurl ? (['lightning'] as PaymentPreference[]) : (['other'] as PaymentPreference[]),
+    contactKind: (profile?.contactMethods[0]?.kind ?? 'nostr') as ContactKind,
+    contactValue: profile?.contactMethods[0]?.value ?? identity?.publicKey ?? ''
+  });
+  const togglePaymentPreference = (preference: PaymentPreference, checked: boolean): void => {
+    setForm((current) => {
+      const next = checked
+        ? preference === 'other'
+          ? (['other'] as PaymentPreference[])
+          : [...new Set([...current.paymentPreferences.filter((entry) => entry !== 'other'), preference])]
+        : current.paymentPreferences.filter((entry) => entry !== preference);
+      return { ...current, paymentPreferences: next.length > 0 ? next : (['other'] as PaymentPreference[]) };
+    });
+  };
+  const submit = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    setMessage('');
+    if (!identity) {
+      setMessage(t('nostrContact.identityRequired'));
+      return;
+    }
+    if (!form.amount.trim() || !form.currency.trim() || !form.fulfillmentNotes.trim() || !form.timeline.trim() || !form.sellerMessage.trim()) {
+      setMessage(t('buyerOffers.required'));
+      return;
+    }
+    setWorking(true);
+    try {
+      await onSend({
+        listing,
+        amount: form.amount,
+        currency: form.currency,
+        fulfillmentNotes: form.fulfillmentNotes,
+        timeline: form.timeline,
+        paymentPreferences: form.paymentPreferences,
+        contactMethod: form.contactValue.trim()
+          ? { id: newId('offer_contact'), kind: form.contactKind, value: sanitizePlainText(form.contactValue) }
+          : undefined,
+        message: form.sellerMessage
+      });
+      setMessage(t('buyerOffers.sent'));
+      setExpanded(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t('common.error'));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <section className="buyer-offer-composer">
+      <div className="row between">
+        <div>
+          <h2>{t('buyerOffers.sendTitle')}</h2>
+          <p className="muted compact-meta">{t('buyerOffers.sendHelp')}</p>
+        </div>
+        <button className={expanded ? 'subtle' : undefined} disabled={!identity} onClick={() => setExpanded((current) => !current)} type="button">
+          {expanded ? t('listing.contactPayCollapse') : t('buyerOffers.sendAction')}
+        </button>
+      </div>
+      {!identity ? <ActionHint>{t('buyerOffers.identityRequired')}</ActionHint> : null}
+      {sentOffers.length > 0 ? (
+        <div className="buyer-offer-mini-list">
+          {sentOffers.map((offer) => (
+            <p className="muted compact-meta" key={offer.id}>
+              {t('buyerOffers.sentOffer')}: {offer.amount} {offer.currency} · {t(`buyerOffers.status.${offer.status}`)}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {expanded ? (
+        <form className="buyer-offer-form" onSubmit={(event) => void submit(event)}>
+          <div className="listing-form-row two-up">
+            <label>
+              {t('buyerOffers.amount')}
+              <input value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} />
+            </label>
+            <label>
+              {t('buyerOffers.currency')}
+              <input value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value })} />
+            </label>
+          </div>
+          <label>
+            {t('buyerOffers.fulfillment')}
+            <textarea value={form.fulfillmentNotes} onChange={(event) => setForm({ ...form, fulfillmentNotes: event.target.value })} />
+          </label>
+          <label>
+            {t('buyerOffers.timeline')}
+            <input value={form.timeline} onChange={(event) => setForm({ ...form, timeline: event.target.value })} />
+          </label>
+          <fieldset className="listing-choice-grid">
+            <legend>{t('listing.paymentPreferences')}</legend>
+            {paymentPreferenceOptions.map((entry) => (
+              <label className="checkbox" key={entry}>
+                <input type="checkbox" checked={form.paymentPreferences.includes(entry)} onChange={(event) => togglePaymentPreference(entry, event.target.checked)} />
+                <span>{paymentBadgeLabel(entry, t)}</span>
+              </label>
+            ))}
+          </fieldset>
+          <div className="listing-form-row two-up">
+            <label>
+              {t('profile.contactType')}
+              <select value={form.contactKind} onChange={(event) => setForm({ ...form, contactKind: event.target.value as ContactKind })}>
+                {(['nostr', 'matrix', 'simplex', 'session', 'email', 'custom'] as ContactKind[]).map((kind) => (
+                  <option value={kind} key={kind}>
+                    {kind}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {t('profile.contactValue')}
+              <input value={form.contactValue} onChange={(event) => setForm({ ...form, contactValue: event.target.value })} />
+            </label>
+          </div>
+          <label>
+            {t('buyerOffers.message')}
+            <textarea value={form.sellerMessage} onChange={(event) => setForm({ ...form, sellerMessage: event.target.value })} />
+          </label>
+          {message ? <p className={message === t('buyerOffers.sent') ? 'ok compact-meta' : 'warning compact-warning'}>{message}</p> : null}
+          <button disabled={working} type="submit">
+            {working ? t('payment.working') : t('buyerOffers.sendAction')}
+          </button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
+function BuyerRequestOffersPanel({
+  listing,
+  offers,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  receipts,
+  onConnectSigner,
+  onSend,
+  onChoose
+}: {
+  listing: Listing;
+  offers: BuyerRequestOffer[];
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  receipts: NostrContactReceipt[];
+  onConnectSigner: () => void;
+  onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onChoose: (offer: BuyerRequestOffer) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const [messageOfferId, setMessageOfferId] = useState('');
+
+  return (
+    <section className="listing-reviews-section buyer-offers-section">
+      <div className="section-heading">
+        <div>
+          <h2>{t('buyerOffers.title')}</h2>
+          <p className="muted">{t('buyerOffers.buyerHelp')}</p>
+        </div>
+        <span className="pill">{offers.length}</span>
+      </div>
+      {offers.length === 0 ? (
+        <EmptyState title={t('buyerOffers.emptyTitle')} body={t('buyerOffers.emptyBody')} />
+      ) : (
+        <div className="buyer-offer-thread">
+          {offers.map((offer) => (
+            <article className={offer.status === 'selected' ? 'buyer-offer-card selected' : 'buyer-offer-card'} key={offer.id}>
+              <div className="row between">
+                <div>
+                  <strong>{shortPublicKey(offer.sellerPublicKey)}</strong>
+                  <p className="muted compact-meta">{offer.createdAt}</p>
+                </div>
+                <span className={offer.status === 'selected' ? 'ok mini' : 'pill'}>{t(`buyerOffers.status.${offer.status}`)}</span>
+              </div>
+              <div className="buyer-offer-terms">
+                <span>
+                  <strong>{offer.amount} {offer.currency}</strong>
+                  <small>{t('buyerOffers.amount')}</small>
+                </span>
+                <span>
+                  <strong>{offer.timeline}</strong>
+                  <small>{t('buyerOffers.timeline')}</small>
+                </span>
+                <span>
+                  <strong>{offer.paymentPreferences.map((entry) => paymentBadgeLabel(entry, t)).join(', ')}</strong>
+                  <small>{t('listing.paymentPreferences')}</small>
+                </span>
+              </div>
+              <p>{offer.fulfillmentNotes}</p>
+              <p className="muted">{offer.message}</p>
+              {offer.contactMethod ? <p className="muted compact-meta">{formatContact(offer.contactMethod)}</p> : null}
+              <div className="actions small">
+                <button disabled={offer.status === 'selected'} onClick={() => onChoose(offer)} type="button">
+                  <Handshake size={16} /> {offer.status === 'selected' ? t('buyerOffers.selectedAction') : t('buyerOffers.chooseAction')}
+                </button>
+                <button className="subtle" onClick={() => setMessageOfferId((current) => (current === offer.id ? '' : offer.id))} type="button">
+                  <Radio size={16} /> {t('buyerOffers.messageSeller')}
+                </button>
+              </div>
+              {messageOfferId === offer.id ? (
+                <NostrContactPanel
+                  target={{
+                    recipientPublicKey: offer.sellerPublicKey,
+                    label: shortPublicKey(offer.sellerPublicKey),
+                    contextType: 'listing',
+                    contextId: listing.id,
+                    contextTitle: listing.title
+                  }}
+                  identity={identity}
+                  relays={relays}
+                  nostrSigner={nostrSigner}
+                  privateKeyHex={privateKeyHex}
+                  receipts={receipts}
+                  defaultOpen
+                  embedded
+                  onConnectSigner={onConnectSigner}
+                  onSend={onSend}
+                />
+              ) : null}
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -4684,6 +5230,7 @@ function ListingPage({
   nostrSigner,
   publishReceipts,
   nostrContactReceipts,
+  buyerRequestOffers,
   lightningPaymentAttempts,
   operatorSupportReceipts,
   listingZapReceipts,
@@ -4701,6 +5248,8 @@ function ListingPage({
   onListingSaved,
   onPublish,
   onSendNostrIntro,
+  onSendBuyerRequestOffer,
+  onChooseBuyerRequestOffer,
   onCreateLightningPaymentAttempt,
   onCheckLightningPaymentReceipt,
   onCheckListingZapReceipts,
@@ -4729,6 +5278,7 @@ function ListingPage({
   nostrSigner: NostrSignerState;
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
+  buyerRequestOffers: BuyerRequestOffer[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
   operatorSupportReceipts: OperatorSupportReceipt[];
   listingZapReceipts: ListingZapReceipt[];
@@ -4746,6 +5296,8 @@ function ListingPage({
   onListingSaved: (listing: Listing) => void;
   onPublish: (listing: Listing) => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onSendBuyerRequestOffer: (request: SendBuyerRequestOfferRequest) => Promise<BuyerRequestOffer>;
+  onChooseBuyerRequestOffer: (offer: BuyerRequestOffer, listing: Listing) => void;
   onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
   onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
   onCheckListingZapReceipts: (listing: Listing, sellerProfile?: PublicProfile) => Promise<ListingZapReceipt[]>;
@@ -4799,7 +5351,10 @@ function ListingPage({
   const listingZaps = listingZapReceiptsForListing(listing, listingZapReceipts);
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
+  const requestOffers = activeBuyerRequestOffersForListing(buyerRequestOffers, listing);
   const canPublish = relays.some((relay) => relay.enabled);
+  const isRequestOwner = Boolean(identity && publicKeysMatch(identity.publicKey, listing.authorPublicKey));
+  const canSendBuyerOffer = Boolean(listing.type === 'request' && identity && !publicKeysMatch(identity.publicKey, listing.authorPublicKey));
   const canEdit =
     Boolean(localListing) &&
     (publicKeysMatch(identity?.publicKey, listing.authorPublicKey) || publicKeysMatch(nostrSigner.publicKey, listing.authorPublicKey));
@@ -4886,7 +5441,7 @@ function ListingPage({
           <article className="panel listing-main">
             <section className="listing-section listing-hero-section">
               <div className="listing-hero-meta">
-                <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
+                <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.buyerRequest')}</span>
                 <span>{t(`listing.status.${listing.status}`)}</span>
                 <span>{categoryLabel(listing.category, t)}</span>
               </div>
@@ -4919,6 +5474,22 @@ function ListingPage({
                 </DisclosurePanel>
               ) : null}
             </section>
+            {listing.type === 'request' && isRequestOwner ? (
+              <section className="listing-section">
+                <BuyerRequestOffersPanel
+                  listing={listing}
+                  offers={requestOffers.filter((offer) => offer.direction === 'incoming' || offer.status === 'selected')}
+                  identity={identity}
+                  privateKeyHex={privateKeyHex}
+                  nostrSigner={nostrSigner}
+                  relays={relays}
+                  receipts={nostrContactReceipts}
+                  onConnectSigner={onConnectSigner}
+                  onSend={onSendNostrIntro}
+                  onChoose={(offer) => onChooseBuyerRequestOffer(offer, listing)}
+                />
+              </section>
+            ) : null}
             <section className="listing-section">
               <DisclosurePanel title={t('listing.sectionTrustSource')}>
                 {curatedBy.length > 0 ? (
@@ -4985,6 +5556,17 @@ function ListingPage({
               onUnlockNwcConnection={onUnlockNwcConnection}
               onPayLightningAttemptWithNwc={onPayLightningAttemptWithNwc}
             />
+            {canSendBuyerOffer ? (
+              <section className="listing-action-group" aria-label={t('buyerOffers.sendTitle')}>
+                <BuyerRequestOfferComposer
+                  listing={listing}
+                  identity={identity}
+                  profile={profile}
+                  sentOffers={requestOffers.filter((offer) => publicKeysMatch(offer.sellerPublicKey, identity?.publicKey) && offer.direction === 'outgoing')}
+                  onSend={onSendBuyerRequestOffer}
+                />
+              </section>
+            ) : null}
             <section className="listing-action-group" aria-labelledby="listing-actions-primary">
               <h2 id="listing-actions-primary">{t('listing.actionGroupActions')}</h2>
               <div className="listing-action-buttons">
@@ -5488,7 +6070,7 @@ function BrowsePage({
           </div>
           <h2>{listing.title}</h2>
           <p className="listing-card-facts">
-            <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.request')}</span>
+            <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.buyerRequest')}</span>
             <span>{listing.region || t('listing.location')}</span>
           </p>
           <div className="badge-row listing-card-taxonomy">
@@ -5552,7 +6134,7 @@ function BrowsePage({
               {[
                 ['all', t('common.all')],
                 ['offer', t('listing.offer')],
-                ['request', t('listing.request')]
+                ['request', t('listing.buyerRequest')]
               ].map(([value, label]) => (
                 <button className={type === value ? 'filter-chip active' : 'filter-chip'} key={value} onClick={() => setType(value)} type="button">
                   {label}
@@ -5926,6 +6508,9 @@ function ListingCreatePanel({
     priceCurrency: initialListing?.price.currency ?? 'FREE',
     priceFrequency: initialListing?.price.frequency ?? '',
     priceNote: initialListing?.price.note ?? '',
+    paymentPreferences: initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]),
+    fulfillmentType: initialListing?.fulfillmentType ?? ('' as ListingFulfillmentType | ''),
+    fulfillmentNotes: initialListing?.fulfillmentNotes ?? '',
     lightningPayment: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.value ?? '',
     lightningPaymentNote: initialListing?.paymentIntents?.find((intent) => intent.method === 'lightning')?.note ?? '',
     barterAccepted: initialListing?.barterAccepted ?? false,
@@ -5979,6 +6564,7 @@ function ListingCreatePanel({
           : t('listing.readiness.mediaSigner');
   const visibilityStatus =
     form.visibility === 'public' ? t('listing.readiness.visibilityPublic') : t('listing.readiness.visibilityLocal');
+  const isRequestListing = form.type === 'request';
   const basicsReady = Boolean(form.title.trim() && form.description.trim());
   const priceReady = Boolean(form.priceAmount.trim() && form.priceCurrency.trim() && form.region.trim());
   const contactReady = Boolean(form.contactValue.trim() && (form.contactKind !== 'nostr' || normalizeNostrContact(form.contactValue)));
@@ -5991,6 +6577,33 @@ function ListingCreatePanel({
     { label: t('listing.progress.images'), done: imagesReady },
     { label: t('listing.progress.publish'), done: publishReady }
   ];
+
+  const togglePaymentPreference = (preference: PaymentPreference, checked: boolean): void => {
+    setForm((current) => {
+      const next = checked
+        ? preference === 'other'
+          ? (['other'] as PaymentPreference[])
+          : [...new Set([...current.paymentPreferences.filter((entry) => entry !== 'other'), preference])]
+        : current.paymentPreferences.filter((entry) => entry !== preference);
+      return { ...current, paymentPreferences: next.length > 0 ? next : (['other'] as PaymentPreference[]) };
+    });
+  };
+
+  const validateListingForm = (): void => {
+    if (!form.title.trim()) throw new Error(t('listing.validation.titleRequired'));
+    if (!form.description.trim()) throw new Error(t('listing.validation.descriptionRequired'));
+    if (!form.contactValue.trim()) throw new Error(t('listing.validation.contactRequired'));
+    if (!form.region.trim()) throw new Error(t('listing.validation.locationRequired'));
+    if (!form.priceAmount.trim() || !form.priceCurrency.trim()) throw new Error(t('listing.validation.priceRequired'));
+    if (form.expiresAt) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const expiry = new Date(`${form.expiresAt}T00:00:00`);
+      if (!Number.isFinite(expiry.getTime()) || expiry < today) {
+        throw new Error(t('listing.validation.expiryFuture'));
+      }
+    }
+  };
 
   useEffect(() => {
     imageDraftsRef.current = imageDrafts;
@@ -6089,6 +6702,7 @@ function ListingCreatePanel({
     setFormError('');
     setSaving(true);
     try {
+      validateListingForm();
       assertPeacefulListingText(form.title, form.description);
       if (form.contactKind === 'nostr' && !normalizeNostrContact(form.contactValue)) {
         throw new Error(t('nostrContact.invalidRecipient'));
@@ -6098,7 +6712,9 @@ function ListingCreatePanel({
       const existingNonLightningPaymentIntents = initialListing?.paymentIntents?.filter((intent) => intent.method !== 'lightning') ?? [];
       const lightningPaymentValue = sanitizePlainText(form.lightningPayment);
       const lightningPaymentNote = sanitizePlainText(form.lightningPaymentNote);
-      const paymentPreferences = initialListing?.paymentPreferences ?? (['other'] as PaymentPreference[]);
+      const paymentPreferences = form.barterAccepted
+        ? [...new Set([...form.paymentPreferences, 'barter' as PaymentPreference])]
+        : form.paymentPreferences;
       const paymentIntents = lightningPaymentValue
         ? [
             ...existingNonLightningPaymentIntents,
@@ -6136,8 +6752,8 @@ function ListingCreatePanel({
         paymentPreferences: paymentPreferences.length > 0 ? paymentPreferences : (['other'] as PaymentPreference[]),
         paymentIntents,
         images,
-        ...(initialListing?.fulfillmentType !== undefined ? { fulfillmentType: initialListing.fulfillmentType } : {}),
-        ...(initialListing?.fulfillmentNotes !== undefined ? { fulfillmentNotes: initialListing.fulfillmentNotes } : {}),
+        ...(form.fulfillmentType ? { fulfillmentType: form.fulfillmentType } : {}),
+        ...(sanitizePlainText(form.fulfillmentNotes) ? { fulfillmentNotes: sanitizePlainText(form.fulfillmentNotes) } : {}),
         barterAccepted: form.barterAccepted,
         tags: sanitizeTags(form.tags),
         expiresAt: form.expiresAt || defaultListingExpirationDate(),
@@ -6148,6 +6764,9 @@ function ListingCreatePanel({
         createdAt: initialListing?.createdAt ?? at,
         updatedAt: at
       });
+      if (listing.visibility === 'public') {
+        publicListingPayload(listing);
+      }
       await db.listings.put(listing);
       setSaving(false);
       onSaved(listing);
@@ -6175,24 +6794,34 @@ function ListingCreatePanel({
         </div>
         <section className="listing-form-section" aria-labelledby="listing-section-essentials">
           <h2 id="listing-section-essentials">{t('listing.sectionEssentials')}</h2>
-          <p className="muted compact-meta">{t('listing.sectionEssentialsHelp')}</p>
+          <p className="muted compact-meta">{t(isRequestListing ? 'listing.sectionEssentialsHelpRequest' : 'listing.sectionEssentialsHelp')}</p>
+          <div className="listing-type-choice" role="group" aria-label={t('common.type')}>
+            {[
+              ['offer', t('listing.offer'), t('listing.offerHelp')],
+              ['request', t('listing.buyerRequest'), t('listing.requestHelp')]
+            ].map(([value, label, help]) => (
+              <button
+                aria-pressed={form.type === value}
+                className={form.type === value ? 'listing-type-option active' : 'listing-type-option'}
+                key={value}
+                onClick={() => setForm({ ...form, type: value as ListingType })}
+                type="button"
+              >
+                <strong>{label}</strong>
+                <span>{help}</span>
+              </button>
+            ))}
+          </div>
           <label>
-            {t('listing.titleField')}
+            {t(isRequestListing ? 'listing.requestTitleField' : 'listing.titleField')}
             <input
               required
-              placeholder={t('placeholder.listingTitle')}
+              placeholder={t(isRequestListing ? 'placeholder.listingRequestTitle' : 'placeholder.listingTitle')}
               value={form.title}
               onChange={(event) => setForm({ ...form, title: event.target.value })}
             />
           </label>
-          <div className="listing-form-row two-up">
-            <label>
-              {t('common.type')}
-              <select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as ListingType })}>
-                <option value="offer">{t('listing.offer')}</option>
-                <option value="request">{t('listing.request')}</option>
-              </select>
-            </label>
+          <div className="listing-form-row">
             <label>
               {t('common.category')}
               <select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>
@@ -6208,7 +6837,7 @@ function ListingCreatePanel({
             {t('listing.description')}
             <textarea
               required
-              placeholder={t('placeholder.listingDescription')}
+              placeholder={t(isRequestListing ? 'placeholder.listingRequestDescription' : 'placeholder.listingDescription')}
               value={form.description}
               onChange={(event) => setForm({ ...form, description: event.target.value })}
             />
@@ -6220,11 +6849,11 @@ function ListingCreatePanel({
           </label>
         </section>
         <section className="listing-form-section" aria-labelledby="listing-section-price">
-          <h2 id="listing-section-price">{t('listing.sectionPrice')}</h2>
-          <p className="muted compact-meta">{t('listing.sectionPriceHelp')}</p>
+          <h2 id="listing-section-price">{t(isRequestListing ? 'listing.sectionBudget' : 'listing.sectionPrice')}</h2>
+          <p className="muted compact-meta">{t(isRequestListing ? 'listing.sectionBudgetHelp' : 'listing.sectionPriceHelp')}</p>
           <div className="listing-form-row publish-row">
             <label>
-              {t('listing.priceAmount')}
+              {t(isRequestListing ? 'listing.budgetAmount' : 'listing.priceAmount')}
               <input required placeholder={t('placeholder.priceAmount')} value={form.priceAmount} onChange={(event) => setForm({ ...form, priceAmount: event.target.value })} />
             </label>
             <label>
@@ -6250,7 +6879,7 @@ function ListingCreatePanel({
         </section>
         <section className="listing-form-section" aria-labelledby="listing-section-contact">
           <h2 id="listing-section-contact">{t('listing.sectionContact')}</h2>
-          <p className="muted compact-meta">{t('listing.sectionContactHelp')}</p>
+          <p className="muted compact-meta">{t(isRequestListing ? 'listing.sectionContactHelpRequest' : 'listing.sectionContactHelp')}</p>
           <div className="listing-form-row two-up">
             <label>
               {t('profile.contacts')}
@@ -6424,12 +7053,62 @@ function ListingCreatePanel({
         <DisclosurePanel title={t('listing.moreDetails')}>
           <section className="listing-form-section quiet" aria-labelledby="listing-section-more-details">
             <h2 id="listing-section-more-details">{t('listing.sectionTrustSettlement')}</h2>
-            <p className="muted compact-meta">{t('listing.moreDetailsHelp')}</p>
+            <p className="muted compact-meta">{t(isRequestListing ? 'listing.moreDetailsHelpRequest' : 'listing.moreDetailsHelp')}</p>
+            <div className="listing-form-row two-up">
+              <label>
+                {t('listing.fulfillment')}
+                <select
+                  value={form.fulfillmentType}
+                  onChange={(event) => setForm({ ...form, fulfillmentType: event.target.value as ListingFulfillmentType | '' })}
+                >
+                  <option value="">{t('fulfillment.unspecified')}</option>
+                  {fulfillmentTypes.map((entry) => (
+                    <option value={entry} key={entry}>
+                      {t(`fulfillment.${entry}`)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                {t('listing.fulfillmentNotes')}
+                <input
+                  maxLength={500}
+                  placeholder={t('placeholder.fulfillmentNotes')}
+                  value={form.fulfillmentNotes}
+                  onChange={(event) => setForm({ ...form, fulfillmentNotes: event.target.value })}
+                />
+              </label>
+            </div>
+            <fieldset className="listing-choice-grid">
+              <legend>{t('payment.options')}</legend>
+              {paymentPreferenceOptions.map((entry) => (
+                <label className="checkbox" key={entry}>
+                  <input
+                    checked={form.paymentPreferences.includes(entry)}
+                    type="checkbox"
+                    onChange={(event) => togglePaymentPreference(entry, event.target.checked)}
+                  />
+                  {paymentBadgeLabel(entry, t)}
+                </label>
+              ))}
+            </fieldset>
+            <FieldHint>{t('listing.paymentOptionsHelp')}</FieldHint>
             <label className="checkbox">
               <input
                 type="checkbox"
                 checked={form.barterAccepted}
-                onChange={(event) => setForm({ ...form, barterAccepted: event.target.checked })}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setForm((current) => ({
+                    ...current,
+                    barterAccepted: checked,
+                    paymentPreferences: checked
+                      ? [...new Set([...current.paymentPreferences.filter((entry) => entry !== 'other'), 'barter' as PaymentPreference])]
+                      : current.paymentPreferences.filter((entry) => entry !== 'barter').length > 0
+                        ? current.paymentPreferences.filter((entry) => entry !== 'barter')
+                        : (['other'] as PaymentPreference[])
+                  }));
+                }}
               />
               {t('listing.barter')}
             </label>

@@ -4,6 +4,7 @@ import type {
   AgreementAcceptanceReceipt,
   AppBackup,
   BlossomServerConfig,
+  BuyerRequestOffer,
   CommunityAllowlistEntry,
   CommunityCurationList,
   DisputeCase,
@@ -36,7 +37,7 @@ import {
   syncedRecordFromReviewItem,
   validateBackup
 } from '../nostr/events';
-import { listingSchema, listingZapReceiptSchema, operatorSupportReceiptSchema, syncSettingsSchema } from '../validation/schemas';
+import { buyerRequestOfferSchema, listingSchema, listingZapReceiptSchema, operatorSupportReceiptSchema, syncSettingsSchema } from '../validation/schemas';
 
 export const defaultRelays: RelayConfig[] = [
   { url: 'wss://relay.damus.io', enabled: true },
@@ -80,6 +81,7 @@ export class AgoraMeshDb extends Dexie {
   lightningPaymentAttempts!: Table<LightningPaymentAttempt, string>;
   operatorSupportReceipts!: Table<OperatorSupportReceipt, string>;
   listingZapReceipts!: Table<ListingZapReceipt, string>;
+  buyerRequestOffers!: Table<BuyerRequestOffer, string>;
   nwcConnections!: Table<NwcConnection, string>;
   allowlist!: Table<CommunityAllowlistEntry, string>;
   syncSettings!: Table<SyncSettings, string>;
@@ -429,6 +431,40 @@ export class AgoraMeshDb extends Dexie {
       syncSettings: 'id',
       blossomServers: 'id, url, enabled'
     });
+    this.version(16).stores({
+      identity: 'id, publicKey',
+      profile: 'id, publicKey, mediatorAvailable',
+      listings: 'id, authorPublicKey, type, category, region, visibility, status, createdAt, expiresAt',
+      agreements: 'id, hash, createdAt',
+      agreementReceipts: 'id, agreementHash, role, signerPublicKey, acceptedAt',
+      mediators: 'id, publicKey, region',
+      disputes: 'id, state, agreementHash, createdAt',
+      attestations: 'id, reviewerPublicKey, subjectPublicKey, agreementHash, eventId',
+      relays: 'url, enabled',
+      nostrReview: 'id, eventId, kind, relay, importStatus, receivedAt, authorPublicKey',
+      publicProfiles: 'id, publicKey, mediatorAvailable',
+      syncedProfiles: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedListings: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedMediators: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedAttestations: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      syncedDisputeOutcomes: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      communityLists: 'id, authorPublicKey, updatedAt',
+      syncedCommunityLists: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+      relayHealth: 'url, enabled, lastConnectedAt, consecutiveFailures',
+      publishReceipts: 'id, objectType, objectId, eventId, relayUrl, status, at',
+      nostrContactReceipts: 'id, senderPublicKey, recipientPublicKey, sentAt, status, contextType, contextId',
+      nostrMessages: 'id, ownerPublicKey, eventId, threadKey, counterpartPublicKey, messageCreatedAt, read, archived',
+      nostrMessageThreads: 'id, ownerPublicKey, threadKey, counterpartPublicKey, lastMessageAt, archived',
+      nostrInboxCursors: 'id, ownerPublicKey, relayUrl, lastFetchedAt',
+      lightningPaymentAttempts: 'id, buyerPublicKey, sellerPublicKey, purpose, listingId, badgeSubjectPublicKey, status, createdAt, updatedAt',
+      operatorSupportReceipts: 'id, payerPublicKey, operatorWalletPubkey, receiptEventId, validatedAt',
+      listingZapReceipts: 'id, listingId, listingCoordinate, sellerPublicKey, buyerPublicKey, receiptEventId, validatedAt',
+      buyerRequestOffers: 'id, requestListingId, requestCoordinate, buyerPublicKey, sellerPublicKey, direction, status, createdAt, updatedAt',
+      nwcConnections: 'id, walletPublicKey, clientPublicKey, updatedAt',
+      allowlist: 'id, publicKey, label, createdAt',
+      syncSettings: 'id',
+      blossomServers: 'id, url, enabled'
+    });
   }
 }
 
@@ -495,6 +531,7 @@ export async function exportAllData(): Promise<AppBackup> {
     lightningPaymentAttempts: await db.lightningPaymentAttempts.toArray(),
     operatorSupportReceipts: await db.operatorSupportReceipts.toArray(),
     listingZapReceipts: await db.listingZapReceipts.toArray(),
+    buyerRequestOffers: await db.buyerRequestOffers.toArray(),
     allowlist: await db.allowlist.toArray(),
     syncSettings: await db.syncSettings.toArray(),
     blossomServers: await db.blossomServers.toArray()
@@ -535,6 +572,7 @@ export async function importAllData(raw: unknown): Promise<void> {
       db.lightningPaymentAttempts,
       db.operatorSupportReceipts,
       db.listingZapReceipts,
+      db.buyerRequestOffers,
       db.allowlist,
       db.syncSettings,
       db.blossomServers
@@ -568,6 +606,7 @@ export async function importAllData(raw: unknown): Promise<void> {
         db.lightningPaymentAttempts.clear(),
         db.operatorSupportReceipts.clear(),
         db.listingZapReceipts.clear(),
+        db.buyerRequestOffers.clear(),
         db.allowlist.clear(),
         db.syncSettings.clear(),
         db.blossomServers.clear()
@@ -602,6 +641,7 @@ export async function importAllData(raw: unknown): Promise<void> {
         db.lightningPaymentAttempts.bulkPut(backup.lightningPaymentAttempts),
         db.operatorSupportReceipts.bulkPut(backup.operatorSupportReceipts.map((receipt) => operatorSupportReceiptSchema.parse(receipt))),
         db.listingZapReceipts.bulkPut(backup.listingZapReceipts.map((receipt) => listingZapReceiptSchema.parse(receipt))),
+        db.buyerRequestOffers.bulkPut(backup.buyerRequestOffers.map((offer) => buyerRequestOfferSchema.parse(offer))),
         db.allowlist.bulkPut(backup.allowlist),
         db.syncSettings.bulkPut(
           (backup.syncSettings.length > 0 ? backup.syncSettings : [defaultSyncSettings]).map((settings) =>

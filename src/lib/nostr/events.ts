@@ -189,6 +189,8 @@ function nip99ListingTags(listing: Listing): string[][] {
     ['contact', listing.contactMethod.kind, listing.contactMethod.value],
     ...listing.paymentPreferences.map((entry) => ['payment', entry]),
     ...(listing.paymentIntents ?? []).map((intent) => ['payment_intent', intent.method, intent.value, intent.note]),
+    ...(listing.fulfillmentType ? [['fulfillment', listing.fulfillmentType]] : []),
+    ...(listing.fulfillmentNotes ? [['fulfillment_note', listing.fulfillmentNotes]] : []),
     ...(listing.mediatorPreference ? [['mediator', listing.mediatorPreference]] : []),
     ...(listing.price.note ? [['price_note', listing.price.note]] : []),
     ...(listing.barterAccepted ? [['barter', 'accepted']] : []),

@@ -533,6 +533,33 @@ export interface ListingZapReceipt {
   validatedAt: string;
 }
 
+export type BuyerRequestOfferDirection = 'incoming' | 'outgoing';
+export type BuyerRequestOfferStatus = 'sent' | 'received' | 'selected' | 'superseded';
+
+export interface BuyerRequestOffer {
+  id: string;
+  requestListingId: string;
+  requestCoordinate: string;
+  requestTitle: string;
+  buyerPublicKey: string;
+  sellerPublicKey: string;
+  amount: string;
+  currency: string;
+  fulfillmentNotes: string;
+  timeline: string;
+  paymentPreferences: PaymentPreference[];
+  contactMethod?: ContactMethod;
+  message: string;
+  sourceEventIds: string[];
+  sourceReceiptId?: string;
+  sourceMessageId?: string;
+  direction: BuyerRequestOfferDirection;
+  status: BuyerRequestOfferStatus;
+  createdAt: string;
+  updatedAt: string;
+  selectedAt?: string;
+}
+
 export interface PublishReceipt {
   id: string;
   objectType: PublishObjectType;
@@ -677,6 +704,7 @@ export interface AppBackup {
   lightningPaymentAttempts: LightningPaymentAttempt[];
   operatorSupportReceipts: OperatorSupportReceipt[];
   listingZapReceipts: ListingZapReceipt[];
+  buyerRequestOffers: BuyerRequestOffer[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

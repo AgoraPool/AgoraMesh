@@ -525,6 +525,32 @@ export const listingZapReceiptSchema = z.object({
   validatedAt: nonEmpty
 });
 
+export const buyerRequestOfferSchema = z.object({
+  id: nonEmpty,
+  requestListingId: nonEmpty,
+  requestCoordinate: nonEmpty,
+  requestTitle: nonEmpty.max(120),
+  buyerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  sellerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  amount: nonEmpty.max(80),
+  currency: nonEmpty.max(16),
+  fulfillmentNotes: z.string().trim().max(1000),
+  timeline: z.string().trim().max(240),
+  paymentPreferences: z
+    .array(z.enum(['cash', 'bank', 'bitcoin', 'lightning', 'cashu', 'monero', 'barter', 'mutual-credit', 'other']))
+    .min(1),
+  contactMethod: contactMethodSchema.optional(),
+  message: nonEmpty.max(2000),
+  sourceEventIds: z.array(nonEmpty),
+  sourceReceiptId: optionalText,
+  sourceMessageId: optionalText,
+  direction: z.enum(['incoming', 'outgoing']),
+  status: z.enum(['sent', 'received', 'selected', 'superseded']),
+  createdAt: nonEmpty,
+  updatedAt: nonEmpty,
+  selectedAt: optionalText
+});
+
 export const communityAllowlistEntrySchema = z.object({
   id: nonEmpty,
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i),
@@ -614,6 +640,7 @@ export const appBackupSchema = z.object({
   lightningPaymentAttempts: z.array(lightningPaymentAttemptSchema).default([]),
   operatorSupportReceipts: z.array(operatorSupportReceiptSchema).default([]),
   listingZapReceipts: z.array(listingZapReceiptSchema).default([]),
+  buyerRequestOffers: z.array(buyerRequestOfferSchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

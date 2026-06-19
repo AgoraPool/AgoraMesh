@@ -1506,6 +1506,76 @@ dd {
   margin: 0;
 }
 
+.buyer-offers-section,
+.buyer-offer-thread,
+.buyer-offer-composer,
+.buyer-offer-form,
+.buyer-offer-mini-list {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.buyer-offer-composer h2,
+.buyer-offer-composer p {
+  margin: 0;
+}
+
+.buyer-offer-form label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.buyer-offer-form textarea {
+  min-height: 6.5rem;
+}
+
+.buyer-offer-card {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: var(--space-3);
+}
+
+.buyer-offer-card.selected {
+  border-color: rgba(102, 187, 106, 0.55);
+  background: rgba(102, 187, 106, 0.055);
+}
+
+.buyer-offer-card p {
+  margin: 0;
+}
+
+.buyer-offer-terms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.buyer-offer-terms span {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.65rem;
+}
+
+.buyer-offer-terms strong,
+.buyer-offer-terms small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.buyer-offer-terms small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .review-score-row {
   display: flex;
   flex-wrap: wrap;
@@ -2037,6 +2107,51 @@ dd {
   padding: clamp(0.85rem, 2vw, 1rem);
 }
 
+.payment-flow-panel,
+.message-flow-panel,
+.cashu-handoff-panel {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.payment-panel-heading {
+  display: flex;
+  gap: var(--space-2);
+  align-items: start;
+  justify-content: space-between;
+}
+
+.payment-panel-heading p {
+  margin: 0.2rem 0 0;
+}
+
+.payment-status-strip,
+.contact-recipient-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 231, 200, 0.035);
+  padding: 0.55rem 0.65rem;
+}
+
+.payment-status-strip > *,
+.contact-recipient-row > * {
+  min-width: 0;
+}
+
+.payment-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 .zap-panel {
   gap: var(--space-2);
 }
@@ -2061,8 +2176,10 @@ dd {
 .zap-status {
   display: grid;
   gap: var(--space-2);
-  border-left: 2px solid var(--accent);
-  padding-left: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: var(--space-3);
 }
 
 .zap-status p {
@@ -2090,9 +2207,20 @@ dd {
   padding-top: var(--space-3);
 }
 
+.contact-pay-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: var(--space-2);
+}
+
+.contact-pay-actions button {
+  width: 100%;
+}
+
 .embedded-panel,
 .embedded-panel .nostr-contact-panel,
-.embedded-panel.lightning-payment-panel {
+.embedded-panel.lightning-payment-panel,
+.embedded-panel.cashu-handoff-panel {
   border: 0;
   padding: 0;
   background: transparent;
@@ -2115,8 +2243,22 @@ dd {
 .compact-wallet-panel {
   display: grid;
   gap: var(--space-2);
-  border-left: 2px solid var(--accent);
-  padding-left: var(--space-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+}
+
+.cashu-intent-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.cashu-intent {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
 }
 
 .receipt-summary {
@@ -2638,6 +2780,57 @@ dd {
   font-size: 1rem;
 }
 
+.listing-type-choice {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-3);
+}
+
+.listing-type-option {
+  display: grid;
+  min-height: 4.5rem;
+  align-content: start;
+  gap: 0.25rem;
+  border: 1px solid var(--line);
+  background: rgba(245, 231, 200, 0.04);
+  color: var(--text);
+  text-align: left;
+}
+
+.listing-type-option.active {
+  border-color: rgba(208, 169, 92, 0.75);
+  background: rgba(208, 169, 92, 0.14);
+}
+
+.listing-type-option span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.listing-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.45rem 0.75rem;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.listing-choice-grid legend {
+  padding-inline: 0.35rem;
+  color: #d8cab0;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.listing-choice-grid .checkbox {
+  min-height: 2.1rem;
+  margin: 0;
+}
+
 .listing-readiness-panel {
   display: grid;
   gap: 0.45rem;
@@ -3043,6 +3236,10 @@ dd {
   min-height: 8rem;
 }
 
+.contact-recipient-row .key {
+  margin: 0.15rem 0 0;
+}
+
 .message-context {
   display: flex;
   flex-wrap: wrap;
@@ -3073,6 +3270,10 @@ dd {
   min-height: 0;
   margin: 0;
   accent-color: var(--accent);
+}
+
+.primary-action-row {
+  justify-content: flex-start;
 }
 
 .form-eyebrow {

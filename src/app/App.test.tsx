@@ -4,7 +4,7 @@ import { vi } from 'vitest';
 import { I18nProvider } from '../i18n/I18nProvider';
 import { db, deleteLocalData } from '../lib/storage/db';
 import { App } from './App';
-import type { Agreement, DisputeCase, IdentityRecord, Listing, MediatorProfile, NostrReviewItem, PublicProfile, RelayHealth, SyncedPublicRecord } from '../types/domain';
+import type { Agreement, BuyerRequestOffer, DisputeCase, IdentityRecord, Listing, MediatorProfile, NostrReviewItem, PublicProfile, RelayHealth, SyncedPublicRecord } from '../types/domain';
 
 function renderAppAt(hash: string): void {
   window.location.hash = hash;
@@ -1658,6 +1658,141 @@ describe('production readiness UI', () => {
     expect(screen.getByText('cashu-ok')).toBeInTheDocument();
     expect(screen.getByText('Meet near the library.')).toBeInTheDocument();
     expect(screen.getByText(/do not verify legal identity/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cashu' }));
+    expect(screen.getByText('Manual Cashu')).toBeInTheDocument();
+    expect(screen.getByText('Public token instruction')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Copy Cashu details/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Nutzaps' }));
+    expect(screen.getByText('Nutzap sending is not enabled in this build.')).toBeInTheDocument();
+  });
+
+  it('keeps listing contact and payment workflows separated behind compact actions', async () => {
+    await db.listings.put(
+      listingFixture({
+        title: 'Multimode contact listing',
+        authorPublicKey: 'b'.repeat(64),
+        contactMethod: { id: 'contact_nostr', kind: 'nostr', value: 'b'.repeat(64) },
+        paymentPreferences: ['lightning', 'cashu'],
+        paymentIntents: [
+          { id: 'intent_lightning', method: 'lightning', value: 'seller@example.com' },
+          { id: 'intent_cashu', method: 'cashu', value: 'cashuAcompact', note: 'Manual Cashu handoff' }
+        ]
+      })
+    );
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Multimode contact listing')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByText('Choose how you want to contact or pay. Nothing is sent until you confirm it.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Message' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lightning' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cashu' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Message' }));
+    expect(screen.getByText('Needs setup')).toBeInTheDocument();
+    expect(screen.getByText('Create or connect an identity before sending a Nostr message.')).toBeInTheDocument();
+    expect(screen.queryByText(/relays can still observe/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Message details' }));
+    expect(screen.getByText(/relays can still observe/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lightning' }));
+    expect(screen.getByText('No wallet')).toBeInTheDocument();
+    expect(screen.getByText('No invoice yet')).toBeInTheDocument();
+    expect(screen.getByText('Create or connect an identity before generating a zap request.')).toBeInTheDocument();
+    expect(screen.queryByText('seller@example.com')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Payment details' }));
+    expect(screen.getByText('seller@example.com')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cashu' }));
+    expect(screen.getByText('Manual Cashu')).toBeInTheDocument();
+    expect(screen.getByText('Manual Cashu handoff')).toBeInTheDocument();
+    expect(screen.getByText('cashuAcompact')).toBeInTheDocument();
+  });
+
+  it('shows seller offer composer only on buyer requests', async () => {
+    await db.identity.put(identityFixture());
+    await db.listings.put(
+      listingFixture({
+        id: 'buyer_request_offerable',
+        title: 'Need a local mechanic',
+        type: 'request',
+        authorPublicKey: 'b'.repeat(64),
+        contactMethod: { id: 'request_contact', kind: 'nostr', value: 'b'.repeat(64) },
+        paymentPreferences: ['cash']
+      })
+    );
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Need a local mechanic')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByRole('heading', { name: 'Send offer' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Send offer' }));
+    expect(screen.getByLabelText('Fulfillment terms')).toBeInTheDocument();
+
+    cleanup();
+    await deleteLocalData();
+    await db.identity.put(identityFixture());
+    await db.listings.put(listingFixture({ title: 'Normal offer listing', authorPublicKey: 'b'.repeat(64), type: 'offer' }));
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Normal offer listing')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.queryByRole('heading', { name: 'Send offer' })).not.toBeInTheDocument();
+  });
+
+  it('lets a buyer choose a received request offer and creates an agreement draft', async () => {
+    const identity = identityFixture();
+    const listing = listingFixture({
+      id: 'buyer_request_choose',
+      title: 'Need translation help',
+      type: 'request',
+      authorPublicKey: identity.publicKey,
+      paymentPreferences: ['cash'],
+      price: { amount: '800', currency: 'CZK' }
+    });
+    const offer: BuyerRequestOffer = {
+      id: 'buyer_offer_choose',
+      requestListingId: listing.id,
+      requestCoordinate: `30402:${identity.publicKey}:${listing.id}`,
+      requestTitle: listing.title,
+      buyerPublicKey: identity.publicKey,
+      sellerPublicKey: 'b'.repeat(64),
+      amount: '700',
+      currency: 'CZK',
+      fulfillmentNotes: 'I can translate it tonight.',
+      timeline: 'Tonight',
+      paymentPreferences: ['cash'],
+      message: 'I have translation experience.',
+      sourceEventIds: ['event_offer_choose'],
+      direction: 'incoming',
+      status: 'received',
+      createdAt: '2026-06-02T00:00:00.000Z',
+      updatedAt: '2026-06-02T00:00:00.000Z'
+    };
+    await db.identity.put(identity);
+    await db.listings.put(listing);
+    await db.buyerRequestOffers.put(offer);
+
+    renderAppAt('#browse');
+
+    expect(await screen.findByText('Need translation help')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View item' }));
+    expect(screen.getByRole('heading', { name: 'Seller offers' })).toBeInTheDocument();
+    expect(screen.getByText('I can translate it tonight.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose offer' }));
+
+    expect(await screen.findByRole('main', { name: 'Trade' })).toBeInTheDocument();
+    await waitFor(async () => expect(await db.agreements.count()).toBe(1));
+    await expect(db.buyerRequestOffers.get(offer.id)).resolves.toMatchObject({ status: 'selected' });
+    await expect(db.agreements.toCollection().first()).resolves.toMatchObject({
+      listingId: listing.id,
+      buyerPublicKey: identity.publicKey,
+      sellerPublicKey: 'b'.repeat(64),
+      priceAndPayment: '700 CZK · cash'
+    });
   });
 
   it('shows public sync wizard steps for missing relays and ready marketplace data', async () => {

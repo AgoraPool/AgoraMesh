@@ -506,6 +506,8 @@ function mergeTradeRoomForDisplay(existing: TradeRoom, incoming: TradeRoom): Tra
     ...(keepIncomingId ? incoming : existing),
     id: keepIncomingId ? incoming.id : existing.id,
     createdAt: existing.createdAt.localeCompare(incoming.createdAt) <= 0 ? existing.createdAt : incoming.createdAt,
+    paymentClaimedBy: [...new Set([...(existing.paymentClaimedBy ?? []), ...(incoming.paymentClaimedBy ?? [])])],
+    deliveryClaimedBy: [...new Set([...(existing.deliveryClaimedBy ?? []), ...(incoming.deliveryClaimedBy ?? [])])],
     relatedPaymentAttemptIds: [...new Set([...existing.relatedPaymentAttemptIds, ...incoming.relatedPaymentAttemptIds])],
     relatedZapReceiptIds: [...new Set([...existing.relatedZapReceiptIds, ...incoming.relatedZapReceiptIds])],
     relatedMessageThreadIds: [...new Set([...existing.relatedMessageThreadIds, ...incoming.relatedMessageThreadIds])],
@@ -9599,6 +9601,11 @@ function TradeRoomDetail({
     hasCounterparty: Boolean(counterpartyPublicKey),
     enabledRelayCount
   });
+  const participantSignalCount = (values?: string[]): string => {
+    const participants = new Set([room.buyerPublicKey.toLowerCase(), room.sellerPublicKey.toLowerCase()]);
+    const count = new Set((values ?? []).map((value) => value.toLowerCase()).filter((value) => participants.has(value))).size;
+    return t('tradeRoom.participantSignals').replace('{count}', String(count)).replace('{total}', '2');
+  };
   const coordinationStatus = deriveTradeRoomCoordinationStatus({
     room,
     receipts,
@@ -9640,7 +9647,7 @@ function TradeRoomDetail({
     }
   };
   const savePaymentState = async (paymentState: TradeRoomPaymentState): Promise<void> => {
-    const nextRoom = stateForPayment(room, paymentState);
+    const nextRoom = stateForPayment(room, paymentState, nowIso(), ownerKey);
     const paymentClaimStatus: 'payment-pending' | 'paid' | 'receipt-found' | 'failed' =
       paymentState === 'none' ? 'payment-pending' : paymentState;
     onRoomSaved(nextRoom);
@@ -9657,7 +9664,7 @@ function TradeRoomDetail({
     });
   };
   const saveDeliveryState = async (deliveryState: TradeRoomDeliveryState): Promise<void> => {
-    const nextRoom = stateForDelivery(room, deliveryState);
+    const nextRoom = stateForDelivery(room, deliveryState, nowIso(), ownerKey);
     onRoomSaved(nextRoom);
     setStateStatus(t('tradeRoom.localStateSaved'));
     await notifyRoomUpdate(nextRoom, {
@@ -9675,8 +9682,9 @@ function TradeRoomDetail({
     });
   };
   const workflowActionDisabled = (action: TradeRoomWorkflowAction): boolean => {
+    if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !identity) return true;
+    if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !counterpartyPublicKey) return true;
     if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !agreementReady) return true;
-    if (action === 'write-review' && !identity) return true;
     return false;
   };
   const runWorkflowAction = (action: TradeRoomWorkflowAction): void => {
@@ -9767,11 +9775,11 @@ function TradeRoomDetail({
           </span>
           <span>
             <strong>{t('tradeRoom.payment')}</strong>
-            {t(`tradeRoom.signal.${dealSheet.paymentSignal}`)} · {t(`tradeRoom.paymentState.${room.paymentState}`)}
+            {t(`tradeRoom.signal.${dealSheet.paymentSignal}`)} · {t(`tradeRoom.paymentState.${room.paymentState}`)} · {participantSignalCount(room.paymentClaimedBy)}
           </span>
           <span>
             <strong>{t('tradeRoom.delivery')}</strong>
-            {t(`tradeRoom.signal.${dealSheet.deliverySignal}`)} · {t(`tradeRoom.deliveryState.${room.deliveryState}`)}
+            {t(`tradeRoom.signal.${dealSheet.deliverySignal}`)} · {t(`tradeRoom.deliveryState.${room.deliveryState}`)} · {participantSignalCount(room.deliveryClaimedBy)}
           </span>
           <span>
             <strong>{t('tradeRoom.review')}</strong>
@@ -10190,7 +10198,7 @@ function TradeRoomDeliveryPanel({
         message: encodeTradeRoomUpdateMessage(payload),
         messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
       });
-      onRoomDeliverySaved(stateForDelivery({ ...room, relatedMessageThreadIds: [...new Set([...room.relatedMessageThreadIds, receipt.id])] }, 'delivered'), {
+      onRoomDeliverySaved(stateForDelivery({ ...room, relatedMessageThreadIds: [...new Set([...room.relatedMessageThreadIds, receipt.id])] }, 'delivered', nowIso(), identity.publicKey), {
         ...delivery,
         sourceMessageId: receipt.id
       });
@@ -10477,7 +10485,10 @@ function TradePage({
       });
       const receiptStatus = agreement ? agreementReceiptStatus(agreement, agreementReceipts) : undefined;
       let hydrated = agreement ? applyAgreementReceiptStatus(room, receiptStatus ?? 'draft') : room;
-      hydrated = stateForPayment(hydrated, derivePaymentState(paymentAttempts, zapReceipts));
+      const derivedPaymentState = derivePaymentState(paymentAttempts, zapReceipts);
+      if (derivedPaymentState !== 'none') {
+        hydrated = stateForPayment(hydrated, derivedPaymentState);
+      }
       const deliveryRows = tradeRoomDeliveries.filter((delivery) => delivery.roomId === room.id);
       const deliveryState: TradeRoomDeliveryState = deliveryRows.some((delivery) => delivery.status === 'confirmed')
         ? 'confirmed'

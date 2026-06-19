@@ -149,6 +149,24 @@ function normalizeKey(value?: string): string {
   return value?.toLowerCase() ?? '';
 }
 
+function normalizedPublicKeyList(values?: string[]): string[] {
+  return [...new Set((values ?? []).map((value) => value.toLowerCase()).filter(isTradeRoomPublicKey))];
+}
+
+function addParticipantSignal(room: TradeRoom, values: string[] | undefined, actorPublicKey?: string): string[] {
+  const normalized = normalizedPublicKeyList(values);
+  const actor = actorPublicKey?.toLowerCase();
+  if (actor && (actor === room.buyerPublicKey.toLowerCase() || actor === room.sellerPublicKey.toLowerCase())) {
+    normalized.push(actor);
+  }
+  return [...new Set(normalized)];
+}
+
+function hasBothParticipantSignals(room: TradeRoom, values?: string[]): boolean {
+  const normalized = new Set(normalizedPublicKeyList(values));
+  return normalized.has(room.buyerPublicKey.toLowerCase()) && normalized.has(room.sellerPublicKey.toLowerCase());
+}
+
 export function isTradeRoomPublicKey(value?: string): boolean {
   return publicKeySchema.safeParse(value).success;
 }
@@ -195,6 +213,8 @@ export function tradeRoomFromAgreement(agreement: Agreement, existing?: TradeRoo
     state: existing?.state ?? 'intent',
     paymentState: existing?.paymentState ?? 'none',
     deliveryState: existing?.deliveryState ?? 'none',
+    paymentClaimedBy: existing?.paymentClaimedBy ?? [],
+    deliveryClaimedBy: existing?.deliveryClaimedBy ?? [],
     relatedPaymentAttemptIds: existing?.relatedPaymentAttemptIds ?? [],
     relatedZapReceiptIds: existing?.relatedZapReceiptIds ?? [],
     relatedMessageThreadIds: existing?.relatedMessageThreadIds ?? [],
@@ -251,6 +271,8 @@ export function mergeTradeRoom(existing: TradeRoom | undefined, incoming: TradeR
     state: TRADE_ROOM_STATES.indexOf(existing.state) > TRADE_ROOM_STATES.indexOf(incoming.state) ? existing.state : incoming.state,
     paymentState: incoming.paymentState === 'none' ? existing.paymentState : incoming.paymentState,
     deliveryState: incoming.deliveryState === 'none' ? existing.deliveryState : incoming.deliveryState,
+    paymentClaimedBy: [...new Set([...(existing.paymentClaimedBy ?? []), ...(incoming.paymentClaimedBy ?? [])])],
+    deliveryClaimedBy: [...new Set([...(existing.deliveryClaimedBy ?? []), ...(incoming.deliveryClaimedBy ?? [])])],
     relatedPaymentAttemptIds: [...new Set([...existing.relatedPaymentAttemptIds, ...incoming.relatedPaymentAttemptIds])],
     relatedZapReceiptIds: [...new Set([...existing.relatedZapReceiptIds, ...incoming.relatedZapReceiptIds])],
     relatedMessageThreadIds: [...new Set([...existing.relatedMessageThreadIds, ...incoming.relatedMessageThreadIds])],
@@ -351,6 +373,8 @@ export function tradeRoomFromPrivateTrade({
     state: existing?.state ?? 'intent',
     paymentState: existing?.paymentState ?? 'none',
     deliveryState: existing?.deliveryState ?? 'none',
+    paymentClaimedBy: existing?.paymentClaimedBy ?? [],
+    deliveryClaimedBy: existing?.deliveryClaimedBy ?? [],
     relatedPaymentAttemptIds: existing?.relatedPaymentAttemptIds ?? [],
     relatedZapReceiptIds: existing?.relatedZapReceiptIds ?? [],
     relatedMessageThreadIds: existing?.relatedMessageThreadIds ?? [],
@@ -374,29 +398,40 @@ export function derivePaymentState(attempts: LightningPaymentAttempt[], receipts
   return 'none';
 }
 
-export function stateForPayment(room: TradeRoom, paymentState: TradeRoomPaymentState, at = nowIso()): TradeRoom {
+export function stateForPayment(room: TradeRoom, paymentState: TradeRoomPaymentState, at = nowIso(), actorPublicKey?: string): TradeRoom {
+  const paymentClaimedBy =
+    paymentState === 'paid' || paymentState === 'receipt-found' ? addParticipantSignal(room, room.paymentClaimedBy, actorPublicKey) : normalizedPublicKeyList(room.paymentClaimedBy);
+  const paymentComplete = paymentState === 'receipt-found' || hasBothParticipantSignals(room, paymentClaimedBy);
   const nextState: TradeRoomState =
-    paymentState === 'receipt-found' || paymentState === 'paid'
+    paymentComplete
       ? 'paid'
-      : paymentState === 'payment-pending'
+      : paymentState === 'payment-pending' || paymentState === 'paid'
         ? 'payment-pending'
         : room.state;
   const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
   return {
     ...room,
     paymentState,
+    paymentClaimedBy,
     state: canAdvancePastIntent && TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
     updatedAt: at
   };
 }
 
-export function stateForDelivery(room: TradeRoom, deliveryState: TradeRoomDeliveryState, at = nowIso()): TradeRoom {
-  const nextState: TradeRoomState = deliveryState === 'confirmed' ? 'confirmed' : deliveryState === 'delivered' ? 'delivered' : room.state;
-  const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
+export function stateForDelivery(room: TradeRoom, deliveryState: TradeRoomDeliveryState, at = nowIso(), actorPublicKey?: string): TradeRoom {
+  const deliveryClaimedBy =
+    deliveryState === 'delivered' || deliveryState === 'confirmed'
+      ? addParticipantSignal(room, room.deliveryClaimedBy, actorPublicKey)
+      : normalizedPublicKeyList(room.deliveryClaimedBy);
+  const deliveryComplete = hasBothParticipantSignals(room, deliveryClaimedBy);
+  const nextDeliveryState: TradeRoomDeliveryState = deliveryComplete ? 'confirmed' : deliveryState === 'confirmed' ? 'delivered' : deliveryState;
+  const nextState: TradeRoomState = deliveryComplete ? 'confirmed' : nextDeliveryState === 'delivered' ? 'delivered' : room.state;
+  const canAdvanceDelivery = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('paid');
   return {
     ...room,
-    deliveryState,
-    state: canAdvancePastIntent && TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
+    deliveryState: nextDeliveryState,
+    deliveryClaimedBy,
+    state: canAdvanceDelivery && TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
     updatedAt: at
   };
 }
@@ -418,13 +453,13 @@ function formatDealPayment(listing?: Listing, agreement?: Agreement, offer?: Buy
 
 function paymentSignalForRoom(room: TradeRoom, attempts: LightningPaymentAttempt[], receipts: ListingZapReceipt[]): TradeRoomSignalState {
   if (room.paymentState === 'receipt-found' || receipts.length > 0 || attempts.some((attempt) => attempt.status === 'receipt-found')) return 'receipt';
-  if (room.paymentState === 'paid' || attempts.some((attempt) => attempt.status === 'paid')) return 'claim';
+  if ((room.paymentClaimedBy?.length ?? 0) > 0 || room.paymentState === 'paid' || attempts.some((attempt) => attempt.status === 'paid')) return 'claim';
   return 'none';
 }
 
 function deliverySignalForRoom(room: TradeRoom, deliveries: TradeRoomDelivery[]): TradeRoomSignalState {
   if (deliveries.some((delivery) => delivery.status === 'sent' || delivery.status === 'received' || delivery.status === 'confirmed')) return 'metadata';
-  if (room.deliveryState === 'delivered' || room.deliveryState === 'confirmed') return 'claim';
+  if ((room.deliveryClaimedBy?.length ?? 0) > 0 || room.deliveryState === 'delivered' || room.deliveryState === 'confirmed') return 'claim';
   return 'none';
 }
 
@@ -459,15 +494,16 @@ export function deriveTradeRoomDealSheet({
   const accepted = acceptanceStatus === 'mutually-signed';
   const paymentSignal = paymentSignalForRoom(room, paymentAttempts, zapReceipts);
   const deliverySignal = deliverySignalForRoom(room, deliveries);
-  const deliveryComplete = room.deliveryState === 'confirmed' || deliveries.some((delivery) => delivery.status === 'confirmed');
+  const paymentComplete = paymentSignal === 'receipt' || hasBothParticipantSignals(room, room.paymentClaimedBy);
+  const deliveryComplete = hasBothParticipantSignals(room, room.deliveryClaimedBy);
   const nextAction: TradeRoomDealNextAction =
     !agreement
       ? 'create-agreement'
       : !accepted
         ? 'sign-agreement'
-        : room.paymentState === 'none' || room.paymentState === 'failed'
+        : !paymentComplete && (room.paymentState === 'none' || room.paymentState === 'failed')
           ? 'start-payment'
-          : room.paymentState === 'payment-pending'
+          : !paymentComplete
             ? 'confirm-payment'
             : deliverySignal === 'none'
               ? 'send-delivery'
@@ -482,8 +518,8 @@ export function deriveTradeRoomDealSheet({
     enabledRelayCount === 0 ? 'relays' : undefined,
     !agreement ? 'agreement' : undefined,
     agreement && !accepted ? 'acceptance' : undefined,
-    accepted && (room.paymentState === 'none' || room.paymentState === 'failed') ? 'payment' : undefined,
-    (room.paymentState === 'paid' || room.paymentState === 'receipt-found') && deliverySignal === 'none' ? 'delivery' : undefined,
+    accepted && !paymentComplete ? 'payment' : undefined,
+    paymentComplete && !deliveryComplete ? 'delivery' : undefined,
     deliveryComplete && !reviewExists ? 'review' : undefined
   ].filter((entry): entry is TradeRoomDealBlocker => Boolean(entry));
   return {
@@ -645,24 +681,26 @@ export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpda
 
 export function applyTradeRoomUpdate(room: TradeRoom, payload: TradeRoomUpdatePayload, threadKey?: string, at = payload.createdAt, lastMessageAt?: string): TradeRoom {
   const payloadState = payload.state;
-  const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
   const paymentState = payload.paymentState ?? payload.paymentClaim?.status ?? room.paymentState;
   const deliveryState = payload.deliveryState ?? (payload.deliveryConfirmation ? 'confirmed' : undefined) ?? room.deliveryState;
   const nextState =
     payloadState &&
     TRADE_ROOM_STATES.indexOf(payloadState) > TRADE_ROOM_STATES.indexOf(room.state) &&
-    (canAdvancePastIntent || TRADE_ROOM_STATES.indexOf(payloadState) <= TRADE_ROOM_STATES.indexOf('offer'))
+    TRADE_ROOM_STATES.indexOf(payloadState) <= TRADE_ROOM_STATES.indexOf('offer')
       ? payloadState
       : room.state;
-  return {
+  const roomWithPayloadState = {
     ...room,
     state: nextState,
-    paymentState,
-    deliveryState,
     relatedMessageThreadIds: threadKey ? [...new Set([...room.relatedMessageThreadIds, threadKey])] : room.relatedMessageThreadIds,
     lastMessageAt: lastMessageAt ?? room.lastMessageAt,
     updatedAt: at
   };
+  const roomWithPayment =
+    payload.paymentState || payload.paymentClaim ? stateForPayment(roomWithPayloadState, paymentState, at, payload.senderPublicKey) : roomWithPayloadState;
+  return payload.deliveryState || payload.delivery || payload.deliveryConfirmation
+    ? stateForDelivery(roomWithPayment, deliveryState, at, payload.senderPublicKey)
+    : roomWithPayment;
 }
 
 export function newDeliveryDraft(roomId: string, senderPublicKey: string): TradeRoomDelivery {

@@ -176,10 +176,19 @@ describe('payment and delivery states', () => {
     expect(pendingClaim.paymentState).toBe('payment-pending');
     const accepted = applyAgreementReceiptStatus(room, 'mutually-signed');
     expect(stateForPayment(accepted, 'payment-pending').state).toBe('payment-pending');
-    const paid = stateForPayment(accepted, 'paid');
-    expect(stateForPayment(paid, 'payment-pending').state).toBe('paid');
-    expect(stateForDelivery(paid, 'delivered').state).toBe('delivered');
-    expect(stateForDelivery(paid, 'confirmed').state).toBe('confirmed');
+    const buyerPaid = stateForPayment(accepted, 'paid', '2026-06-01T03:00:00.000Z', buyer);
+    expect(buyerPaid.state).toBe('payment-pending');
+    expect(buyerPaid.paymentClaimedBy).toEqual([buyer]);
+    expect(stateForPayment(buyerPaid, 'paid', '2026-06-01T03:03:00.000Z', 'd'.repeat(64)).paymentClaimedBy).toEqual([buyer]);
+    const paid = stateForPayment(buyerPaid, 'paid', '2026-06-01T03:05:00.000Z', seller);
+    expect(paid.state).toBe('paid');
+    expect(paid.paymentClaimedBy?.sort()).toEqual([buyer, seller].sort());
+    const sellerDelivered = stateForDelivery(paid, 'delivered', '2026-06-01T04:00:00.000Z', seller);
+    expect(sellerDelivered.state).toBe('delivered');
+    expect(sellerDelivered.deliveryState).toBe('delivered');
+    const confirmed = stateForDelivery(sellerDelivered, 'confirmed', '2026-06-01T04:05:00.000Z', buyer);
+    expect(confirmed.state).toBe('confirmed');
+    expect(confirmed.deliveryState).toBe('confirmed');
   });
 });
 
@@ -211,7 +220,19 @@ describe('deal sheet derivation', () => {
       }).nextAction
     ).toBe('start-payment');
 
-    const paid = stateForPayment(accepted, 'paid');
+    const buyerPaid = stateForPayment(accepted, 'paid', '2026-06-01T03:00:00.000Z', buyer);
+    expect(
+      deriveTradeRoomDealSheet({
+        room: buyerPaid,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('confirm-payment');
+
+    const paid = stateForPayment(buyerPaid, 'paid', '2026-06-01T03:05:00.000Z', seller);
     expect(
       deriveTradeRoomDealSheet({
         room: paid,
@@ -223,7 +244,7 @@ describe('deal sheet derivation', () => {
       }).nextAction
     ).toBe('send-delivery');
 
-    const delivered = stateForDelivery(paid, 'delivered');
+    const delivered = stateForDelivery(paid, 'delivered', '2026-06-01T04:00:00.000Z', seller);
     expect(
       deriveTradeRoomDealSheet({
         room: delivered,
@@ -248,7 +269,7 @@ describe('deal sheet derivation', () => {
       }).nextAction
     ).toBe('confirm-delivery');
 
-    const confirmed = stateForDelivery(paid, 'confirmed');
+    const confirmed = stateForDelivery(delivered, 'confirmed', '2026-06-01T04:05:00.000Z', buyer);
     expect(
       deriveTradeRoomDealSheet({
         room: confirmed,
@@ -324,7 +345,8 @@ describe('deal sheet derivation', () => {
     expect(acceptedWorkflow.primaryAction).toBe('mark-payment-pending');
     expect(acceptedWorkflow.secondaryActions).toContain('mark-paid');
 
-    const paid = stateForPayment(accepted, 'paid');
+    const buyerPaid = stateForPayment(accepted, 'paid', '2026-06-01T03:00:00.000Z', buyer);
+    const paid = stateForPayment(buyerPaid, 'paid', '2026-06-01T03:05:00.000Z', seller);
     const deliveryWorkflow = deriveTradeRoomWorkflow({
       room: paid,
       dealSheet: deriveTradeRoomDealSheet({
@@ -437,8 +459,10 @@ describe('private room payloads', () => {
     const accepted = { ...applyAgreementReceiptStatus(tradeRoomFromAgreement(agreement()), 'mutually-signed'), id: 'room_1' };
     const next = applyTradeRoomUpdate(accepted, parsed!);
     expect(next.paymentState).toBe('paid');
-    expect(next.deliveryState).toBe('confirmed');
-    expect(next.state).toBe('paid');
+    expect(next.paymentClaimedBy).toEqual([seller]);
+    expect(next.deliveryState).toBe('delivered');
+    expect(next.deliveryClaimedBy).toEqual([seller]);
+    expect(next.state).toBe('payment-pending');
   });
 
   it('rejects wrong-room or wrong-sender updates', () => {
@@ -492,5 +516,6 @@ describe('private room payloads', () => {
     });
     expect(next.state).toBe('intent');
     expect(next.paymentState).toBe('paid');
+    expect(next.paymentClaimedBy).toEqual([seller]);
   });
 });

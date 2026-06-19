@@ -572,6 +572,8 @@ export const tradeRoomSchema = z.object({
   state: tradeRoomStateSchema,
   paymentState: tradeRoomPaymentStateSchema,
   deliveryState: tradeRoomDeliveryStateSchema,
+  paymentClaimedBy: z.array(z.string().regex(/^[0-9a-f]{64}$/i)).default([]),
+  deliveryClaimedBy: z.array(z.string().regex(/^[0-9a-f]{64}$/i)).default([]),
   relatedPaymentAttemptIds: z.array(nonEmpty).default([]),
   relatedZapReceiptIds: z.array(nonEmpty).default([]),
   relatedMessageThreadIds: z.array(nonEmpty).default([]),

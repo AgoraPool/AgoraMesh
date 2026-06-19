@@ -988,6 +988,7 @@
   "tradeRoom.payment": "Payment",
   "tradeRoom.delivery": "Delivery",
   "tradeRoom.review": "Review",
+  "tradeRoom.participantSignals": "{count}/{total} party signals",
   "tradeRoom.reviewPrompt": "Confirm delivery before writing a review.",
   "tradeRoom.reviewed": "Review exists or the room is marked reviewed.",
   "tradeRoom.writeReview": "Write review",

@@ -988,6 +988,7 @@
   "tradeRoom.payment": "Platba",
   "tradeRoom.delivery": "Dodání",
   "tradeRoom.review": "Recenze",
+  "tradeRoom.participantSignals": "{count}/{total} signálů stran",
   "tradeRoom.reviewPrompt": "Před napsáním recenze potvrďte dodání.",
   "tradeRoom.reviewed": "Recenze existuje nebo je místnost označena jako zrecenzovaná.",
   "tradeRoom.writeReview": "Napsat recenzi",

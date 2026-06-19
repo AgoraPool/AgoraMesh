@@ -582,6 +582,8 @@ export interface TradeRoom {
   state: TradeRoomState;
   paymentState: TradeRoomPaymentState;
   deliveryState: TradeRoomDeliveryState;
+  paymentClaimedBy?: string[];
+  deliveryClaimedBy?: string[];
   relatedPaymentAttemptIds: string[];
   relatedZapReceiptIds: string[];
   relatedMessageThreadIds: string[];

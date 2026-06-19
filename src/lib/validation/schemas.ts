@@ -372,7 +372,7 @@ export const nostrContactReceiptSchema = z.object({
   senderPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   recipientPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   recipientNpub: nonEmpty,
-  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']),
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual', 'trade-room']),
   contextId: optionalText,
   contextTitle: optionalText,
   eventIds: z.array(nonEmpty),
@@ -399,7 +399,7 @@ export const nostrMessageRecordSchema = z.object({
   direction: z.enum(['incoming', 'outgoing']),
   threadKey: nonEmpty,
   subject: optionalText,
-  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']).optional(),
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual', 'trade-room']).optional(),
   contextId: optionalText,
   wrapCreatedAt: nonEmpty,
   messageCreatedAt: nonEmpty,
@@ -417,7 +417,7 @@ export const nostrMessageThreadSchema = z.object({
   counterpartPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
   threadKey: nonEmpty,
   subject: optionalText,
-  contextType: z.enum(['listing', 'profile', 'mediator', 'manual']).optional(),
+  contextType: z.enum(['listing', 'profile', 'mediator', 'manual', 'trade-room']).optional(),
   contextId: optionalText,
   lastMessageAt: nonEmpty,
   lastMessageId: optionalText,
@@ -551,6 +551,57 @@ export const buyerRequestOfferSchema = z.object({
   selectedAt: optionalText
 });
 
+export const tradeRoomStateSchema = z.enum(['intent', 'offer', 'accepted', 'payment-pending', 'paid', 'delivered', 'confirmed', 'reviewed']);
+export const tradeRoomPaymentStateSchema = z.enum(['none', 'payment-pending', 'paid', 'receipt-found', 'failed']);
+export const tradeRoomDeliveryStateSchema = z.enum(['none', 'in-progress', 'delivered', 'confirmed']);
+export const tradeRoomDeliveryStatusSchema = z.enum(['draft', 'sent', 'received', 'confirmed']);
+
+export const tradeRoomSchema = z.object({
+  id: nonEmpty,
+  buyerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  sellerPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  buyerLabel: optionalText,
+  sellerLabel: optionalText,
+  mediator: optionalText,
+  listingId: optionalText,
+  listingCoordinate: optionalText,
+  listingTitle: optionalText,
+  agreementId: optionalText,
+  agreementHash: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
+  buyerRequestOfferId: optionalText,
+  state: tradeRoomStateSchema,
+  paymentState: tradeRoomPaymentStateSchema,
+  deliveryState: tradeRoomDeliveryStateSchema,
+  relatedPaymentAttemptIds: z.array(nonEmpty).default([]),
+  relatedZapReceiptIds: z.array(nonEmpty).default([]),
+  relatedMessageThreadIds: z.array(nonEmpty).default([]),
+  lastMessageAt: optionalText,
+  reviewedAt: optionalText,
+  createdAt: nonEmpty,
+  updatedAt: nonEmpty
+});
+
+export const tradeRoomDeliverySchema = z.object({
+  id: nonEmpty,
+  roomId: nonEmpty,
+  senderPublicKey: z.string().regex(/^[0-9a-f]{64}$/i),
+  fileName: nonEmpty.max(240),
+  fileHash: nonEmpty.max(160),
+  note: z.string().trim().max(1000),
+  url: z
+    .string()
+    .url()
+    .refine((value) => value.startsWith('https://'), {
+      message: 'Trade room delivery URL must use https://'
+    })
+    .optional()
+    .or(z.literal('')),
+  sourceMessageId: optionalText,
+  status: tradeRoomDeliveryStatusSchema,
+  createdAt: nonEmpty,
+  updatedAt: nonEmpty
+});
+
 export const communityAllowlistEntrySchema = z.object({
   id: nonEmpty,
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i),
@@ -641,6 +692,8 @@ export const appBackupSchema = z.object({
   operatorSupportReceipts: z.array(operatorSupportReceiptSchema).default([]),
   listingZapReceipts: z.array(listingZapReceiptSchema).default([]),
   buyerRequestOffers: z.array(buyerRequestOfferSchema).default([]),
+  tradeRooms: z.array(tradeRoomSchema).default([]),
+  tradeRoomDeliveries: z.array(tradeRoomDeliverySchema).default([]),
   allowlist: z.array(communityAllowlistEntrySchema).default([]),
   syncSettings: z.array(syncSettingsSchema).default([]),
   blossomServers: z.array(blossomServerConfigSchema).default([])

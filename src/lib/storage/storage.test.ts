@@ -8,7 +8,9 @@ import type {
   MediatorProfile,
   NwcConnection,
   PublicProfile,
-  SyncedPublicRecord
+  SyncedPublicRecord,
+  TradeRoom,
+  TradeRoomDelivery
 } from '../../types/domain';
 import { bytesToHex } from '@noble/hashes/utils';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -50,15 +52,48 @@ describe('import/export round trip', () => {
       eventId: 'event_receipt',
       signature: 'signature'
     };
+    const room: TradeRoom = {
+      id: 'trade_room_roundtrip',
+      buyerPublicKey: 'e'.repeat(64),
+      sellerPublicKey: 'f'.repeat(64),
+      buyerLabel: 'Buyer',
+      sellerLabel: 'Seller',
+      listingId: listing.id,
+      listingTitle: listing.title,
+      state: 'intent',
+      paymentState: 'none',
+      deliveryState: 'none',
+      relatedPaymentAttemptIds: [],
+      relatedZapReceiptIds: [],
+      relatedMessageThreadIds: [],
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
+    const delivery: TradeRoomDelivery = {
+      id: 'trade_delivery_roundtrip',
+      roomId: room.id,
+      senderPublicKey: room.sellerPublicKey,
+      fileName: 'manual.pdf',
+      fileHash: 'sha256:abc123',
+      note: 'Private file handoff.',
+      url: 'https://example.test/manual.pdf',
+      status: 'sent',
+      createdAt: '2026-05-31T00:00:00.000Z',
+      updatedAt: '2026-05-31T00:00:00.000Z'
+    };
 
     await db.listings.put(listing);
     await db.agreementReceipts.put(receipt);
+    await db.tradeRooms.put(room);
+    await db.tradeRoomDeliveries.put(delivery);
     const backup = await exportAllData();
     await deleteLocalData();
     await importAllData(backup);
 
     await expect(db.listings.get('listing_roundtrip')).resolves.toMatchObject({ title: 'Self-hosting help' });
     await expect(db.agreementReceipts.get('receipt_roundtrip')).resolves.toMatchObject({ agreementHash: 'a'.repeat(64) });
+    await expect(db.tradeRooms.get('trade_room_roundtrip')).resolves.toMatchObject({ listingId: listing.id, state: 'intent' });
+    await expect(db.tradeRoomDeliveries.get('trade_delivery_roundtrip')).resolves.toMatchObject({ roomId: room.id, status: 'sent' });
   });
 
   it('keeps local public profile and mediator profile as separate backup records', async () => {

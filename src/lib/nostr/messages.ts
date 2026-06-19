@@ -13,7 +13,7 @@ export const NOSTR_INTRO_MESSAGE_LIMIT = 2000;
 export interface NostrIntroContext {
   title?: string;
   id?: string;
-  type?: 'listing' | 'profile' | 'mediator' | 'manual';
+  type?: 'listing' | 'profile' | 'mediator' | 'manual' | 'trade-room';
 }
 
 interface CreateLocalNostrIntroEventsArgs {
@@ -60,6 +60,7 @@ function contextLabel(context: NostrIntroContext): string {
   if (context.type === 'listing') return 'Listing';
   if (context.type === 'profile') return 'Profile';
   if (context.type === 'mediator') return 'Mediator';
+  if (context.type === 'trade-room') return 'Trade room';
   return 'Thread';
 }
 

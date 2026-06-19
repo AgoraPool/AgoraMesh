@@ -560,6 +560,50 @@ export interface BuyerRequestOffer {
   selectedAt?: string;
 }
 
+export type TradeRoomState = 'intent' | 'offer' | 'accepted' | 'payment-pending' | 'paid' | 'delivered' | 'confirmed' | 'reviewed';
+export type TradeRoomPaymentState = 'none' | 'payment-pending' | 'paid' | 'receipt-found' | 'failed';
+export type TradeRoomDeliveryState = 'none' | 'in-progress' | 'delivered' | 'confirmed';
+export type TradeRoomDeliveryStatus = 'draft' | 'sent' | 'received' | 'confirmed';
+
+export interface TradeRoom {
+  id: string;
+  buyerPublicKey: string;
+  sellerPublicKey: string;
+  buyerLabel?: string;
+  sellerLabel?: string;
+  mediator?: string;
+  listingId?: string;
+  listingCoordinate?: string;
+  listingTitle?: string;
+  agreementId?: string;
+  agreementHash?: string;
+  buyerRequestOfferId?: string;
+  state: TradeRoomState;
+  paymentState: TradeRoomPaymentState;
+  deliveryState: TradeRoomDeliveryState;
+  relatedPaymentAttemptIds: string[];
+  relatedZapReceiptIds: string[];
+  relatedMessageThreadIds: string[];
+  lastMessageAt?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TradeRoomDelivery {
+  id: string;
+  roomId: string;
+  senderPublicKey: string;
+  fileName: string;
+  fileHash: string;
+  note: string;
+  url?: string;
+  sourceMessageId?: string;
+  status: TradeRoomDeliveryStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PublishReceipt {
   id: string;
   objectType: PublishObjectType;
@@ -571,7 +615,7 @@ export interface PublishReceipt {
   at: string;
 }
 
-export type NostrContactContextType = 'listing' | 'profile' | 'mediator' | 'manual';
+export type NostrContactContextType = 'listing' | 'profile' | 'mediator' | 'manual' | 'trade-room';
 export type NostrContactReceiptStatus = 'accepted' | 'partial' | 'failed';
 
 export interface NostrContactReceipt {
@@ -705,6 +749,8 @@ export interface AppBackup {
   operatorSupportReceipts: OperatorSupportReceipt[];
   listingZapReceipts: ListingZapReceipt[];
   buyerRequestOffers: BuyerRequestOffer[];
+  tradeRooms: TradeRoom[];
+  tradeRoomDeliveries: TradeRoomDelivery[];
   allowlist: CommunityAllowlistEntry[];
   syncSettings: SyncSettings[];
   blossomServers: BlossomServerConfig[];

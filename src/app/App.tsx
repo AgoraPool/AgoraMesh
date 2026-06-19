@@ -185,6 +185,23 @@ import {
   type ReputationRow
 } from '../lib/reputation/summary';
 import {
+  TRADE_ROOM_STATES,
+  applyAgreementReceiptStatus,
+  deliveryFromUpdatePayload,
+  derivePaymentState,
+  encodeTradeRoomUpdateMessage,
+  markRoomReviewed,
+  newDeliveryDraft,
+  parseTradeRoomUpdatePayload,
+  roomMatchesPrivateUpdate,
+  stateForDelivery,
+  stateForPayment,
+  tradeRoomFromAgreement,
+  tradeRoomFromPrivateTrade,
+  tradeRoomFromSelectedOffer,
+  type TradeRoomUpdatePayload
+} from '../lib/tradeRooms';
+import {
   agreementSchema,
   assertPeacefulListingText,
   blossomServerConfigSchema,
@@ -246,6 +263,11 @@ import type {
   SyncStatus,
   SyncedConflictGroup,
   SyncedPublicRecord,
+  TradeRoom,
+  TradeRoomDelivery,
+  TradeRoomDeliveryState,
+  TradeRoomPaymentState,
+  TradeRoomState,
   TrustFilter,
   WebOfTrustEntry
 } from '../types/domain';
@@ -265,7 +287,7 @@ type RouteTarget =
 type BrowseTab = 'discover' | 'create' | 'mine';
 type SettingsTab = 'account' | 'relays' | 'cache' | 'trust' | 'media' | 'backup' | 'diagnostics';
 type ProfileTab = 'identity' | 'publicProfile' | 'contactPayments' | 'mediator' | 'publish' | 'advanced';
-type TradeTab = 'agreement' | 'mediator' | 'dispute' | 'outcome';
+type TradeTab = 'rooms' | 'agreement' | 'mediator' | 'dispute' | 'outcome';
 type ReputationTab = 'create' | 'browse' | 'context';
 type NextStep = { body: string; actions: { label: string; page: RouteTarget }[] };
 type ProfileSaveResult = { mediatorAvailable: boolean; mediatorProfileId?: string };
@@ -276,6 +298,15 @@ type PublicSyncStep = { title: string; body: string; done: boolean; actionLabel?
 type MarketplaceFetchSummary = { imported: number; updated: number; unchanged: number; skipped: number; invalid: number; relaysQueried: number };
 type PublicCacheWriteResult = 'imported' | 'updated' | 'unchanged' | 'skipped';
 type CacheablePayload = PublicProfile | Listing | MediatorProfile | ReputationAttestation | PublicDisputeOutcome | CommunityCurationList;
+type TradeRoomRow = {
+  room: TradeRoom;
+  agreement?: Agreement;
+  listing?: Listing;
+  receiptStatus?: ReturnType<typeof agreementReceiptStatus>;
+  paymentAttempts: LightningPaymentAttempt[];
+  zapReceipts: ListingZapReceipt[];
+  deliveries: TradeRoomDelivery[];
+};
 type NostrContactTarget = {
   recipientPublicKey: string;
   label: string;
@@ -542,13 +573,22 @@ function nostrThreadId(threadKey: string): string {
   return `nostr_thread_${base64FromBytes(utf8ToBytes(threadKey)).replace(/[^a-z0-9]/gi, '').slice(0, 48)}`;
 }
 
-function messageContextFromPlaintext(plaintext: string): { contextTitle?: string; contextId?: string } {
+function messageContextFromPlaintext(plaintext: string): { contextTitle?: string; contextId?: string; contextType?: NostrContactReceipt['contextType'] } {
   const normalized = normalizePlainTextForDisplay(plaintext);
-  const contextTitle =
-    normalized.match(/^Context: (.+)$/m)?.[1]?.trim() ??
-    normalized.match(/^(Listing|Profile|Mediator|Thread): (.+)$/m)?.[2]?.trim();
+  const typedContext = normalized.match(/^(Listing|Profile|Mediator|Trade room|Thread): (.+)$/m);
+  const contextTitle = normalized.match(/^Context: (.+)$/m)?.[1]?.trim() ?? typedContext?.[2]?.trim();
   const contextId = normalized.match(/^Reference: (.+)$/m)?.[1]?.trim();
-  return { contextTitle, contextId };
+  const contextType =
+    typedContext?.[1] === 'Listing'
+      ? 'listing'
+      : typedContext?.[1] === 'Profile'
+        ? 'profile'
+        : typedContext?.[1] === 'Mediator'
+          ? 'mediator'
+          : typedContext?.[1] === 'Trade room'
+            ? 'trade-room'
+            : undefined;
+  return { contextTitle, contextId, contextType };
 }
 
 function messageIso(seconds: number): string {
@@ -560,7 +600,7 @@ function normalizePlainTextForDisplay(text: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/\s+---\s+AgoraMesh context\s+/g, '\n\n---\nAgoraMesh context\n')
     .replace(/\s+---\s*$/g, '\n---')
-    .replace(/\s+(Listing|Profile|Mediator|Thread):\s+/g, '\n$1: ')
+    .replace(/\s+(Listing|Profile|Mediator|Trade room|Thread):\s+/g, '\n$1: ')
     .replace(/\s+Reference:\s+/g, '\nReference: ');
 }
 
@@ -1164,6 +1204,8 @@ export function App(): ReactNode {
   const [operatorSupportReceipts, setOperatorSupportReceipts] = useState<OperatorSupportReceipt[]>([]);
   const [listingZapReceipts, setListingZapReceipts] = useState<ListingZapReceipt[]>([]);
   const [buyerRequestOffers, setBuyerRequestOffers] = useState<BuyerRequestOffer[]>([]);
+  const [tradeRooms, setTradeRooms] = useState<TradeRoom[]>([]);
+  const [tradeRoomDeliveries, setTradeRoomDeliveries] = useState<TradeRoomDelivery[]>([]);
   const [nwcConnections, setNwcConnections] = useState<NwcConnection[]>([]);
   const [unlockedNwcSecrets, setUnlockedNwcSecrets] = useState<Record<string, string>>({});
   const [allowlist, setAllowlist] = useState<CommunityAllowlistEntry[]>([]);
@@ -1177,6 +1219,7 @@ export function App(): ReactNode {
   const [notice, setNotice] = useState('');
   const [nextStep, setNextStep] = useState<NextStep | undefined>();
   const [tradeListingRef, setTradeListingRef] = useState<ListingSourceRef | undefined>();
+  const [tradeRoomOpenId, setTradeRoomOpenId] = useState('');
   const [reputationDraftRequest, setReputationDraftRequest] = useState<ReputationDraftRequest | undefined>();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [routeHash, setRouteHash] = useState(() => window.location.hash.replace('#', ''));
@@ -1306,12 +1349,25 @@ export function App(): ReactNode {
   const reload = async (): Promise<void> => {
     await ensureDefaults();
     const nextIdentity = await db.identity.toCollection().first();
+    const nextAgreements = (await db.agreements.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const nextAgreementReceipts = (await db.agreementReceipts.toArray()).sort((left, right) => right.acceptedAt.localeCompare(left.acceptedAt));
+    const existingTradeRooms = await db.tradeRooms.toArray();
+    const roomByAgreementHash = new Map(
+      existingTradeRooms.filter((room) => room.agreementHash).map((room): [string, TradeRoom] => [room.agreementHash ?? '', room])
+    );
+    const backfilledRooms = nextAgreements
+      .filter((agreement) => agreement.hash && !roomByAgreementHash.has(agreement.hash))
+      .map((agreement) => applyAgreementReceiptStatus(tradeRoomFromAgreement(agreement), agreementReceiptStatus(agreement, nextAgreementReceipts)));
+    if (backfilledRooms.length > 0) {
+      await db.tradeRooms.bulkPut(backfilledRooms);
+    }
+    const nextTradeRooms = [...existingTradeRooms, ...backfilledRooms].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     setIdentity(nextIdentity);
     setIdentityBackedUp(readBackupConfirmed(nextIdentity));
     setProfile(await db.profile.toCollection().first());
     setListings((await db.listings.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
-    setAgreements((await db.agreements.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
-    setAgreementReceipts((await db.agreementReceipts.toArray()).sort((left, right) => right.acceptedAt.localeCompare(left.acceptedAt)));
+    setAgreements(nextAgreements);
+    setAgreementReceipts(nextAgreementReceipts);
     setMediators(await db.mediators.toArray());
     setDisputes((await db.disputes.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setAttestations((await db.attestations.toArray()).sort((left, right) => right.timestamp - left.timestamp));
@@ -1334,6 +1390,8 @@ export function App(): ReactNode {
     setOperatorSupportReceipts((await db.operatorSupportReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
     setListingZapReceipts((await db.listingZapReceipts.toArray()).sort((left, right) => right.validatedAt.localeCompare(left.validatedAt)));
     setBuyerRequestOffers((await db.buyerRequestOffers.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    setTradeRooms(nextTradeRooms);
+    setTradeRoomDeliveries((await db.tradeRoomDeliveries.toArray()).sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setNwcConnections((await db.nwcConnections.toArray()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAllowlist(await db.allowlist.toArray());
     setSyncSettings((await db.syncSettings.get('default')) ?? defaultSyncSettings);
@@ -1763,6 +1821,40 @@ export function App(): ReactNode {
     );
   };
 
+  const cacheTradeRoomUpdateFromMessage = async (record: NostrMessageRecord, plaintext: string): Promise<void> => {
+    const payload = parseTradeRoomUpdatePayload(plaintext);
+    if (!payload) return;
+    const rooms = await db.tradeRooms.toArray();
+    const room = rooms.find((entry) => roomMatchesPrivateUpdate(entry, payload, record.senderPublicKey, record.ownerPublicKey));
+    if (!room) return;
+    const at = record.receivedAt || payload.createdAt;
+    const nextRoom: TradeRoom = {
+      ...room,
+      state: payload.state && TRADE_ROOM_STATES.indexOf(payload.state) > TRADE_ROOM_STATES.indexOf(room.state) ? payload.state : room.state,
+      paymentState: payload.paymentState ?? room.paymentState,
+      deliveryState: payload.deliveryState ?? room.deliveryState,
+      relatedMessageThreadIds: [...new Set([...room.relatedMessageThreadIds, record.threadKey])],
+      lastMessageAt: record.messageCreatedAt,
+      updatedAt: at
+    };
+    const delivery = deliveryFromUpdatePayload(payload, room.id, record.id);
+    const cachedDelivery = delivery
+      ? {
+          ...delivery,
+          status: delivery.status === 'sent' && record.direction === 'incoming' ? ('received' as const) : delivery.status,
+          updatedAt: at
+        }
+      : undefined;
+    await db.tradeRooms.put(nextRoom);
+    if (cachedDelivery) {
+      await db.tradeRoomDeliveries.put(cachedDelivery);
+    }
+    setTradeRooms((current) => [nextRoom, ...current.filter((entry) => entry.id !== nextRoom.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+    if (cachedDelivery) {
+      setTradeRoomDeliveries((current) => [cachedDelivery, ...current.filter((entry) => entry.id !== cachedDelivery.id)].sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    }
+  };
+
   const sendNostrContactIntro = async (args: SendNostrContactIntroArgs): Promise<NostrContactReceipt> => {
     const recipient = normalizeNostrContact(args.recipientPublicKey);
     if (!recipient) throw new Error(t('nostrContact.invalidRecipient'));
@@ -1934,6 +2026,7 @@ export function App(): ReactNode {
       ...localizedDraft,
       hash: generateAgreementHash({ ...localizedDraft, hash: '' })
     });
+    const room = tradeRoomFromSelectedOffer({ offer, listing, agreement, at });
     const existingOffers = await db.buyerRequestOffers.toArray();
     const updatedOffers = existingOffers.map((entry) => {
       if (entry.id === offer.id) return { ...entry, status: 'selected' as const, selectedAt: at, updatedAt: at };
@@ -1943,9 +2036,12 @@ export function App(): ReactNode {
       return entry;
     });
     await db.agreements.put(agreement);
+    await db.tradeRooms.put(room);
     await db.buyerRequestOffers.bulkPut(updatedOffers);
     setAgreements((current) => [agreement, ...current.filter((entry) => entry.id !== agreement.id)]);
     setBuyerRequestOffers(updatedOffers.sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+    setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+    setTradeRoomOpenId(room.id);
     showNotice(t('buyerOffers.selected'));
     go('trade');
   };
@@ -2020,7 +2116,7 @@ export function App(): ReactNode {
       direction,
       threadKey,
       subject: matchingThread?.subject ?? subject,
-      contextType: sentReceipt?.contextType ?? matchingThread?.contextType,
+      contextType: sentReceipt?.contextType ?? parsedContext.contextType ?? matchingThread?.contextType,
       contextId: matchingThread?.contextId ?? contextId,
       wrapCreatedAt: messageIso(unwrapped.wrap.created_at),
       messageCreatedAt: messageIso(unwrapped.rumor.created_at),
@@ -2034,8 +2130,9 @@ export function App(): ReactNode {
     await db.nostrMessages.put(record);
     try {
       await cacheBuyerRequestOfferFromMessage(record, unwrapped.rumor.content);
+      await cacheTradeRoomUpdateFromMessage(record, unwrapped.rumor.content);
     } catch {
-      // Offer payload parsing is best-effort; the encrypted message itself remains valid inbox content.
+      // App-private payload parsing is best-effort; the encrypted message itself remains valid inbox content.
     }
     await rebuildNostrThread(threadKey);
     return 'imported';
@@ -2855,8 +2952,34 @@ export function App(): ReactNode {
               )
             }
             onStartTrade={(listingRef) => {
-              setTradeListingRef(listingRef);
-              go('trade');
+              void (async () => {
+                setTradeListingRef(listingRef);
+                if (identity?.publicKey) {
+                  const at = nowIso();
+                  const existing = (
+                    await db.tradeRooms
+                      .where('listingId')
+                      .equals(listingRef.listing.id)
+                      .toArray()
+                  ).find(
+                    (room) =>
+                      publicKeysMatch(room.buyerPublicKey, identity.publicKey) &&
+                      publicKeysMatch(room.sellerPublicKey, listingRef.listing.authorPublicKey) &&
+                      !room.agreementHash
+                  );
+                  const room = tradeRoomFromPrivateTrade({
+                    listing: listingRef.listing,
+                    buyerPublicKey: identity.publicKey,
+                    buyerLabel: profile?.displayName || identity.displayName,
+                    existing,
+                    at
+                  });
+                  await db.tradeRooms.put(room);
+                  setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+                  setTradeRoomOpenId(room.id);
+                }
+                go('trade');
+              })();
             }}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onToggleReviewHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
@@ -2977,13 +3100,51 @@ export function App(): ReactNode {
             selectedListingRef={tradeListingRef}
             agreements={agreements}
             agreementReceipts={agreementReceipts}
+            tradeRooms={tradeRooms}
+            tradeRoomDeliveries={tradeRoomDeliveries}
             mediators={mediators}
             syncedMediators={syncedMediators}
             disputes={disputes}
+            attestations={attestations}
+            lightningPaymentAttempts={lightningPaymentAttempts}
+            listingZapReceipts={listingZapReceipts}
+            nostrMessages={nostrMessages}
+            nostrMessageThreads={nostrMessageThreads}
+            nostrContactReceipts={nostrContactReceipts}
+            relays={relays}
             identity={identity}
             privateKeyHex={privateKeyHex}
             nostrSigner={nostrSigner}
             syncSettings={syncSettings}
+            openRoomId={tradeRoomOpenId}
+            onConnectSigner={() => void connectSigner()}
+            onSendNostrIntro={sendNostrContactIntro}
+            onRoomOpened={(roomId) => setTradeRoomOpenId(roomId)}
+            onRoomSaved={(room) => {
+              setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+              void db.tradeRooms.put(room);
+            }}
+            onRoomDeliverySaved={(room, delivery) => {
+              setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+              setTradeRoomDeliveries((current) => [delivery, ...current.filter((entry) => entry.id !== delivery.id)].sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
+              void db.transaction('rw', [db.tradeRooms, db.tradeRoomDeliveries], async () => {
+                await db.tradeRooms.put(room);
+                await db.tradeRoomDeliveries.put(delivery);
+              });
+            }}
+            onReviewRoom={(room) => {
+              const reviewerKey = identity?.publicKey.toLowerCase();
+              if (!reviewerKey) return;
+              const subjectPublicKey = publicKeysMatch(reviewerKey, room.sellerPublicKey) ? room.buyerPublicKey : room.sellerPublicKey;
+              setReputationDraftRequest({
+                subjectPublicKey,
+                role: publicKeysMatch(subjectPublicKey, room.sellerPublicKey) ? 'seller' : 'buyer',
+                listingId: room.listingId,
+                listingTitle: room.listingTitle,
+                listingCoordinate: room.listingCoordinate
+              });
+              go('reputation');
+            }}
             onAgreementSaved={() => {
               showNotice(t('notice.agreementSaved'));
               void reload();
@@ -8621,19 +8782,559 @@ function NostrInboxPanel({
   );
 }
 
+function tradeRoomPartyLabel(publicKey: string, label?: string): string {
+  return label?.trim() || shortPublicKey(publicKey);
+}
+
+function TradeRoomStateStepper({ state }: { state: TradeRoomState }): ReactNode {
+  const { t } = useI18n();
+  const activeIndex = TRADE_ROOM_STATES.indexOf(state);
+  return (
+    <ol className="trade-room-state-steps" aria-label={t('tradeRoom.stateMachine')}>
+      {TRADE_ROOM_STATES.map((step, index) => (
+        <li className={index <= activeIndex ? 'done' : ''} key={step}>
+          <span>{index + 1}</span>
+          <strong>{t(`tradeRoom.state.${step}`)}</strong>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function TradeRoomsPanel({
+  rows,
+  selectedRoomId,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  messages,
+  threads,
+  receipts,
+  attestations,
+  onConnectSigner,
+  onSendNostrIntro,
+  onSelectRoom,
+  onRoomSaved,
+  onRoomDeliverySaved,
+  onReviewRoom
+}: {
+  rows: TradeRoomRow[];
+  selectedRoomId: string;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  messages: NostrMessageRecord[];
+  threads: NostrMessageThread[];
+  receipts: NostrContactReceipt[];
+  attestations: ReputationAttestation[];
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onSelectRoom: (roomId: string) => void;
+  onRoomSaved: (room: TradeRoom) => void;
+  onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onReviewRoom: (room: TradeRoom) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const selected = rows.find((row) => row.room.id === selectedRoomId) ?? rows[0];
+  return (
+    <section className="trade-room-workspace">
+      <aside className="trade-room-list" aria-label={t('tradeRoom.list')}>
+        <div className="row between">
+          <h2>{t('tradeRoom.rooms')}</h2>
+          <span className="pill">{rows.length}</span>
+        </div>
+        {rows.map(({ room }) => (
+          <button className={selected?.room.id === room.id ? 'trade-room-row active' : 'trade-room-row'} key={room.id} onClick={() => onSelectRoom(room.id)} type="button">
+            <strong>{room.listingTitle || room.agreementHash || room.id}</strong>
+            <span>{tradeRoomPartyLabel(room.buyerPublicKey, room.buyerLabel)} - {tradeRoomPartyLabel(room.sellerPublicKey, room.sellerLabel)}</span>
+            <small>{t(`tradeRoom.state.${room.state}`)} · {room.updatedAt}</small>
+          </button>
+        ))}
+        {rows.length === 0 ? <EmptyState title={t('tradeRoom.emptyTitle')} body={t('tradeRoom.emptyBody')} /> : null}
+      </aside>
+      <section className="trade-room-detail">
+        {selected ? (
+          <TradeRoomDetail
+            row={selected}
+            identity={identity}
+            privateKeyHex={privateKeyHex}
+            nostrSigner={nostrSigner}
+            relays={relays}
+            messages={messages}
+            threads={threads}
+            receipts={receipts}
+            attestations={attestations}
+            onConnectSigner={onConnectSigner}
+            onSendNostrIntro={onSendNostrIntro}
+            onRoomSaved={onRoomSaved}
+            onRoomDeliverySaved={onRoomDeliverySaved}
+            onReviewRoom={onReviewRoom}
+          />
+        ) : (
+          <EmptyState title={t('tradeRoom.emptyTitle')} body={t('tradeRoom.emptyBody')} />
+        )}
+      </section>
+    </section>
+  );
+}
+
+function TradeRoomDetail({
+  row,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  messages,
+  threads,
+  receipts,
+  attestations,
+  onConnectSigner,
+  onSendNostrIntro,
+  onRoomSaved,
+  onRoomDeliverySaved,
+  onReviewRoom
+}: {
+  row: TradeRoomRow;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  messages: NostrMessageRecord[];
+  threads: NostrMessageThread[];
+  receipts: NostrContactReceipt[];
+  attestations: ReputationAttestation[];
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onRoomSaved: (room: TradeRoom) => void;
+  onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onReviewRoom: (room: TradeRoom) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const { room, agreement, listing, paymentAttempts, zapReceipts, deliveries } = row;
+  const ownerKey = identity?.publicKey.toLowerCase();
+  const counterpartyPublicKey = ownerKey
+    ? publicKeysMatch(ownerKey, room.buyerPublicKey)
+      ? room.sellerPublicKey
+      : publicKeysMatch(ownerKey, room.sellerPublicKey)
+        ? room.buyerPublicKey
+        : ''
+    : '';
+  const reviewExists = attestations.some((attestation) => {
+    if (room.agreementHash && attestation.agreementHash === room.agreementHash) return true;
+    if (room.listingId && room.sellerPublicKey) return listingReviewMatches({ id: room.listingId, authorPublicKey: room.sellerPublicKey }, attestation);
+    return false;
+  });
+  const savePaymentState = (paymentState: TradeRoomPaymentState): void => {
+    onRoomSaved(stateForPayment(room, paymentState));
+  };
+  const saveDeliveryState = (deliveryState: TradeRoomDeliveryState): void => {
+    onRoomSaved(stateForDelivery(room, deliveryState));
+  };
+  return (
+    <article className="trade-room-panel">
+      <header className="trade-room-header">
+        <div>
+          <span className="form-eyebrow">{t('tradeRoom.title')}</span>
+          <h2>{room.listingTitle || agreement?.exchangeDescription || t('tradeRoom.untitled')}</h2>
+          <p className="muted compact-meta">{t('tradeRoom.localOnly')}</p>
+        </div>
+        <span className="pill">{t(`tradeRoom.state.${room.state}`)}</span>
+      </header>
+      <TradeRoomStateStepper state={room.state} />
+      <div className="trade-room-grid">
+        <section className="trade-room-card">
+          <h3>{t('tradeRoom.participants')}</h3>
+          <SecondaryMeta
+            items={[
+              [t('role.buyer'), `${tradeRoomPartyLabel(room.buyerPublicKey, room.buyerLabel)} · ${shortPublicKey(room.buyerPublicKey)}`],
+              [t('role.seller'), `${tradeRoomPartyLabel(room.sellerPublicKey, room.sellerLabel)} · ${shortPublicKey(room.sellerPublicKey)}`],
+              [t('agreement.mediator'), room.mediator || t('common.none')]
+            ]}
+          />
+        </section>
+        <section className="trade-room-card">
+          <h3>{t('tradeRoom.payment')}</h3>
+          <p className="muted compact-meta">{t(`tradeRoom.paymentState.${room.paymentState}`)}</p>
+          <div className="actions small">
+            <button className="subtle" onClick={() => savePaymentState('payment-pending')} type="button">
+              {t('tradeRoom.markPaymentPending')}
+            </button>
+            <button className="subtle" onClick={() => savePaymentState('paid')} type="button">
+              {t('tradeRoom.markPaid')}
+            </button>
+          </div>
+          <p className="muted compact-meta">
+            {t('tradeRoom.receipts')}: {paymentAttempts.length + zapReceipts.length}
+          </p>
+        </section>
+        <section className="trade-room-card">
+          <h3>{t('tradeRoom.delivery')}</h3>
+          <p className="muted compact-meta">{t(`tradeRoom.deliveryState.${room.deliveryState}`)}</p>
+          <div className="actions small">
+            <button className="subtle" onClick={() => saveDeliveryState('delivered')} type="button">
+              {t('tradeRoom.markDelivered')}
+            </button>
+            <button className="subtle" onClick={() => saveDeliveryState('confirmed')} type="button">
+              {t('tradeRoom.markConfirmed')}
+            </button>
+          </div>
+        </section>
+        <section className="trade-room-card">
+          <h3>{t('tradeRoom.review')}</h3>
+          <p className="muted compact-meta">{reviewExists || room.state === 'reviewed' ? t('tradeRoom.reviewed') : t('tradeRoom.reviewPrompt')}</p>
+          <button disabled={!identity || (room.state !== 'confirmed' && room.state !== 'reviewed')} onClick={() => onReviewRoom(room)} type="button">
+            <BadgeCheck size={16} /> {t('tradeRoom.writeReview')}
+          </button>
+        </section>
+      </div>
+      {listing || agreement ? (
+        <DisclosurePanel title={t('tradeRoom.terms')}>
+          {listing ? (
+            <SecondaryMeta
+              items={[
+                [t('listing.title'), listing.title],
+                [t('listing.kind'), listing.type === 'request' ? t('listing.buyerRequest') : t('listing.offer')],
+                [t('listing.price'), formatListingPrice(listing)],
+                [t('listing.fulfillment'), listing.fulfillmentType ? t(`fulfillment.${listing.fulfillmentType}`) : t('common.none')]
+              ]}
+            />
+          ) : null}
+          {agreement ? (
+            <SecondaryMeta
+              items={[
+                [t('agreement.hash'), agreement.hash],
+                [t('agreement.price'), agreement.priceAndPayment],
+                [t('agreement.fulfillment'), agreement.fulfillmentTerms],
+                [t('agreement.deadline'), agreement.deadline]
+              ]}
+            />
+          ) : null}
+        </DisclosurePanel>
+      ) : null}
+      <TradeRoomChatPanel
+        room={room}
+        counterpartyPublicKey={counterpartyPublicKey}
+        identity={identity}
+        privateKeyHex={privateKeyHex}
+        nostrSigner={nostrSigner}
+        relays={relays}
+        messages={messages}
+        threads={threads}
+        receipts={receipts}
+        onConnectSigner={onConnectSigner}
+        onSendNostrIntro={onSendNostrIntro}
+      />
+      <TradeRoomDeliveryPanel
+        room={room}
+        counterpartyPublicKey={counterpartyPublicKey}
+        identity={identity}
+        privateKeyHex={privateKeyHex}
+        nostrSigner={nostrSigner}
+        relays={relays}
+        receipts={receipts}
+        deliveries={deliveries}
+        onConnectSigner={onConnectSigner}
+        onSendNostrIntro={onSendNostrIntro}
+        onRoomDeliverySaved={onRoomDeliverySaved}
+      />
+      <DisclosurePanel title={t('tradeRoom.receiptsDetails')}>
+        <div className="compact-meta-list">
+          {paymentAttempts.map((attempt) => (
+            <p key={attempt.id}>{attempt.status} · {attempt.amountSats} sats · {attempt.createdAt}</p>
+          ))}
+          {zapReceipts.map((receipt) => (
+            <p key={receipt.id}>{t('listingZap.receipts')} · {receipt.amountMsats / 1000} sats · {receipt.validatedAt}</p>
+          ))}
+          {paymentAttempts.length + zapReceipts.length === 0 ? <p className="muted">{t('tradeRoom.noReceipts')}</p> : null}
+        </div>
+      </DisclosurePanel>
+    </article>
+  );
+}
+
+function TradeRoomChatPanel({
+  room,
+  counterpartyPublicKey,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  messages,
+  threads,
+  receipts,
+  onConnectSigner,
+  onSendNostrIntro
+}: {
+  room: TradeRoom;
+  counterpartyPublicKey: string;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  messages: NostrMessageRecord[];
+  threads: NostrMessageThread[];
+  receipts: NostrContactReceipt[];
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+}): ReactNode {
+  const { t } = useI18n();
+  const [passphrase, setPassphrase] = useState('');
+  const [decrypted, setDecrypted] = useState<DecryptedNostrMessage[]>([]);
+  const [error, setError] = useState('');
+  const roomMessages = messages
+    .filter((message) => message.contextType === 'trade-room' && message.contextId === room.id)
+    .sort((left, right) => left.messageCreatedAt.localeCompare(right.messageCreatedAt));
+  const roomThreadIds = new Set(roomMessages.map((message) => message.threadKey));
+  const roomThreads = threads.filter((thread) => roomThreadIds.has(thread.threadKey));
+  const unlock = async (): Promise<void> => {
+    setError('');
+    if (passphrase.length < 10) {
+      setError(t('nostrInbox.passphraseTooShort'));
+      return;
+    }
+    try {
+      setDecrypted(
+        await Promise.all(
+          roomMessages.map(async (message) => ({
+            ...message,
+            plaintext: await decryptLocalSecret(message.encryptedPlaintext, passphrase)
+          }))
+        )
+      );
+    } catch {
+      setError(t('nostrInbox.unlockFailed'));
+    }
+  };
+  return (
+    <section className="trade-room-section">
+      <div className="row between">
+        <h3>{t('tradeRoom.chat')}</h3>
+        <span className="pill">{roomMessages.length}</span>
+      </div>
+      <div className="trade-room-unlock-row">
+        <label>
+          {t('nostrInbox.passphrase')}
+          <input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} />
+        </label>
+        <button className="subtle" disabled={passphrase.length < 10} onClick={() => void unlock()} type="button">
+          {t('nostrInbox.unlock')}
+        </button>
+      </div>
+      {error ? <p className="warning compact-warning">{error}</p> : null}
+      <div className="message-list dm-message-list trade-room-messages">
+        {decrypted.map((message) => (
+          <article className={`message-bubble ${message.direction}`} key={message.id}>
+            <PlainTextBlock className="message-text" text={message.plaintext} />
+            <span className="muted">
+              {message.direction === 'incoming' ? t('nostrInbox.incoming') : t('nostrInbox.outgoing')} · {message.messageCreatedAt}
+            </span>
+          </article>
+        ))}
+        {roomMessages.length > 0 && decrypted.length === 0 ? <ActionHint>{t('tradeRoom.unlockChat')}</ActionHint> : null}
+      </div>
+      {counterpartyPublicKey ? (
+        <NostrContactPanel
+          target={{
+            recipientPublicKey: counterpartyPublicKey,
+            label: shortPublicKey(counterpartyPublicKey),
+            contextType: 'trade-room',
+            contextId: room.id,
+            contextTitle: room.listingTitle || room.agreementHash || room.id
+          }}
+          identity={identity}
+          relays={relays}
+          nostrSigner={nostrSigner}
+          privateKeyHex={privateKeyHex}
+          receipts={receipts}
+          defaultOpen={roomThreads.length === 0}
+          embedded
+          onConnectSigner={onConnectSigner}
+          onSend={(args) => onSendNostrIntro({ ...args, cachePassphrase: passphrase.length >= 10 ? passphrase : undefined })}
+        />
+      ) : (
+        <ActionHint>{t('tradeRoom.identityNeeded')}</ActionHint>
+      )}
+    </section>
+  );
+}
+
+function TradeRoomDeliveryPanel({
+  room,
+  counterpartyPublicKey,
+  identity,
+  privateKeyHex,
+  nostrSigner,
+  relays,
+  receipts,
+  deliveries,
+  onConnectSigner,
+  onSendNostrIntro,
+  onRoomDeliverySaved
+}: {
+  room: TradeRoom;
+  counterpartyPublicKey: string;
+  identity?: IdentityRecord;
+  privateKeyHex: string;
+  nostrSigner: NostrSignerState;
+  relays: RelayConfig[];
+  receipts: NostrContactReceipt[];
+  deliveries: TradeRoomDelivery[];
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState<TradeRoomDelivery>(() => newDeliveryDraft(room.id, identity?.publicKey ?? '0'.repeat(64)));
+  const [status, setStatus] = useState('');
+  const [sending, setSending] = useState(false);
+  useEffect(() => {
+    setDraft(newDeliveryDraft(room.id, identity?.publicKey ?? '0'.repeat(64)));
+  }, [identity?.publicKey, room.id]);
+  const sendDelivery = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    if (!identity || !counterpartyPublicKey) {
+      setStatus(t('tradeRoom.identityNeeded'));
+      return;
+    }
+    setSending(true);
+    setStatus('');
+    const at = nowIso();
+    const delivery: TradeRoomDelivery = {
+      ...draft,
+      senderPublicKey: identity.publicKey.toLowerCase(),
+      status: 'sent',
+      createdAt: draft.createdAt || at,
+      updatedAt: at
+    };
+    const payload: TradeRoomUpdatePayload = {
+      schemaVersion: 1,
+      kind: 'trade-room-update',
+      roomId: room.id,
+      senderPublicKey: identity.publicKey.toLowerCase(),
+      agreementHash: room.agreementHash,
+      listingId: room.listingId,
+      listingCoordinate: room.listingCoordinate,
+      state: 'delivered',
+      deliveryState: 'delivered',
+      delivery: {
+        id: delivery.id,
+        fileName: delivery.fileName,
+        fileHash: delivery.fileHash,
+        note: delivery.note,
+        url: delivery.url,
+        status: 'sent'
+      },
+      createdAt: at
+    };
+    try {
+      const receipt = await onSendNostrIntro({
+        recipientPublicKey: counterpartyPublicKey,
+        label: room.listingTitle || room.id,
+        contextType: 'trade-room',
+        contextId: room.id,
+        contextTitle: room.listingTitle || room.agreementHash || room.id,
+        includeContext: true,
+        message: encodeTradeRoomUpdateMessage(payload)
+      });
+      onRoomDeliverySaved(stateForDelivery({ ...room, relatedMessageThreadIds: [...new Set([...room.relatedMessageThreadIds, receipt.id])] }, 'delivered'), {
+        ...delivery,
+        sourceMessageId: receipt.id
+      });
+      setStatus(t('tradeRoom.deliverySent'));
+      setDraft(newDeliveryDraft(room.id, identity.publicKey));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : t('common.error'));
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <section className="trade-room-section">
+      <div className="row between">
+        <h3>{t('tradeRoom.fileDelivery')}</h3>
+        <span className="pill">{deliveries.length}</span>
+      </div>
+      <form className="trade-room-delivery-form" onSubmit={(event) => void sendDelivery(event)}>
+        <label>
+          {t('tradeRoom.fileName')}
+          <input required value={draft.fileName} onChange={(event) => setDraft({ ...draft, fileName: event.target.value })} />
+        </label>
+        <label>
+          {t('tradeRoom.fileHash')}
+          <input required value={draft.fileHash} onChange={(event) => setDraft({ ...draft, fileHash: event.target.value })} />
+        </label>
+        <label>
+          {t('tradeRoom.fileUrl')}
+          <input type="url" value={draft.url ?? ''} onChange={(event) => setDraft({ ...draft, url: event.target.value })} />
+        </label>
+        <label>
+          {t('tradeRoom.fileNote')}
+          <textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} />
+        </label>
+        <div className="actions small">
+          {identity && !privateKeyHex && !nostrSigner.connected ? (
+            <button className="subtle" onClick={onConnectSigner} type="button">
+              <KeyRound size={16} /> {t('signer.connect')}
+            </button>
+          ) : null}
+          <button disabled={sending || !identity || !counterpartyPublicKey} type="submit">
+            {sending ? t('payment.working') : t('tradeRoom.sendDelivery')}
+          </button>
+        </div>
+        {status ? <StatusMessage className="notice inline">{status}</StatusMessage> : null}
+      </form>
+      <div className="trade-room-deliveries">
+        {deliveries.map((delivery) => (
+          <article className="trade-room-delivery" key={delivery.id}>
+            <strong>{delivery.fileName}</strong>
+            <span className="pill">{t(`tradeRoom.deliveryStatus.${delivery.status}`)}</span>
+            <p className="key">{delivery.fileHash}</p>
+            {delivery.url ? <p className="key">{delivery.url}</p> : null}
+            {delivery.note ? <p>{delivery.note}</p> : null}
+          </article>
+        ))}
+        {deliveries.length === 0 ? <p className="muted">{t('tradeRoom.noDeliveries')}</p> : null}
+      </div>
+      <DisclosurePanel title={t('tradeRoom.deliveryDetails')}>
+        <SafetyNotice>{t('tradeRoom.fileDeliveryPrivacy')}</SafetyNotice>
+        <p className="muted">{t('nostrContact.relaysEnabled').replace('{count}', String(relays.filter((relay) => relay.enabled).length))}</p>
+        <p className="muted">{t('tradeRoom.receiptCount').replace('{count}', String(receipts.filter((receipt) => receipt.contextType === 'trade-room' && receipt.contextId === room.id).length))}</p>
+      </DisclosurePanel>
+    </section>
+  );
+}
+
 function TradePage({
   listings,
   syncedListings,
   selectedListingRef,
   agreements,
   agreementReceipts,
+  tradeRooms,
+  tradeRoomDeliveries,
   mediators,
   syncedMediators,
   disputes,
+  attestations,
+  lightningPaymentAttempts,
+  listingZapReceipts,
+  nostrMessages,
+  nostrMessageThreads,
+  nostrContactReceipts,
+  relays,
   identity,
   privateKeyHex,
   nostrSigner,
   syncSettings,
+  openRoomId,
+  onConnectSigner,
+  onSendNostrIntro,
+  onRoomOpened,
+  onRoomSaved,
+  onRoomDeliverySaved,
+  onReviewRoom,
   onAgreementSaved,
   onReceiptSaved,
   onDisputeSaved,
@@ -8644,21 +9345,38 @@ function TradePage({
   selectedListingRef?: ListingSourceRef;
   agreements: Agreement[];
   agreementReceipts: AgreementAcceptanceReceipt[];
+  tradeRooms: TradeRoom[];
+  tradeRoomDeliveries: TradeRoomDelivery[];
   mediators: MediatorProfile[];
   syncedMediators: SyncedPublicRecord<MediatorProfile>[];
   disputes: DisputeCase[];
+  attestations: ReputationAttestation[];
+  lightningPaymentAttempts: LightningPaymentAttempt[];
+  listingZapReceipts: ListingZapReceipt[];
+  nostrMessages: NostrMessageRecord[];
+  nostrMessageThreads: NostrMessageThread[];
+  nostrContactReceipts: NostrContactReceipt[];
+  relays: RelayConfig[];
   identity?: IdentityRecord;
   privateKeyHex: string;
   nostrSigner: NostrSignerState;
   syncSettings: SyncSettings;
+  openRoomId: string;
+  onConnectSigner: () => void;
+  onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onRoomOpened: (roomId: string) => void;
+  onRoomSaved: (room: TradeRoom) => void;
+  onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onReviewRoom: (room: TradeRoom) => void;
   onAgreementSaved: () => void;
   onReceiptSaved: () => void;
   onDisputeSaved: () => void;
   onSelectedListingConsumed: () => void;
 }): ReactNode {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<TradeTab>(() => (window.location.hash === '#disputes' ? 'dispute' : 'agreement'));
+  const [activeTab, setActiveTab] = useState<TradeTab>(() => (window.location.hash === '#disputes' ? 'dispute' : 'rooms'));
   const [selectedAgreementHash, setSelectedAgreementHash] = useState(agreements[0]?.hash ?? '');
+  const [selectedRoomId, setSelectedRoomId] = useState(openRoomId || tradeRooms[0]?.id || '');
   const [bundlePassphrase, setBundlePassphrase] = useState('');
   const [source, setSource] = useState<DataSourceFilter>(syncSettings.defaultBrowseSource);
   const [trust, setTrust] = useState<TrustFilter>('all');
@@ -8715,6 +9433,17 @@ function TradePage({
     }
   }, [agreements, selectedAgreementHash]);
 
+  useEffect(() => {
+    if (openRoomId) {
+      setSelectedRoomId(openRoomId);
+      setActiveTab('rooms');
+      return;
+    }
+    if (!selectedRoomId && tradeRooms[0]) {
+      setSelectedRoomId(tradeRooms[0].id);
+    }
+  }, [openRoomId, selectedRoomId, tradeRooms]);
+
   const preview = useMemo(() => {
     const at = nowIso();
     const agreement = { ...agreementForm, id: 'preview', hash: '', createdAt: at, updatedAt: at };
@@ -8753,6 +9482,42 @@ function TradePage({
     ],
     [listings, syncedListings]
   );
+  const roomRows = useMemo(() => {
+    const listingById = new Map(listingSourceRefs.map((entry): [string, Listing] => [entry.listing.id, entry.listing]));
+    return tradeRooms.map((room) => {
+      const agreement = room.agreementHash ? agreements.find((entry) => entry.hash === room.agreementHash) : undefined;
+      const listing = room.listingId ? listingById.get(room.listingId) : undefined;
+      const paymentAttempts = lightningPaymentAttempts.filter((attempt) => {
+        if (room.relatedPaymentAttemptIds.includes(attempt.id)) return true;
+        return Boolean(room.listingId && attempt.listingId === room.listingId && publicKeysMatch(attempt.sellerPublicKey, room.sellerPublicKey));
+      });
+      const zapReceipts = listingZapReceipts.filter((receipt) => {
+        if (room.relatedZapReceiptIds.includes(receipt.id)) return true;
+        return Boolean(room.listingId && receipt.listingId === room.listingId && publicKeysMatch(receipt.sellerPublicKey, room.sellerPublicKey));
+      });
+      const receiptStatus = agreement ? agreementReceiptStatus(agreement, agreementReceipts) : undefined;
+      let hydrated = agreement ? applyAgreementReceiptStatus(room, receiptStatus ?? 'draft') : room;
+      hydrated = stateForPayment(hydrated, derivePaymentState(paymentAttempts, zapReceipts));
+      const deliveryRows = tradeRoomDeliveries.filter((delivery) => delivery.roomId === room.id);
+      const deliveryState: TradeRoomDeliveryState = deliveryRows.some((delivery) => delivery.status === 'confirmed')
+        ? 'confirmed'
+        : deliveryRows.some((delivery) => delivery.status === 'sent' || delivery.status === 'received')
+          ? 'delivered'
+          : hydrated.deliveryState;
+      hydrated = stateForDelivery(hydrated, deliveryState);
+      hydrated = markRoomReviewed(hydrated, attestations);
+      return {
+        room: hydrated,
+        agreement,
+        listing,
+        receiptStatus,
+        paymentAttempts,
+        zapReceipts,
+        deliveries: deliveryRows
+      };
+    });
+  }, [agreementReceipts, agreements, attestations, lightningPaymentAttempts, listingSourceRefs, listingZapReceipts, tradeRoomDeliveries, tradeRooms]);
+  const selectedRoomRow = roomRows.find((row) => row.room.id === selectedRoomId) ?? roomRows[0];
 
   const agreementText = (agreement: Agreement | typeof agreementForm, hash: string): string =>
     `${t('agreement.title')} ${hash}\n${t('agreement.hashVersion')}: 2\n${t('agreement.buyer')}: ${agreement.buyer}\n${t('agreement.buyerLabel')}: ${
@@ -8794,6 +9559,13 @@ function TradePage({
       return;
     }
     await db.agreementReceipts.put(receipt);
+    const existingRoom = await db.tradeRooms.where('agreementHash').equals(agreement.hash).first();
+    const room = applyAgreementReceiptStatus(
+      existingRoom ?? tradeRoomFromAgreement(agreement),
+      agreementReceiptStatus(agreement, [...agreementReceipts, receipt])
+    );
+    await db.tradeRooms.put(room);
+    setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setAgreementMessage(t('agreement.receiptImported'));
     onReceiptSaved();
   };
@@ -8908,9 +9680,9 @@ function TradePage({
       priceAndPayment: `${formatListingPrice(listing)} · ${listing.paymentPreferences.join(', ')}`,
       mediator: listing.mediatorPreference || current.mediator
     }));
-    setActiveTab('agreement');
+    setActiveTab(openRoomId ? 'rooms' : 'agreement');
     onSelectedListingConsumed();
-  }, [selectedListingRef, onSelectedListingConsumed]);
+  }, [identity?.displayName, identity?.publicKey, nostrSigner.publicKey, onSelectedListingConsumed, openRoomId, selectedListingRef]);
 
   const saveAgreement = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
@@ -8927,13 +9699,16 @@ function TradePage({
       updatedAt: at
     };
     const agreement: Agreement = agreementSchema.parse({ ...draft, hash: generateAgreementHash({ ...draft, hash: '' }) });
+    const room = tradeRoomFromAgreement(agreement);
     await db.agreements.put(agreement);
+    await db.tradeRooms.put(room);
     setSelectedAgreementHash(agreement.hash);
     setDisputeForm((current) => ({
       ...current,
       agreementHash: agreement.hash,
       mediator: agreement.mediator ?? ''
     }));
+    setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     onAgreementSaved();
   };
 
@@ -9002,12 +9777,36 @@ function TradePage({
         label={t('trade.title')}
         onChange={setActiveTab}
         tabs={[
+          ['rooms', t('trade.tab.rooms')],
           ['agreement', t('trade.tab.agreement')],
           ['mediator', t('trade.tab.mediator')],
           ['dispute', t('trade.tab.dispute')],
           ['outcome', t('trade.tab.outcome')]
         ]}
       />
+      {activeTab === 'rooms' ? (
+        <TradeRoomsPanel
+          rows={roomRows}
+          selectedRoomId={selectedRoomRow?.room.id ?? ''}
+          identity={identity}
+          privateKeyHex={privateKeyHex}
+          nostrSigner={nostrSigner}
+          relays={relays}
+          messages={nostrMessages}
+          threads={nostrMessageThreads}
+          receipts={nostrContactReceipts}
+          attestations={attestations}
+          onConnectSigner={onConnectSigner}
+          onSendNostrIntro={onSendNostrIntro}
+          onSelectRoom={(roomId) => {
+            setSelectedRoomId(roomId);
+            onRoomOpened(roomId);
+          }}
+          onRoomSaved={onRoomSaved}
+          onRoomDeliverySaved={onRoomDeliverySaved}
+          onReviewRoom={onReviewRoom}
+        />
+      ) : null}
       {activeTab === 'agreement' ? (
         <section className="split">
           <form className="panel" onSubmit={(event) => void saveAgreement(event)}>

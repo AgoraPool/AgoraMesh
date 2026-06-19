@@ -1609,7 +1609,7 @@ export function App(): ReactNode {
             eventsPublished: 0,
             consecutiveFailures: 0
           };
-          await db.relayHealth.put({
+          const nextHealth = {
             ...health,
             lastConnectedAt: nowIso(),
             lastError: undefined,
@@ -1630,7 +1630,7 @@ export function App(): ReactNode {
             eventsPublished: 0,
             consecutiveFailures: 0
           };
-          await db.relayHealth.put({
+          const nextHealth = {
             ...health,
             lastConnectedAt: status.ok ? status.at : health.lastConnectedAt,
             lastError: status.ok ? undefined : status.message,

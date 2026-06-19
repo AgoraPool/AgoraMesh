@@ -161,7 +161,6 @@ import {
   encryptWithNostrSigner,
   openNostrConnectPairingUri,
   resumeNostrConnectPairing,
-  restoreNostrSignerSession,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
   startOrResumeNostrConnectPairing,
@@ -1247,7 +1246,6 @@ export function App(): ReactNode {
   const [syncStatuses, setSyncStatuses] = useState<SyncStatus[]>([]);
   const [relayFetchSummaries, setRelayFetchSummaries] = useState<RelayFetchSummary[]>([]);
   const [nostrSigner, setNostrSigner] = useState<NostrSignerState>(() => detectNostrSigner());
-  const nostrSignerRef = useRef(nostrSigner);
   const [privateKeyHex, setPrivateKeyHex] = useState('');
   const [identityBackedUp, setIdentityBackedUp] = useState(false);
   const [notice, setNotice] = useState('');
@@ -1275,40 +1273,6 @@ export function App(): ReactNode {
     reputation: t('nav.reputation'),
     settings: t('nav.settings')
   };
-
-  useEffect(() => {
-    nostrSignerRef.current = nostrSigner;
-  }, [nostrSigner]);
-
-  useEffect(() => {
-    let mounted = true;
-    let restoring = false;
-    const restoreSigner = async (): Promise<void> => {
-      if (restoring || nostrSignerRef.current.connected) return;
-      restoring = true;
-      try {
-        const next = await restoreNostrSignerSession();
-        if (!mounted) return;
-        setNostrSigner((current) => (current.connected ? current : next));
-      } finally {
-        restoring = false;
-      }
-    };
-    const onFocus = (): void => {
-      void restoreSigner();
-    };
-    const onVisibility = (): void => {
-      if (document.visibilityState === 'visible') void restoreSigner();
-    };
-    void restoreSigner();
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      mounted = false;
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, []);
 
   const inboxNotifications = useMemo(
     () =>

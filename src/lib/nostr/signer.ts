@@ -626,8 +626,11 @@ export function openNostrConnectPairingUri(uri: string): void {
 }
 
 async function connectNostrConnectSigner(): Promise<NostrSignerState> {
-  const restored = await restoreNostrSignerSession();
-  if (restored.connected) return restored;
+  if (readStoredNostrConnectSession()) {
+    const restored = await restoreNostrSignerSession();
+    if (restored.connected) return restored;
+    return restored;
+  }
   try {
     const pairing = startOrResumeNostrConnectPairing();
     openNostrConnectPairingUri(pairing.uri);

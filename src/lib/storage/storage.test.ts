@@ -97,7 +97,7 @@ describe('import/export round trip', () => {
   });
 
   it('imports older backups without trade room arrays', async () => {
-    const backup = (await exportAllData()) as Record<string, unknown>;
+    const backup = (await exportAllData()) as unknown as Record<string, unknown>;
     delete backup.tradeRooms;
     delete backup.tradeRoomDeliveries;
 

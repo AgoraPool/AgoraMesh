@@ -9787,7 +9787,7 @@ function TradePage({
         )
       );
       await db.tradeRooms.put(room);
-      setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+      onRoomSaved(room);
     }
     setAgreementMessage(t('agreement.receiptImported'));
     onReceiptSaved();
@@ -9931,7 +9931,7 @@ function TradePage({
       agreementHash: agreement.hash,
       mediator: agreement.mediator ?? ''
     }));
-    setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+    onRoomSaved(room);
     onAgreementSaved();
   };
 

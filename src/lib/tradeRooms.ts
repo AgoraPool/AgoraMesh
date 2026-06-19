@@ -117,15 +117,17 @@ export function tradeRoomFromAgreement(agreement: Agreement, existing?: TradeRoo
 
 export function tradeRoomMatchesAgreement(room: TradeRoom, agreement: Agreement): boolean {
   const agreementHash = agreement.hash || generateAgreementHash(agreement);
+  const buyerPublicKey = agreement.buyerPublicKey;
+  const sellerPublicKey = agreement.sellerPublicKey;
+  const hasParticipantKeys = isTradeRoomPublicKey(buyerPublicKey) && isTradeRoomPublicKey(sellerPublicKey);
   return Boolean(
     (room.agreementHash && room.agreementHash === agreementHash) ||
       (room.agreementId && room.agreementId === agreement.id) ||
       (room.listingId &&
         room.listingId === agreement.listingId &&
-        publicKeySchema.safeParse(agreement.buyerPublicKey).success &&
-        publicKeySchema.safeParse(agreement.sellerPublicKey).success &&
-        room.buyerPublicKey.toLowerCase() === agreement.buyerPublicKey.toLowerCase() &&
-        room.sellerPublicKey.toLowerCase() === agreement.sellerPublicKey.toLowerCase())
+        hasParticipantKeys &&
+        room.buyerPublicKey.toLowerCase() === buyerPublicKey?.toLowerCase() &&
+        room.sellerPublicKey.toLowerCase() === sellerPublicKey?.toLowerCase())
   );
 }
 

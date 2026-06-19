@@ -2675,7 +2675,7 @@ export function App(): ReactNode {
             onPayLightningAttemptWithNwc={payLightningAttemptWithNwc}
             onReviewSaved={(attestation) => {
               setAttestations((current) => [attestation, ...current.filter((entry) => entry.id !== attestation.id)]);
-              showNotice(t('notice.reputationSaved'), { body: t('listingReviews.saved') });
+              showNotice(t('notice.reputationSaved'));
               void reload();
             }}
             onPublishReview={(attestation) =>

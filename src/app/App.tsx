@@ -3422,6 +3422,16 @@ export function App(): ReactNode {
                 await db.tradeRoomDeliveries.put(delivery);
               });
             }}
+            onRoomDeleted={async (roomId) => {
+              setTradeRooms((current) => current.filter((entry) => entry.id !== roomId));
+              setTradeRoomDeliveries((current) => current.filter((entry) => entry.roomId !== roomId));
+              if (tradeRoomOpenId === roomId) setTradeRoomOpenId('');
+              await db.transaction('rw', [db.tradeRooms, db.tradeRoomDeliveries], async () => {
+                await db.tradeRooms.delete(roomId);
+                await db.tradeRoomDeliveries.where('roomId').equals(roomId).delete();
+              });
+              showNotice(t('tradeRoom.deleted'));
+            }}
             onReviewRoom={(room) => {
               const reviewerKey = identity?.publicKey.toLowerCase();
               if (!reviewerKey) return;
@@ -9348,6 +9358,7 @@ function TradeRoomsPanel({
   onSelectRoom,
   onRoomSaved,
   onRoomDeliverySaved,
+  onRoomDeleted,
   onReviewRoom,
   onOpenAdvancedAgreement,
   onOpenAdvancedDispute
@@ -9370,6 +9381,7 @@ function TradeRoomsPanel({
   onSelectRoom: (roomId: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onRoomDeleted: (row: TradeRoomRow) => void;
   onReviewRoom: (room: TradeRoom) => void;
   onOpenAdvancedAgreement: (row: TradeRoomRow) => void;
   onOpenAdvancedDispute: (row: TradeRoomRow) => void;
@@ -9411,6 +9423,7 @@ function TradeRoomsPanel({
             onInboxPassphraseReady={onInboxPassphraseReady}
             onRoomSaved={onRoomSaved}
             onRoomDeliverySaved={onRoomDeliverySaved}
+            onRoomDeleted={onRoomDeleted}
             onReviewRoom={onReviewRoom}
             onOpenAdvancedAgreement={onOpenAdvancedAgreement}
             onOpenAdvancedDispute={onOpenAdvancedDispute}
@@ -9440,6 +9453,7 @@ function TradeRoomDetail({
   onInboxPassphraseReady,
   onRoomSaved,
   onRoomDeliverySaved,
+  onRoomDeleted,
   onReviewRoom,
   onOpenAdvancedAgreement,
   onOpenAdvancedDispute
@@ -9460,6 +9474,7 @@ function TradeRoomDetail({
   onInboxPassphraseReady: (inboxPassphrase: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onRoomDeleted: (row: TradeRoomRow) => void;
   onReviewRoom: (room: TradeRoom) => void;
   onOpenAdvancedAgreement: (row: TradeRoomRow) => void;
   onOpenAdvancedDispute: (row: TradeRoomRow) => void;
@@ -9637,6 +9652,9 @@ function TradeRoomDetail({
           <span className={coordinationStatus === 'synced' || coordinationStatus === 'received' ? 'ok mini trade-room-sync-pill' : coordinationStatus === 'failed' ? 'warning mini trade-room-sync-pill' : 'pill trade-room-sync-pill'}>
             {t(`tradeRoom.coordinationStatus.${coordinationStatus}`)}
           </span>
+          <button className="danger trade-room-delete-button" onClick={() => onRoomDeleted(row)} type="button">
+            {t('tradeRoom.deleteRoom')}
+          </button>
         </div>
       </header>
       <TradeRoomStateStepper state={room.state} />
@@ -10188,6 +10206,7 @@ function TradePage({
   onRoomOpened,
   onRoomSaved,
   onRoomDeliverySaved,
+  onRoomDeleted,
   onReviewRoom,
   onAgreementSaved,
   onReceiptSaved,
@@ -10230,6 +10249,7 @@ function TradePage({
   onRoomOpened: (roomId: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
+  onRoomDeleted: (roomId: string) => Promise<void>;
   onReviewRoom: (room: TradeRoom) => void;
   onAgreementSaved: () => void;
   onReceiptSaved: () => void;
@@ -10303,6 +10323,10 @@ function TradePage({
     if (openRoomId) {
       setSelectedRoomId(openRoomId);
       setActiveTab('rooms');
+      return;
+    }
+    if (selectedRoomId && tradeRooms.length > 0 && !tradeRooms.some((room) => room.id === selectedRoomId)) {
+      setSelectedRoomId(tradeRooms[0].id);
       return;
     }
     if (!selectedRoomId && tradeRooms[0]) {
@@ -10416,6 +10440,15 @@ function TradePage({
     });
   }, [agreementReceipts, agreements, attestations, buyerRequestOffers, communityLists, identity, lightningPaymentAttempts, listingSourceRefs, listingZapReceipts, operatorSupportReceipts, relays, syncedCommunityLists, tradeRoomDeliveries, tradeRooms, webOfTrustMap]);
   const selectedRoomRow = roomRows.find((row) => row.room.id === selectedRoomId) ?? roomRows[0];
+
+  const deleteTradeRoom = (row: TradeRoomRow): void => {
+    const label = row.room.listingTitle || row.agreement?.exchangeDescription || row.room.id;
+    if (!window.confirm(t('tradeRoom.deleteConfirm').replace('{title}', label))) return;
+    const nextRoom = roomRows.find((entry) => entry.room.id !== row.room.id);
+    setSelectedRoomId(nextRoom?.room.id ?? '');
+    onRoomOpened(nextRoom?.room.id ?? '');
+    void onRoomDeleted(row.room.id);
+  };
 
   const agreementFormFromRoom = (row: TradeRoomRow): typeof agreementForm => {
     const listingRef = row.listing ? listingSourceRefs.find((entry) => entry.listing.id === row.listing?.id) : undefined;
@@ -10821,6 +10854,7 @@ function TradePage({
         }}
         onRoomSaved={onRoomSaved}
         onRoomDeliverySaved={onRoomDeliverySaved}
+        onRoomDeleted={deleteTradeRoom}
         onReviewRoom={onReviewRoom}
         onOpenAdvancedAgreement={(row) => openAdvancedTradeTool('agreement', row)}
         onOpenAdvancedDispute={(row) => openAdvancedTradeTool('dispute', row)}

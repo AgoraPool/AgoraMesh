@@ -3647,6 +3647,10 @@ dd {
   white-space: nowrap;
 }
 
+.trade-room-delete-button {
+  white-space: nowrap;
+}
+
 .trade-room-state-steps {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));

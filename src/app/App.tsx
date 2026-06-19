@@ -1338,6 +1338,14 @@ export function App(): ReactNode {
   const [liveInboxPassphrase, setLiveInboxPassphrase] = useState('');
   const [liveInboxState, setLiveInboxState] = useState<NostrLiveInboxState>({ status: 'idle', relays: 0, imported: 0, duplicates: 0, failed: 0 });
   const appOpenScanKeyRef = useRef('');
+  const relaysRef = useRef<RelayConfig[]>([]);
+  const relayHealthRef = useRef<RelayHealth[]>([]);
+  const nostrInboxCursorsRef = useRef<NostrInboxCursor[]>([]);
+  const liveRelayKey = relays
+    .filter((relay) => relay.enabled)
+    .map((relay) => relay.url)
+    .sort()
+    .join('|');
   const pageLabels: Record<Page, string> = {
     home: t('nav.home'),
     browse: t('nav.browse'),
@@ -1393,6 +1401,18 @@ export function App(): ReactNode {
     setPaymentNotificationsSeenAt(writeSeenTimestamp(paymentNotificationsSeenKey(identity.publicKey)));
     setRemoteInboxScanCount(0);
   }, [identity]);
+
+  useEffect(() => {
+    relaysRef.current = relays;
+  }, [relays]);
+
+  useEffect(() => {
+    relayHealthRef.current = relayHealth;
+  }, [relayHealth]);
+
+  useEffect(() => {
+    nostrInboxCursorsRef.current = nostrInboxCursors;
+  }, [nostrInboxCursors]);
   const primaryNavItems: { key: string; label: string; route: RouteTarget; icon: ReactNode; badgeCount?: number }[] = [
     { key: 'home', label: t('nav.home'), route: 'home', icon: <Home size={18} aria-hidden="true" /> },
     { key: 'browse', label: t('nav.browse'), route: 'browse', icon: <ShoppingBag size={18} aria-hidden="true" /> },
@@ -1570,15 +1590,17 @@ export function App(): ReactNode {
   }, [notice, nextStep]);
 
   useEffect(() => {
-    if (!syncSettings.liveSyncEnabled || relays.length === 0) return undefined;
-    const sinceByRelay = Object.fromEntries(relayHealth.map((entry) => [entry.url, isoToNostrTimestamp(entry.lastConnectedAt)]));
+    const liveRelays = relaysRef.current.filter((relay) => relay.enabled);
+    if (!syncSettings.liveSyncEnabled || liveRelays.length === 0) return undefined;
+    const sinceByRelay = Object.fromEntries(relayHealthRef.current.map((entry) => [entry.url, isoToNostrTimestamp(entry.lastConnectedAt)]));
     const stop = subscribeToAgoraEvents(
-      relays,
+      liveRelays,
       (item) => {
         void (async () => {
           const existing = await db.nostrReview.where('eventId').equals(item.eventId).first();
           if (!existing) {
             await db.nostrReview.put(item);
+            setReviewItems((current) => [item, ...current.filter((entry) => entry.eventId !== item.eventId)].sort((left, right) => right.receivedAt.localeCompare(left.receivedAt)));
           }
           const health = (await db.relayHealth.get(item.relay)) ?? {
             url: item.relay,
@@ -1593,8 +1615,9 @@ export function App(): ReactNode {
             lastError: undefined,
             eventsReceived: health.eventsReceived + 1,
             consecutiveFailures: 0
-          });
-          await reload();
+          };
+          await db.relayHealth.put(nextHealth);
+          setRelayHealth((current) => [nextHealth, ...current.filter((entry) => entry.url !== nextHealth.url)]);
         })();
       },
       sinceByRelay,
@@ -1612,14 +1635,15 @@ export function App(): ReactNode {
             lastConnectedAt: status.ok ? status.at : health.lastConnectedAt,
             lastError: status.ok ? undefined : status.message,
             consecutiveFailures: status.ok ? 0 : health.consecutiveFailures + 1
-          });
-          await reload();
+          };
+          await db.relayHealth.put(nextHealth);
+          setRelayHealth((current) => [nextHealth, ...current.filter((entry) => entry.url !== nextHealth.url)]);
         })();
       },
       syncSettings.listingDiscoveryScope
     );
     return stop;
-  }, [syncSettings.liveSyncEnabled, syncSettings.listingDiscoveryScope, relays, relayHealth]);
+  }, [syncSettings.liveSyncEnabled, syncSettings.listingDiscoveryScope, liveRelayKey]);
 
   const publishEvent = async (
     objectType: PublishObjectType,
@@ -2437,7 +2461,7 @@ export function App(): ReactNode {
   };
 
   useEffect(() => {
-    const enabledRelays = selectNostrCoordinationRelays(relays);
+    const enabledRelays = selectNostrCoordinationRelays(relaysRef.current);
     if (!syncSettings.liveSyncEnabled) {
       setLiveInboxState((current) => ({ ...current, status: 'paused', relays: enabledRelays.length, message: t('nostrInbox.livePaused') }));
       return undefined;
@@ -2462,9 +2486,8 @@ export function App(): ReactNode {
     }
 
     const ownerPublicKey = identity.publicKey.toLowerCase();
-    const cursorMap = new Map(nostrInboxCursors.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
+    const cursorMap = new Map(nostrInboxCursorsRef.current.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
     const sinceByRelay = Object.fromEntries(enabledRelays.map((relay) => [relay.url, nostrInboxSince(cursorMap.get(relay.url)?.newestCreatedAt)]));
-    const seenEventIds = new Set(nostrMessages.filter((message) => message.ownerPublicKey === ownerPublicKey).map((message) => message.eventId));
     setLiveInboxState((current) => ({ ...current, status: 'listening', relays: enabledRelays.length, message: t('nostrInbox.liveListening') }));
     const stop = subscribeToNostrInboxGiftWraps({
       relays: enabledRelays,
@@ -2472,7 +2495,7 @@ export function App(): ReactNode {
       sinceByRelay,
       onEvent: (event, relayUrl) => {
         void (async () => {
-          if (seenEventIds.has(event.id) || (await db.nostrMessages.where('eventId').equals(event.id).first())) {
+          if (await db.nostrMessages.where('eventId').equals(event.id).first()) {
             setLiveInboxState((current) => ({ ...current, duplicates: current.duplicates + 1, lastEventAt: nowIso() }));
             return;
           }
@@ -2552,12 +2575,10 @@ export function App(): ReactNode {
   }, [
     identity,
     liveInboxPassphrase,
-    nostrInboxCursors,
-    nostrMessages,
     nostrSigner.connected,
     nostrSigner.publicKey,
     privateKeyHex,
-    relays,
+    liveRelayKey,
     syncSettings.liveSyncEnabled,
     t
   ]);

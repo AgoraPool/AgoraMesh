@@ -338,6 +338,17 @@ export function subscribeToNostrInboxGiftWraps({
   onStatus?: (status: NostrInboxLiveStatus) => void;
 }): NostrInboxLiveSubscription {
   const normalizedRecipient = recipientPublicKey.toLowerCase();
+  const closeSocket = (socket: WebSocket): void => {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close();
+    } else if (socket.readyState === WebSocket.CONNECTING) {
+      socket.onopen = () => socket.close();
+    }
+  };
   const sockets = relays
     .filter((relay) => relay.enabled)
     .map((relay) => {
@@ -361,6 +372,7 @@ export function subscribeToNostrInboxGiftWraps({
         report(true, 'Live inbox connected.');
       };
       socket.onerror = () => report(false, 'Live inbox relay connection failed.');
+      socket.onclose = () => report(false, 'Live inbox relay connection closed.');
       socket.onmessage = (message) => {
         let parsed: unknown;
         try {
@@ -383,5 +395,5 @@ export function subscribeToNostrInboxGiftWraps({
       };
       return socket;
     });
-  return () => sockets.forEach((socket) => socket.close());
+  return () => sockets.forEach(closeSocket);
 }

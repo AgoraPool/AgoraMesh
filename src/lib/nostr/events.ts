@@ -997,6 +997,17 @@ export function subscribeToAgoraEvents(
   onStatus?: (status: SyncStatus) => void,
   listingDiscoveryScope: ListingDiscoveryScope = 'agoramesh-native'
 ): NostrLiveSubscription {
+  const closeSocket = (socket: WebSocket): void => {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close();
+    } else if (socket.readyState === WebSocket.CONNECTING) {
+      socket.onopen = () => socket.close();
+    }
+  };
   const sockets = relays
     .filter((relay) => relay.enabled)
     .map((relay) => {
@@ -1024,10 +1035,13 @@ export function subscribeToAgoraEvents(
       socket.onerror = () => {
         onStatus?.({ relay: relay.url, ok: false, message: 'Relay connection failed.', at: nowIso() });
       };
+      socket.onclose = () => {
+        onStatus?.({ relay: relay.url, ok: false, message: 'Relay connection closed.', at: nowIso() });
+      };
       return socket;
     });
 
-  return () => sockets.forEach((socket) => socket.close());
+  return () => sockets.forEach(closeSocket);
 }
 
 function fetchAgoraEventsFromRelay(

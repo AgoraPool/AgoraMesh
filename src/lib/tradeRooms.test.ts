@@ -8,6 +8,7 @@ import {
   deliveryFromUpdatePayload,
   derivePaymentState,
   deriveTradeRoomDealSheet,
+  deriveTradeRoomWorkflow,
   encodeTradeRoomUpdateMessage,
   parseTradeRoomUpdatePayload,
   roomMatchesPrivateUpdate,
@@ -280,6 +281,64 @@ describe('deal sheet derivation', () => {
     expect(sheet.fulfillment).toContain('repair');
     expect(sheet.blockers).toContain('agreement');
   });
+
+  it('derives cockpit workflow actions and sync capability', () => {
+    const room = tradeRoomFromAgreement(agreement());
+    const missingAgreement = deriveTradeRoomDealSheet({
+      room,
+      listing: listing(),
+      hasIdentity: true,
+      hasCounterparty: true,
+      enabledRelayCount: 1
+    });
+    expect(
+      deriveTradeRoomWorkflow({
+        room,
+        dealSheet: missingAgreement,
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      })
+    ).toMatchObject({
+      step: 'agreement',
+      primaryAction: 'create-agreement',
+      canNotifyCounterparty: true
+    });
+
+    const accepted = applyAgreementReceiptStatus(room, 'mutually-signed');
+    const acceptedSheet = deriveTradeRoomDealSheet({
+      room: accepted,
+      agreement: agreement(),
+      receiptStatus: 'mutually-signed',
+      hasIdentity: true,
+      hasCounterparty: true,
+      enabledRelayCount: 1
+    });
+    const acceptedWorkflow = deriveTradeRoomWorkflow({
+      room: accepted,
+      dealSheet: acceptedSheet,
+      hasIdentity: true,
+      hasCounterparty: true,
+      enabledRelayCount: 1
+    });
+    expect(acceptedWorkflow.primaryAction).toBe('mark-payment-pending');
+    expect(acceptedWorkflow.secondaryActions).toContain('mark-paid');
+
+    const paid = stateForPayment(accepted, 'paid');
+    const deliveryWorkflow = deriveTradeRoomWorkflow({
+      room: paid,
+      dealSheet: deriveTradeRoomDealSheet({
+        room: paid,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: false,
+        enabledRelayCount: 0
+      })
+    });
+    expect(deliveryWorkflow.primaryAction).toBe('send-delivery');
+    expect(deliveryWorkflow.canNotifyCounterparty).toBe(false);
+  });
 });
 
 describe('private room payloads', () => {
@@ -338,6 +397,48 @@ describe('private room payloads', () => {
     const parsed = parseTradeRoomUpdatePayload(encoded);
     expect(parsed?.agreementPacket?.agreementHash).toBe(packet.agreementHash);
     expect(parsed?.agreementReceipt?.id).toBe(receipt.id);
+  });
+
+  it('encodes and applies cockpit workflow payload fields', () => {
+    const encoded = encodeTradeRoomUpdateMessage({
+      schemaVersion: 1,
+      kind: 'trade-room-update',
+      roomId: 'room_1',
+      senderPublicKey: seller,
+      workflowAction: 'payment-claimed',
+      clientActionId: 'action_1',
+      ackEventId: 'event_ack',
+      state: 'paid',
+      paymentClaim: {
+        id: 'payment_claim_1',
+        amountSats: 21_000,
+        note: 'Settled directly',
+        status: 'paid'
+      },
+      deliveryConfirmation: {
+        deliveryId: 'delivery_1',
+        confirmedAt: '2026-06-01T04:00:00.000Z',
+        note: 'Received'
+      },
+      reviewPrompt: {
+        subjectPublicKey: seller,
+        listingId: 'listing_1',
+        agreementHash: 'c'.repeat(64)
+      },
+      createdAt: '2026-06-01T04:00:00.000Z'
+    });
+    const parsed = parseTradeRoomUpdatePayload(encoded);
+    expect(parsed?.workflowAction).toBe('payment-claimed');
+    expect(parsed?.paymentClaim?.status).toBe('paid');
+    expect(parsed?.deliveryConfirmation?.deliveryId).toBe('delivery_1');
+    expect(parsed?.reviewPrompt?.subjectPublicKey).toBe(seller);
+    expect(parsed?.ackEventId).toBe('event_ack');
+
+    const accepted = { ...applyAgreementReceiptStatus(tradeRoomFromAgreement(agreement()), 'mutually-signed'), id: 'room_1' };
+    const next = applyTradeRoomUpdate(accepted, parsed!);
+    expect(next.paymentState).toBe('paid');
+    expect(next.deliveryState).toBe('confirmed');
+    expect(next.state).toBe('paid');
   });
 
   it('rejects wrong-room or wrong-sender updates', () => {

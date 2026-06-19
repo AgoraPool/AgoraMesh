@@ -3600,7 +3600,7 @@ dd {
 
 .trade-room-panel {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
   padding: clamp(1rem, 2vw, 1.35rem);
 }
 
@@ -3613,6 +3613,24 @@ dd {
 
 .trade-room-header h2 {
   margin: 0.15rem 0;
+}
+
+.trade-room-header-status,
+.trade-room-header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.trade-room-header-meta {
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.trade-room-sync-pill {
+  white-space: nowrap;
 }
 
 .trade-room-state-steps {
@@ -3659,6 +3677,7 @@ dd {
 }
 
 .trade-room-deal-sheet,
+.trade-room-cockpit,
 .trade-room-counterparty-context,
 .trade-room-coordination {
   display: grid;
@@ -3668,6 +3687,85 @@ dd {
   border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.025);
   padding: var(--space-3);
+}
+
+.trade-room-cockpit {
+  background: var(--surface-muted);
+}
+
+.trade-room-cockpit-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.trade-room-primary-action {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.trade-room-primary-action h3 {
+  margin: 0;
+}
+
+.trade-room-primary-action strong {
+  overflow-wrap: anywhere;
+}
+
+.trade-room-cockpit-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.trade-room-cockpit-facts span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.trade-room-cockpit-facts strong {
+  color: var(--text);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.trade-room-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.trade-room-secondary-actions button {
+  flex: 1 1 12rem;
+}
+
+.trade-room-drawers {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trade-room-drawers .disclosure-body {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.trade-room-drawers .trade-room-section,
+.trade-room-drawers .trade-room-coordination,
+.trade-room-drawers .trade-room-counterparty-context {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .trade-room-deal-heading {
@@ -3876,6 +3974,8 @@ dd {
   .trade-room-workspace,
   .trade-room-grid,
   .trade-room-panel-grid,
+  .trade-room-cockpit-main,
+  .trade-room-cockpit-facts,
   .trade-room-unlock-row,
   .trade-room-delivery-form {
     grid-template-columns: 1fr;
@@ -3890,6 +3990,10 @@ dd {
     align-items: stretch;
   }
 
+  .trade-room-header-status {
+    align-items: stretch;
+  }
+
   .trade-room-state-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3901,6 +4005,11 @@ dd {
 
   .trade-room-workflow-actions button {
     flex-basis: 100%;
+  }
+
+  .trade-room-cockpit-main > button,
+  .trade-room-secondary-actions button {
+    width: 100%;
   }
 
   .dm-conversation {

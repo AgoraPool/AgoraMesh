@@ -23,12 +23,40 @@ export const TRADE_ROOM_UPDATE_MARKER = 'AgoraMesh trade-room-update v1';
 export const TRADE_ROOM_STATES: TradeRoomState[] = ['intent', 'offer', 'accepted', 'payment-pending', 'paid', 'delivered', 'confirmed', 'reviewed'];
 
 const publicKeySchema = z.string().regex(/^[0-9a-f]{64}$/i);
+const tradeRoomWorkflowPayloadActionSchema = z.enum([
+  'agreement-created',
+  'agreement-signed',
+  'payment-claimed',
+  'delivery-sent',
+  'delivery-confirmed',
+  'review-requested',
+  'room-ack'
+]);
+const tradeRoomPaymentClaimSchema = z.object({
+  id: z.string().trim().min(1),
+  amountSats: z.number().int().positive().optional(),
+  note: z.string().trim().max(1000).optional(),
+  status: z.enum(['payment-pending', 'paid', 'receipt-found', 'failed'])
+});
+const tradeRoomDeliveryConfirmationSchema = z.object({
+  deliveryId: z.string().trim().min(1),
+  confirmedAt: z.string().trim().min(1),
+  note: z.string().trim().max(1000).optional()
+});
+const tradeRoomReviewPromptSchema = z.object({
+  subjectPublicKey: publicKeySchema,
+  listingId: z.string().trim().optional(),
+  agreementHash: z.string().regex(/^[0-9a-f]{64}$/i).optional()
+});
 
 export const tradeRoomUpdatePayloadSchema = z.object({
   schemaVersion: z.literal(1),
   kind: z.literal('trade-room-update'),
   roomId: z.string().trim().min(1),
   senderPublicKey: publicKeySchema,
+  workflowAction: tradeRoomWorkflowPayloadActionSchema.optional(),
+  clientActionId: z.string().trim().min(1).optional(),
+  ackEventId: z.string().trim().min(1).optional(),
   agreementHash: z.string().regex(/^[0-9a-f]{64}$/i).optional(),
   listingId: z.string().trim().optional(),
   listingCoordinate: z.string().trim().optional(),
@@ -37,6 +65,7 @@ export const tradeRoomUpdatePayloadSchema = z.object({
   deliveryState: z.enum(['none', 'in-progress', 'delivered', 'confirmed']).optional(),
   agreementPacket: agreementTermsPacketSchema.optional(),
   agreementReceipt: agreementAcceptanceReceiptSchema.optional(),
+  paymentClaim: tradeRoomPaymentClaimSchema.optional(),
   delivery: z
     .object({
       id: z.string().trim().min(1),
@@ -52,6 +81,8 @@ export const tradeRoomUpdatePayloadSchema = z.object({
       status: z.enum(['draft', 'sent', 'received', 'confirmed'])
     })
     .optional(),
+  deliveryConfirmation: tradeRoomDeliveryConfirmationSchema.optional(),
+  reviewPrompt: tradeRoomReviewPromptSchema.optional(),
   createdAt: z.string().trim().min(1)
 });
 
@@ -66,6 +97,16 @@ export type TradeRoomDealNextAction =
   | 'confirm-delivery'
   | 'write-review'
   | 'complete';
+export type TradeRoomWorkflowAction =
+  | 'create-agreement'
+  | 'sign-agreement'
+  | 'mark-payment-pending'
+  | 'mark-paid'
+  | 'send-delivery'
+  | 'confirm-delivery'
+  | 'write-review'
+  | 'complete';
+export type TradeRoomWorkflowStep = 'intent' | 'offer' | 'agreement' | 'accepted' | 'payment' | 'delivery' | 'confirmed' | 'reviewed';
 export type TradeRoomDealBlocker =
   | 'identity'
   | 'counterparty'
@@ -94,6 +135,14 @@ export type TradeRoomDealSheet = {
   reviewStatus: 'needed' | 'complete';
   nextAction: TradeRoomDealNextAction;
   blockers: TradeRoomDealBlocker[];
+};
+export type TradeRoomWorkflow = {
+  step: TradeRoomWorkflowStep;
+  primaryAction: TradeRoomWorkflowAction;
+  secondaryActions: TradeRoomWorkflowAction[];
+  blockers: TradeRoomDealBlocker[];
+  canNotifyCounterparty: boolean;
+  requiresMutualAcceptance: boolean;
 };
 
 function normalizeKey(value?: string): string {
@@ -455,6 +504,55 @@ export function deriveTradeRoomDealSheet({
   };
 }
 
+function workflowActionForNextAction(nextAction: TradeRoomDealNextAction): TradeRoomWorkflowAction {
+  switch (nextAction) {
+    case 'start-payment':
+      return 'mark-payment-pending';
+    case 'confirm-payment':
+      return 'mark-paid';
+    default:
+      return nextAction;
+  }
+}
+
+function workflowStepForDealSheet(dealSheet: TradeRoomDealSheet, room: TradeRoom): TradeRoomWorkflowStep {
+  if (dealSheet.reviewStatus === 'complete' || room.state === 'reviewed') return 'reviewed';
+  if (room.deliveryState === 'confirmed' || dealSheet.nextAction === 'write-review') return 'confirmed';
+  if (room.deliveryState === 'delivered' || dealSheet.deliverySignal !== 'none' || dealSheet.nextAction === 'confirm-delivery') return 'delivery';
+  if (room.paymentState === 'paid' || room.paymentState === 'receipt-found' || dealSheet.nextAction === 'send-delivery') return 'payment';
+  if (room.paymentState === 'payment-pending' || dealSheet.nextAction === 'confirm-payment') return 'payment';
+  if (dealSheet.acceptanceStatus === 'mutually-signed') return 'accepted';
+  if (dealSheet.acceptanceStatus === 'draft' || dealSheet.acceptanceStatus === 'partially-signed' || dealSheet.acceptanceStatus === 'missing-agreement') return 'agreement';
+  return room.state === 'offer' ? 'offer' : 'intent';
+}
+
+export function deriveTradeRoomWorkflow({
+  room,
+  dealSheet,
+  hasIdentity = false,
+  hasCounterparty = false,
+  enabledRelayCount = 0
+}: {
+  room: TradeRoom;
+  dealSheet: TradeRoomDealSheet;
+  hasIdentity?: boolean;
+  hasCounterparty?: boolean;
+  enabledRelayCount?: number;
+}): TradeRoomWorkflow {
+  const primaryAction = workflowActionForNextAction(dealSheet.nextAction);
+  const secondaryActions: TradeRoomWorkflowAction[] = primaryAction === 'mark-payment-pending' ? ['mark-paid'] : [];
+  return {
+    step: workflowStepForDealSheet(dealSheet, room),
+    primaryAction,
+    secondaryActions,
+    blockers: dealSheet.blockers,
+    canNotifyCounterparty: hasIdentity && hasCounterparty && enabledRelayCount > 0,
+    requiresMutualAcceptance:
+      dealSheet.acceptanceStatus !== 'mutually-signed' &&
+      ['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(primaryAction)
+  };
+}
+
 export function markRoomReviewed(room: TradeRoom, attestations: ReputationAttestation[], at = nowIso()): TradeRoom {
   if (!room.listingId && !room.listingCoordinate && !room.agreementHash) return room;
   const reviewed = attestations.some((attestation) => {
@@ -491,12 +589,17 @@ export function deliveryFromUpdatePayload(payload: TradeRoomUpdatePayload, roomI
 export function encodeTradeRoomUpdateMessage(payload: TradeRoomUpdatePayload): string {
   const lines = [
     `Trade room update: ${payload.roomId}`,
+    payload.workflowAction ? `Action: ${payload.workflowAction}` : '',
     payload.state ? `State: ${payload.state}` : '',
     payload.paymentState ? `Payment: ${payload.paymentState}` : '',
     payload.deliveryState ? `Delivery: ${payload.deliveryState}` : '',
     payload.agreementPacket ? `Agreement: ${payload.agreementPacket.agreementHash}` : '',
     payload.agreementReceipt ? `Receipt: ${payload.agreementReceipt.role}` : '',
+    payload.paymentClaim ? `Payment claim: ${payload.paymentClaim.status}` : '',
     payload.delivery ? `File: ${payload.delivery.fileName}` : '',
+    payload.deliveryConfirmation ? `Delivery confirmed: ${payload.deliveryConfirmation.deliveryId}` : '',
+    payload.reviewPrompt ? `Review prompt: ${payload.reviewPrompt.subjectPublicKey.slice(0, 12)}` : '',
+    payload.ackEventId ? `Ack: ${payload.ackEventId}` : '',
     '',
     '---',
     TRADE_ROOM_UPDATE_MARKER,
@@ -540,6 +643,8 @@ export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpda
 export function applyTradeRoomUpdate(room: TradeRoom, payload: TradeRoomUpdatePayload, threadKey?: string, at = payload.createdAt, lastMessageAt?: string): TradeRoom {
   const payloadState = payload.state;
   const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
+  const paymentState = payload.paymentState ?? payload.paymentClaim?.status ?? room.paymentState;
+  const deliveryState = payload.deliveryState ?? (payload.deliveryConfirmation ? 'confirmed' : undefined) ?? room.deliveryState;
   const nextState =
     payloadState &&
     TRADE_ROOM_STATES.indexOf(payloadState) > TRADE_ROOM_STATES.indexOf(room.state) &&
@@ -549,8 +654,8 @@ export function applyTradeRoomUpdate(room: TradeRoom, payload: TradeRoomUpdatePa
   return {
     ...room,
     state: nextState,
-    paymentState: payload.paymentState ?? room.paymentState,
-    deliveryState: payload.deliveryState ?? room.deliveryState,
+    paymentState,
+    deliveryState,
     relatedMessageThreadIds: threadKey ? [...new Set([...room.relatedMessageThreadIds, threadKey])] : room.relatedMessageThreadIds,
     lastMessageAt: lastMessageAt ?? room.lastMessageAt,
     updatedAt: at

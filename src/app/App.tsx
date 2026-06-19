@@ -208,6 +208,7 @@ import {
   deliveryFromUpdatePayload,
   derivePaymentState,
   deriveTradeRoomDealSheet,
+  deriveTradeRoomWorkflow,
   encodeTradeRoomUpdateMessage,
   markRoomReviewed,
   newDeliveryDraft,
@@ -222,6 +223,7 @@ import {
   tradeRoomFromSelectedOffer,
   upsertTradeRoom,
   type TradeRoomDealSheet,
+  type TradeRoomWorkflowAction,
   type TradeRoomUpdatePayload
 } from '../lib/tradeRooms';
 import {
@@ -9192,105 +9194,6 @@ function TradeRoomStateStepper({ state }: { state: TradeRoomState }): ReactNode 
   );
 }
 
-function TradeRoomDealSheetPanel({
-  dealSheet,
-  acceptanceLabel,
-  agreementReady,
-  reviewEnabled,
-  onOpenAgreement,
-  onOpenDispute,
-  onPaymentPending,
-  onMarkPaid,
-  onMarkDelivered,
-  onConfirmDelivery,
-  onReview
-}: {
-  dealSheet: TradeRoomDealSheet;
-  acceptanceLabel: string;
-  agreementReady: boolean;
-  reviewEnabled: boolean;
-  onOpenAgreement: () => void;
-  onOpenDispute: () => void;
-  onPaymentPending: () => void;
-  onMarkPaid: () => void;
-  onMarkDelivered: () => void;
-  onConfirmDelivery: () => void;
-  onReview: () => void;
-}): ReactNode {
-  const { t } = useI18n();
-  const blockedTitle = agreementReady ? undefined : t('tradeRoom.acceptanceRequired');
-  return (
-    <section className="trade-room-deal-sheet">
-      <div className="trade-room-deal-heading">
-        <div>
-          <span className="form-eyebrow">{t('tradeRoom.dealSheet')}</span>
-          <h3>{dealSheet.title}</h3>
-          <p className="muted compact-meta">{t('tradeRoom.dealSheetBody')}</p>
-        </div>
-        <span className={agreementReady ? 'ok mini' : 'pill'}>{acceptanceLabel}</span>
-      </div>
-      <div className="trade-room-deal-grid">
-        <span>
-          <strong>{t('role.buyer')}</strong>
-          {tradeRoomPartyLabel(dealSheet.buyerPublicKey, dealSheet.buyerLabel)} · {shortPublicKey(dealSheet.buyerPublicKey)}
-        </span>
-        <span>
-          <strong>{t('role.seller')}</strong>
-          {tradeRoomPartyLabel(dealSheet.sellerPublicKey, dealSheet.sellerLabel)} · {shortPublicKey(dealSheet.sellerPublicKey)}
-        </span>
-        <span>
-          <strong>{dealSheet.listingType === 'request' ? t('listing.budgetAmount') : t('listing.priceAmount')}</strong>
-          {dealSheet.price || t('common.none')}
-        </span>
-        <span>
-          <strong>{t('payment.options')}</strong>
-          {dealSheet.payment || t('common.none')}
-        </span>
-        <span>
-          <strong>{t('listing.fulfillment')}</strong>
-          {dealSheet.fulfillment || t('common.none')}
-        </span>
-        <span>
-          <strong>{t('agreement.mediator')}</strong>
-          {dealSheet.mediator || t('common.none')}
-        </span>
-      </div>
-      <StatusChipRow
-        items={[
-          [t('tradeRoom.acceptance'), t(`tradeRoom.acceptanceStatus.${dealSheet.acceptanceStatus}`)],
-          [t('tradeRoom.payment'), t(`tradeRoom.signal.${dealSheet.paymentSignal}`)],
-          [t('tradeRoom.delivery'), t(`tradeRoom.signal.${dealSheet.deliverySignal}`)],
-          [t('tradeRoom.review'), t(`tradeRoom.reviewStatus.${dealSheet.reviewStatus}`)]
-        ]}
-      />
-      <p className="muted compact-meta">{agreementReady ? t('tradeRoom.acceptanceMutual') : t('tradeRoom.acceptancePending')}</p>
-      <div className="trade-room-workflow-actions">
-        <button className={dealSheet.nextAction === 'create-agreement' || dealSheet.nextAction === 'sign-agreement' ? undefined : 'subtle'} onClick={onOpenAgreement} type="button">
-          <Handshake size={16} /> {dealSheet.nextAction === 'create-agreement' ? t('tradeRoom.openAdvancedAgreement') : t('agreement.title')}
-        </button>
-        <button className="subtle" disabled={!agreementReady} title={blockedTitle} onClick={onPaymentPending} type="button">
-          {t('tradeRoom.markPaymentPending')}
-        </button>
-        <button className={dealSheet.nextAction === 'confirm-payment' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onMarkPaid} type="button">
-          {t('tradeRoom.markPaid')}
-        </button>
-        <button className={dealSheet.nextAction === 'send-delivery' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onMarkDelivered} type="button">
-          {t('tradeRoom.markDelivered')}
-        </button>
-        <button className={dealSheet.nextAction === 'confirm-delivery' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onConfirmDelivery} type="button">
-          {t('tradeRoom.markConfirmed')}
-        </button>
-        <button className={dealSheet.nextAction === 'write-review' ? undefined : 'subtle'} disabled={!reviewEnabled} onClick={onReview} type="button">
-          <BadgeCheck size={16} /> {t('tradeRoom.writeReview')}
-        </button>
-        <button className="subtle" disabled={!agreementReady} title={blockedTitle} onClick={onOpenDispute} type="button">
-          <Scale size={16} /> {t('tradeRoom.openAdvancedDispute')}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function TradeRoomCounterpartyContext({ row }: { row: TradeRoomRow }): ReactNode {
   const { t } = useI18n();
   return (
@@ -9466,7 +9369,6 @@ function TradeRoomsPanel({
   receipts,
   cursors,
   liveState,
-  attestations,
   onConnectSigner,
   onSendNostrIntro,
   onFetchNostrInbox,
@@ -9489,7 +9391,6 @@ function TradeRoomsPanel({
   receipts: NostrContactReceipt[];
   cursors: NostrInboxCursor[];
   liveState: NostrLiveInboxState;
-  attestations: ReputationAttestation[];
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
@@ -9532,7 +9433,6 @@ function TradeRoomsPanel({
             receipts={receipts}
             cursors={cursors}
             liveState={liveState}
-            attestations={attestations}
             onConnectSigner={onConnectSigner}
             onSendNostrIntro={onSendNostrIntro}
             onFetchNostrInbox={onFetchNostrInbox}
@@ -9562,7 +9462,6 @@ function TradeRoomDetail({
   receipts,
   cursors,
   liveState,
-  attestations,
   onConnectSigner,
   onSendNostrIntro,
   onFetchNostrInbox,
@@ -9583,7 +9482,6 @@ function TradeRoomDetail({
   receipts: NostrContactReceipt[];
   cursors: NostrInboxCursor[];
   liveState: NostrLiveInboxState;
-  attestations: ReputationAttestation[];
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
@@ -9597,8 +9495,9 @@ function TradeRoomDetail({
   const { t } = useI18n();
   const { room, agreement, listing, paymentAttempts, zapReceipts, deliveries } = row;
   const dealSheet = row.dealSheet;
-  const [notifyCounterparty, setNotifyCounterparty] = useState(false);
+  const [notifyCounterparty, setNotifyCounterparty] = useState(true);
   const [stateStatus, setStateStatus] = useState('');
+  const deliveryDrawerRef = useRef<HTMLDivElement | null>(null);
   const ownerKey = identity?.publicKey.toLowerCase();
   const counterpartyPublicKey = ownerKey
     ? publicKeysMatch(ownerKey, room.buyerPublicKey)
@@ -9607,11 +9506,6 @@ function TradeRoomDetail({
         ? room.buyerPublicKey
         : ''
     : '';
-  const reviewExists = attestations.some((attestation) => {
-    if (room.agreementHash && attestation.agreementHash === room.agreementHash) return true;
-    if (room.listingId && room.sellerPublicKey) return listingReviewMatches({ id: room.listingId, authorPublicKey: room.sellerPublicKey }, attestation);
-    return false;
-  });
   const agreementReady = row.receiptStatus === 'mutually-signed';
   const agreementStatusLabel =
     row.receiptStatus === 'mutually-signed'
@@ -9622,6 +9516,14 @@ function TradeRoomDetail({
   const blockers = dealSheet.blockers.map((blocker) => t(`tradeRoom.blocker.${blocker}`));
   const nextAction = t(`tradeRoom.nextAction.${dealSheet.nextAction}`);
   const ownerCursors = ownerKey ? cursors.filter((cursor) => cursor.ownerPublicKey === ownerKey) : [];
+  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
+  const workflow = deriveTradeRoomWorkflow({
+    room,
+    dealSheet,
+    hasIdentity: Boolean(identity),
+    hasCounterparty: Boolean(counterpartyPublicKey),
+    enabledRelayCount
+  });
   const coordinationStatus = deriveTradeRoomCoordinationStatus({
     room,
     receipts,
@@ -9630,7 +9532,10 @@ function TradeRoomDetail({
     liveState
   });
   const notifyRoomUpdate = async (nextRoom: TradeRoom, payload: Partial<TradeRoomUpdatePayload>): Promise<void> => {
-    if (!notifyCounterparty) return;
+    if (!notifyCounterparty) {
+      setStateStatus(t('tradeRoom.unsyncedLocal'));
+      return;
+    }
     if (!identity || !counterpartyPublicKey) {
       setStateStatus(t('tradeRoom.notifyUnavailable'));
       return;
@@ -9664,15 +9569,73 @@ function TradeRoomDetail({
   };
   const savePaymentState = async (paymentState: TradeRoomPaymentState): Promise<void> => {
     const nextRoom = stateForPayment(room, paymentState);
+    const paymentClaimStatus: 'payment-pending' | 'paid' | 'receipt-found' | 'failed' =
+      paymentState === 'none' ? 'payment-pending' : paymentState;
     onRoomSaved(nextRoom);
     setStateStatus(t('tradeRoom.localStateSaved'));
-    await notifyRoomUpdate(nextRoom, { state: nextRoom.state, paymentState });
+    await notifyRoomUpdate(nextRoom, {
+      state: nextRoom.state,
+      paymentState,
+      workflowAction: 'payment-claimed',
+      clientActionId: newId('room_action'),
+      paymentClaim: {
+        id: newId('payment_claim'),
+        status: paymentClaimStatus
+      }
+    });
   };
   const saveDeliveryState = async (deliveryState: TradeRoomDeliveryState): Promise<void> => {
     const nextRoom = stateForDelivery(room, deliveryState);
     onRoomSaved(nextRoom);
     setStateStatus(t('tradeRoom.localStateSaved'));
-    await notifyRoomUpdate(nextRoom, { state: nextRoom.state, deliveryState });
+    await notifyRoomUpdate(nextRoom, {
+      state: nextRoom.state,
+      deliveryState,
+      workflowAction: deliveryState === 'confirmed' ? 'delivery-confirmed' : 'delivery-sent',
+      clientActionId: newId('room_action'),
+      deliveryConfirmation:
+        deliveryState === 'confirmed'
+          ? {
+              deliveryId: deliveries[0]?.id ?? room.id,
+              confirmedAt: nowIso()
+            }
+          : undefined
+    });
+  };
+  const workflowActionDisabled = (action: TradeRoomWorkflowAction): boolean => {
+    if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !agreementReady) return true;
+    if (action === 'write-review' && !identity) return true;
+    return false;
+  };
+  const runWorkflowAction = (action: TradeRoomWorkflowAction): void => {
+    setStateStatus('');
+    switch (action) {
+      case 'create-agreement':
+      case 'sign-agreement':
+        onOpenAdvancedAgreement(row);
+        return;
+      case 'mark-payment-pending':
+        void savePaymentState('payment-pending');
+        return;
+      case 'mark-paid':
+        void savePaymentState('paid');
+        return;
+      case 'send-delivery':
+        deliveryDrawerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setStateStatus(t('tradeRoom.openDeliveryDrawer'));
+        return;
+      case 'confirm-delivery':
+        void saveDeliveryState('confirmed');
+        return;
+      case 'write-review':
+        onReviewRoom(room);
+        return;
+      case 'complete':
+        setStateStatus(t('tradeRoom.flowComplete'));
+        return;
+      default:
+        return;
+    }
   };
   return (
     <article className="trade-room-panel">
@@ -9681,45 +9644,68 @@ function TradeRoomDetail({
           <span className="form-eyebrow">{t('tradeRoom.title')}</span>
           <h2>{room.listingTitle || agreement?.exchangeDescription || t('tradeRoom.untitled')}</h2>
           <p className="muted compact-meta">{t('tradeRoom.localOnly')}</p>
+          <div className="trade-room-header-meta">
+            <span>{t('role.buyer')}: {tradeRoomPartyLabel(room.buyerPublicKey, room.buyerLabel)}</span>
+            <span>{t('role.seller')}: {tradeRoomPartyLabel(room.sellerPublicKey, room.sellerLabel)}</span>
+            <span>{dealSheet.price || t('common.none')}</span>
+          </div>
         </div>
-        <span className="pill">{t(`tradeRoom.state.${room.state}`)}</span>
+        <div className="trade-room-header-status">
+          <span className="pill">{t(`tradeRoom.state.${room.state}`)}</span>
+          <span className={coordinationStatus === 'synced' || coordinationStatus === 'received' ? 'ok mini trade-room-sync-pill' : coordinationStatus === 'failed' ? 'warning mini trade-room-sync-pill' : 'pill trade-room-sync-pill'}>
+            {t(`tradeRoom.coordinationStatus.${coordinationStatus}`)}
+          </span>
+        </div>
       </header>
       <TradeRoomStateStepper state={room.state} />
-      <TradeRoomDealSheetPanel
-        dealSheet={dealSheet}
-        acceptanceLabel={agreementStatusLabel}
-        onOpenAgreement={() => onOpenAdvancedAgreement(row)}
-        onOpenDispute={() => onOpenAdvancedDispute(row)}
-        onPaymentPending={() => void savePaymentState('payment-pending')}
-        onMarkPaid={() => void savePaymentState('paid')}
-        onMarkDelivered={() => void saveDeliveryState('delivered')}
-        onConfirmDelivery={() => void saveDeliveryState('confirmed')}
-        onReview={() => onReviewRoom(room)}
-        agreementReady={agreementReady}
-        reviewEnabled={Boolean(identity && (room.state === 'confirmed' || room.state === 'reviewed'))}
-      />
-      <TradeRoomCoordinationPanel
-        room={room}
-        relays={relays}
-        receipts={receipts}
-        messages={messages}
-        cursors={ownerCursors}
-        liveState={liveState}
-        status={coordinationStatus}
-        onSyncNow={onFetchNostrInbox}
-        onPassphraseReady={onInboxPassphraseReady}
-      />
-      <TradeRoomCounterpartyContext row={row} />
-      <section className="trade-room-next-action">
-        <div>
-          <span className="form-eyebrow">{t('tradeRoom.nextAction')}</span>
-          <strong>{nextAction}</strong>
+      <section className="trade-room-cockpit">
+        <div className="trade-room-cockpit-main">
+          <div className="trade-room-primary-action">
+            <span className="form-eyebrow">{t('tradeRoom.cockpit')}</span>
+            <h3>{t('tradeRoom.primaryAction')}</h3>
+            <strong>{t(`tradeRoom.workflowAction.${workflow.primaryAction}`)}</strong>
+            <p className="muted compact-meta">{nextAction}</p>
+            <p className="muted compact-meta">{agreementReady ? t('tradeRoom.acceptanceMutual') : t('tradeRoom.acceptancePending')}</p>
+          </div>
+          <button disabled={workflowActionDisabled(workflow.primaryAction)} title={workflowActionDisabled(workflow.primaryAction) ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => runWorkflowAction(workflow.primaryAction)} type="button">
+            {t(`tradeRoom.workflowAction.${workflow.primaryAction}`)}
+          </button>
         </div>
-        <label className="checkbox">
-          <input checked={notifyCounterparty} onChange={(event) => setNotifyCounterparty(event.target.checked)} type="checkbox" />
-          {t('tradeRoom.notifyCounterparty')}
-        </label>
+        <div className="trade-room-cockpit-facts">
+          <span>
+            <strong>{t('tradeRoom.acceptance')}</strong>
+            {t(`tradeRoom.acceptanceStatus.${dealSheet.acceptanceStatus}`)}
+          </span>
+          <span>
+            <strong>{t('tradeRoom.payment')}</strong>
+            {t(`tradeRoom.signal.${dealSheet.paymentSignal}`)} · {t(`tradeRoom.paymentState.${room.paymentState}`)}
+          </span>
+          <span>
+            <strong>{t('tradeRoom.delivery')}</strong>
+            {t(`tradeRoom.signal.${dealSheet.deliverySignal}`)} · {t(`tradeRoom.deliveryState.${room.deliveryState}`)}
+          </span>
+          <span>
+            <strong>{t('tradeRoom.review')}</strong>
+            {t(`tradeRoom.reviewStatus.${dealSheet.reviewStatus}`)}
+          </span>
+        </div>
+        {workflow.secondaryActions.length > 0 ? (
+          <div className="trade-room-secondary-actions" aria-label={t('tradeRoom.secondaryActions')}>
+            {workflow.secondaryActions.map((action) => (
+              <button className="subtle" disabled={workflowActionDisabled(action)} key={action} onClick={() => runWorkflowAction(action)} type="button">
+                {t(`tradeRoom.workflowAction.${action}`)}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {stateStatus ? <StatusMessage className="notice inline">{stateStatus}</StatusMessage> : null}
+        <DisclosurePanel title={t('tradeRoom.privateSyncStatus')}>
+          <p className="muted compact-meta">{t('tradeRoom.notifyDefault')}</p>
+          <label className="checkbox">
+            <input checked={notifyCounterparty} onChange={(event) => setNotifyCounterparty(event.target.checked)} type="checkbox" />
+            {t('tradeRoom.notifyCounterparty')}
+          </label>
+        </DisclosurePanel>
       </section>
       {blockers.length > 0 ? (
         <section className="trade-room-blockers" aria-label={t('tradeRoom.blockers')}>
@@ -9728,52 +9714,6 @@ function TradeRoomDetail({
           ))}
         </section>
       ) : null}
-      <div className="trade-room-grid">
-        <section className="trade-room-card">
-          <h3>{t('tradeRoom.participants')}</h3>
-          <SecondaryMeta
-            items={[
-              [t('role.buyer'), `${tradeRoomPartyLabel(room.buyerPublicKey, room.buyerLabel)} · ${shortPublicKey(room.buyerPublicKey)}`],
-              [t('role.seller'), `${tradeRoomPartyLabel(room.sellerPublicKey, room.sellerLabel)} · ${shortPublicKey(room.sellerPublicKey)}`],
-              [t('agreement.mediator'), room.mediator || t('common.none')]
-            ]}
-          />
-        </section>
-        <section className="trade-room-card">
-          <h3>{t('tradeRoom.payment')}</h3>
-          <p className="muted compact-meta">{t(`tradeRoom.paymentState.${room.paymentState}`)}</p>
-          <div className="actions small">
-            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void savePaymentState('payment-pending')} type="button">
-              {t('tradeRoom.markPaymentPending')}
-            </button>
-            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void savePaymentState('paid')} type="button">
-              {t('tradeRoom.markPaid')}
-            </button>
-          </div>
-          <p className="muted compact-meta">
-            {t('tradeRoom.receipts')}: {paymentAttempts.length + zapReceipts.length}
-          </p>
-        </section>
-        <section className="trade-room-card">
-          <h3>{t('tradeRoom.delivery')}</h3>
-          <p className="muted compact-meta">{t(`tradeRoom.deliveryState.${room.deliveryState}`)}</p>
-          <div className="actions small">
-            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void saveDeliveryState('delivered')} type="button">
-              {t('tradeRoom.markDelivered')}
-            </button>
-            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void saveDeliveryState('confirmed')} type="button">
-              {t('tradeRoom.markConfirmed')}
-            </button>
-          </div>
-        </section>
-        <section className="trade-room-card">
-          <h3>{t('tradeRoom.review')}</h3>
-          <p className="muted compact-meta">{reviewExists || room.state === 'reviewed' ? t('tradeRoom.reviewed') : t('tradeRoom.reviewPrompt')}</p>
-          <button disabled={!identity || (room.state !== 'confirmed' && room.state !== 'reviewed')} onClick={() => onReviewRoom(room)} type="button">
-            <BadgeCheck size={16} /> {t('tradeRoom.writeReview')}
-          </button>
-        </section>
-      </div>
       {listing || agreement ? (
         <DisclosurePanel title={t('tradeRoom.terms')}>
           {listing ? (
@@ -9798,76 +9738,103 @@ function TradeRoomDetail({
           ) : null}
         </DisclosurePanel>
       ) : null}
-      <div className="trade-room-panel-grid">
-        <section className="trade-room-section">
-          <div className="row between">
-            <h3>{t('tradeRoom.agreementPanel')}</h3>
-            <span className="pill">{agreementStatusLabel}</span>
-          </div>
-          {agreement ? (
-            <SecondaryMeta
-              items={[
-                [t('agreement.hash'), agreement.hash],
-                [t('agreement.price'), agreement.priceAndPayment],
-                [t('agreement.fulfillment'), agreement.fulfillmentTerms]
-              ]}
-            />
-          ) : (
-            <ActionHint>{t('tradeRoom.blocker.agreement')}</ActionHint>
-          )}
-          <button className="subtle" onClick={() => onOpenAdvancedAgreement(row)} type="button">
-            {t('tradeRoom.openAdvancedAgreement')}
-          </button>
-        </section>
-        <section className="trade-room-section">
-          <div className="row between">
-            <h3>{t('tradeRoom.disputePanel')}</h3>
-            <span className="pill">{room.mediator || t('common.none')}</span>
-          </div>
-          <p className="muted compact-meta">{t('tradeRoom.disputePanelBody')}</p>
-          <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => onOpenAdvancedDispute(row)} type="button">
-            {t('tradeRoom.openAdvancedDispute')}
-          </button>
-        </section>
-      </div>
       <TradeRoomTimelinePanel row={row} messages={messages} />
-      <TradeRoomChatPanel
-        room={room}
-        counterpartyPublicKey={counterpartyPublicKey}
-        identity={identity}
-        privateKeyHex={privateKeyHex}
-        nostrSigner={nostrSigner}
-        relays={relays}
-        messages={messages}
-        threads={threads}
-        receipts={receipts}
-        onConnectSigner={onConnectSigner}
-        onSendNostrIntro={onSendNostrIntro}
-      />
-      <TradeRoomDeliveryPanel
-        room={room}
-        counterpartyPublicKey={counterpartyPublicKey}
-        identity={identity}
-        privateKeyHex={privateKeyHex}
-        nostrSigner={nostrSigner}
-        relays={relays}
-        receipts={receipts}
-        deliveries={deliveries}
-        onConnectSigner={onConnectSigner}
-        onSendNostrIntro={onSendNostrIntro}
-        onRoomDeliverySaved={onRoomDeliverySaved}
-      />
-      <DisclosurePanel title={t('tradeRoom.receiptsDetails')}>
-        <div className="compact-meta-list">
-          {paymentAttempts.map((attempt) => (
-            <p key={attempt.id}>{attempt.status} · {attempt.amountSats} sats · {attempt.createdAt}</p>
-          ))}
-          {zapReceipts.map((receipt) => (
-            <p key={receipt.id}>{t('listingZap.receipts')} · {receipt.amountMsats / 1000} sats · {receipt.validatedAt}</p>
-          ))}
-          {paymentAttempts.length + zapReceipts.length === 0 ? <p className="muted">{t('tradeRoom.noReceipts')}</p> : null}
+      <div className="trade-room-drawers">
+        <DisclosurePanel title={t('tradeRoom.drawer.chat')}>
+          <TradeRoomChatPanel
+            room={room}
+            counterpartyPublicKey={counterpartyPublicKey}
+            identity={identity}
+            privateKeyHex={privateKeyHex}
+            nostrSigner={nostrSigner}
+            relays={relays}
+            messages={messages}
+            threads={threads}
+            receipts={receipts}
+            onConnectSigner={onConnectSigner}
+            onSendNostrIntro={onSendNostrIntro}
+          />
+        </DisclosurePanel>
+        <div ref={deliveryDrawerRef}>
+          <DisclosurePanel defaultOpen={workflow.primaryAction === 'send-delivery'} title={t('tradeRoom.drawer.delivery')}>
+            <TradeRoomDeliveryPanel
+              room={room}
+              agreement={agreement}
+              counterpartyPublicKey={counterpartyPublicKey}
+              identity={identity}
+              privateKeyHex={privateKeyHex}
+              nostrSigner={nostrSigner}
+              relays={relays}
+              receipts={receipts}
+              deliveries={deliveries}
+              onConnectSigner={onConnectSigner}
+              onSendNostrIntro={onSendNostrIntro}
+              onRoomDeliverySaved={onRoomDeliverySaved}
+            />
+          </DisclosurePanel>
         </div>
-      </DisclosurePanel>
+        <DisclosurePanel title={t('tradeRoom.drawer.sync')}>
+          <TradeRoomCoordinationPanel
+            room={room}
+            relays={relays}
+            receipts={receipts}
+            messages={messages}
+            cursors={ownerCursors}
+            liveState={liveState}
+            status={coordinationStatus}
+            onSyncNow={onFetchNostrInbox}
+            onPassphraseReady={onInboxPassphraseReady}
+          />
+        </DisclosurePanel>
+        <DisclosurePanel title={t('tradeRoom.drawer.context')}>
+          <TradeRoomCounterpartyContext row={row} />
+        </DisclosurePanel>
+        <DisclosurePanel title={t('tradeRoom.drawer.advanced')}>
+          <div className="trade-room-panel-grid">
+            <section className="trade-room-section">
+              <div className="row between">
+                <h3>{t('tradeRoom.agreementPanel')}</h3>
+                <span className="pill">{agreementStatusLabel}</span>
+              </div>
+              {agreement ? (
+                <SecondaryMeta
+                  items={[
+                    [t('agreement.hash'), agreement.hash],
+                    [t('agreement.price'), agreement.priceAndPayment],
+                    [t('agreement.fulfillment'), agreement.fulfillmentTerms]
+                  ]}
+                />
+              ) : (
+                <ActionHint>{t('tradeRoom.blocker.agreement')}</ActionHint>
+              )}
+              <button className="subtle" onClick={() => onOpenAdvancedAgreement(row)} type="button">
+                {t('tradeRoom.openAdvancedAgreement')}
+              </button>
+            </section>
+            <section className="trade-room-section">
+              <div className="row between">
+                <h3>{t('tradeRoom.disputePanel')}</h3>
+                <span className="pill">{room.mediator || t('common.none')}</span>
+              </div>
+              <p className="muted compact-meta">{t('tradeRoom.disputePanelBody')}</p>
+              <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => onOpenAdvancedDispute(row)} type="button">
+                {t('tradeRoom.openAdvancedDispute')}
+              </button>
+            </section>
+          </div>
+        </DisclosurePanel>
+        <DisclosurePanel title={t('tradeRoom.receiptsDetails')}>
+          <div className="compact-meta-list">
+            {paymentAttempts.map((attempt) => (
+              <p key={attempt.id}>{attempt.status} · {attempt.amountSats} sats · {attempt.createdAt}</p>
+            ))}
+            {zapReceipts.map((receipt) => (
+              <p key={receipt.id}>{t('listingZap.receipts')} · {receipt.amountMsats / 1000} sats · {receipt.validatedAt}</p>
+            ))}
+            {paymentAttempts.length + zapReceipts.length === 0 ? <p className="muted">{t('tradeRoom.noReceipts')}</p> : null}
+          </div>
+        </DisclosurePanel>
+      </div>
     </article>
   );
 }
@@ -10044,6 +10011,7 @@ function TradeRoomChatPanel({
 
 function TradeRoomDeliveryPanel({
   room,
+  agreement,
   counterpartyPublicKey,
   identity,
   privateKeyHex,
@@ -10056,6 +10024,7 @@ function TradeRoomDeliveryPanel({
   onRoomDeliverySaved
 }: {
   room: TradeRoom;
+  agreement?: Agreement;
   counterpartyPublicKey: string;
   identity?: IdentityRecord;
   privateKeyHex: string;
@@ -10107,7 +10076,10 @@ function TradeRoomDeliveryPanel({
       kind: 'trade-room-update',
       roomId: room.id,
       senderPublicKey: identity.publicKey.toLowerCase(),
+      workflowAction: 'delivery-sent',
+      clientActionId: newId('room_action'),
       agreementHash: room.agreementHash,
+      agreementPacket: agreement ? agreementTermsPacket(agreement) : undefined,
       listingId: room.listingId,
       listingCoordinate: room.listingCoordinate,
       state: 'delivered',
@@ -10816,7 +10788,6 @@ function TradePage({
         receipts={nostrContactReceipts}
         cursors={nostrInboxCursors}
         liveState={liveInboxState}
-        attestations={attestations}
         onConnectSigner={onConnectSigner}
         onSendNostrIntro={onSendNostrIntro}
         onFetchNostrInbox={onFetchNostrInbox}

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Agreement, BuyerRequestOffer, Listing, LightningPaymentAttempt, ListingZapReceipt, TradeRoom } from '../types/domain';
 import {
   applyAgreementReceiptStatus,
+  applyTradeRoomUpdate,
+  backfillTradeRoomsFromAgreements,
   deliveryFromUpdatePayload,
   derivePaymentState,
   encodeTradeRoomUpdateMessage,
@@ -10,8 +12,11 @@ import {
   stateForDelivery,
   stateForPayment,
   tradeRoomFromAgreement,
+  tradeRoomFromPrivateTrade,
   tradeRoomFromSelectedOffer,
-  tradeRoomListingCoordinate
+  tradeRoomListingCoordinate,
+  tradeRoomMatchesPrivateTrade,
+  upsertTradeRoom
 } from './tradeRooms';
 
 const buyer = 'a'.repeat(64);
@@ -124,6 +129,34 @@ describe('buyer request offer rooms', () => {
   });
 });
 
+describe('room dedupe and agreement backfill', () => {
+  it('skips legacy agreements without valid participant keys', () => {
+    const rooms = backfillTradeRoomsFromAgreements(
+      [agreement({ buyerPublicKey: '', sellerPublicKey: seller }), agreement()],
+      [],
+      [],
+      () => 'draft'
+    );
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].agreementHash).toBe('c'.repeat(64));
+  });
+
+  it('reuses one room for the same buyer, seller, and listing intent', () => {
+    const first = tradeRoomFromPrivateTrade({
+      listing: listing({ authorPublicKey: seller }),
+      buyerPublicKey: buyer,
+      at: '2026-06-01T01:00:00.000Z'
+    });
+    const second = tradeRoomFromPrivateTrade({
+      listing: listing({ authorPublicKey: seller }),
+      buyerPublicKey: buyer,
+      at: '2026-06-01T02:00:00.000Z'
+    });
+    expect(tradeRoomMatchesPrivateTrade(first, listing({ authorPublicKey: seller }), buyer)).toBe(true);
+    expect(upsertTradeRoom([first], second).id).toBe(first.id);
+  });
+});
+
 describe('payment and delivery states', () => {
   const room: TradeRoom = tradeRoomFromAgreement(agreement());
 
@@ -184,5 +217,29 @@ describe('private room payloads', () => {
     expect(roomMatchesPrivateUpdate(room, payload, seller, buyer)).toBe(true);
     expect(roomMatchesPrivateUpdate(room, { ...payload, roomId: 'room_2' }, seller, buyer)).toBe(false);
     expect(roomMatchesPrivateUpdate(room, payload, 'd'.repeat(64), buyer)).toBe(false);
+  });
+
+  it('ignores malformed private update blocks', () => {
+    expect(parseTradeRoomUpdatePayload(`---\nAgoraMesh trade-room-update v1\n{"bad":true}\n---`)).toBeUndefined();
+  });
+
+  it('applies private updates without moving state backwards', () => {
+    const room = { ...tradeRoomFromAgreement(agreement()), id: 'room_1', state: 'paid' as const };
+    const next = applyTradeRoomUpdate(
+      room,
+      {
+        schemaVersion: 1,
+        kind: 'trade-room-update',
+        roomId: 'room_1',
+        senderPublicKey: seller,
+        state: 'accepted',
+        paymentState: 'receipt-found',
+        createdAt: '2026-06-01T03:00:00.000Z'
+      },
+      'thread_1'
+    );
+    expect(next.state).toBe('paid');
+    expect(next.paymentState).toBe('receipt-found');
+    expect(next.relatedMessageThreadIds).toContain('thread_1');
   });
 });

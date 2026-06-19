@@ -59,6 +59,10 @@ function normalizeKey(value?: string): string {
   return value?.toLowerCase() ?? '';
 }
 
+export function isTradeRoomPublicKey(value?: string): boolean {
+  return publicKeySchema.safeParse(value).success;
+}
+
 function roomIdFromAgreementHash(hash: string): string {
   return `trade_room_${hash.slice(0, 32)}`;
 }
@@ -67,11 +71,22 @@ export function tradeRoomIdForAgreement(agreement: Agreement): string {
   return roomIdFromAgreementHash(agreement.hash || generateAgreementHash(agreement));
 }
 
+export function agreementHasTradeRoomParties(agreement: Agreement): boolean {
+  return isTradeRoomPublicKey(agreement.buyerPublicKey) && isTradeRoomPublicKey(agreement.sellerPublicKey);
+}
+
+function ensureAgreementRoomParties(agreement: Agreement): void {
+  if (!agreementHasTradeRoomParties(agreement)) {
+    throw new Error('Agreement is missing buyer or seller public key');
+  }
+}
+
 export function tradeRoomListingCoordinate(listing: Listing): string {
   return nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id);
 }
 
 export function tradeRoomFromAgreement(agreement: Agreement, existing?: TradeRoom): TradeRoom {
+  ensureAgreementRoomParties(agreement);
   const at = existing?.createdAt ?? agreement.createdAt ?? nowIso();
   const agreementHash = agreement.hash || generateAgreementHash(agreement);
   return {
@@ -98,6 +113,89 @@ export function tradeRoomFromAgreement(agreement: Agreement, existing?: TradeRoo
     createdAt: at,
     updatedAt: existing?.updatedAt ?? agreement.updatedAt ?? at
   };
+}
+
+export function tradeRoomMatchesAgreement(room: TradeRoom, agreement: Agreement): boolean {
+  const agreementHash = agreement.hash || generateAgreementHash(agreement);
+  return Boolean(
+    (room.agreementHash && room.agreementHash === agreementHash) ||
+      (room.agreementId && room.agreementId === agreement.id) ||
+      (room.listingId &&
+        room.listingId === agreement.listingId &&
+        publicKeySchema.safeParse(agreement.buyerPublicKey).success &&
+        publicKeySchema.safeParse(agreement.sellerPublicKey).success &&
+        room.buyerPublicKey.toLowerCase() === agreement.buyerPublicKey.toLowerCase() &&
+        room.sellerPublicKey.toLowerCase() === agreement.sellerPublicKey.toLowerCase())
+  );
+}
+
+export function tradeRoomMatchesSelectedOffer(room: TradeRoom, offer: BuyerRequestOffer, listing?: Listing): boolean {
+  const listingCoordinate = listing ? tradeRoomListingCoordinate(listing) : offer.requestCoordinate;
+  return Boolean(
+    (room.buyerRequestOfferId && room.buyerRequestOfferId === offer.id) ||
+      (room.listingCoordinate &&
+        room.listingCoordinate.toLowerCase() === listingCoordinate.toLowerCase() &&
+        room.buyerPublicKey.toLowerCase() === offer.buyerPublicKey.toLowerCase() &&
+        room.sellerPublicKey.toLowerCase() === offer.sellerPublicKey.toLowerCase())
+  );
+}
+
+export function tradeRoomMatchesPrivateTrade(room: TradeRoom, listing: Listing, buyerPublicKey: string): boolean {
+  const listingCoordinate = tradeRoomListingCoordinate(listing).toLowerCase();
+  return Boolean(
+    room.listingCoordinate?.toLowerCase() === listingCoordinate &&
+      room.buyerPublicKey.toLowerCase() === buyerPublicKey.toLowerCase() &&
+      room.sellerPublicKey.toLowerCase() === listing.authorPublicKey.toLowerCase() &&
+      !room.buyerRequestOfferId
+  );
+}
+
+export function mergeTradeRoom(existing: TradeRoom | undefined, incoming: TradeRoom, at = incoming.updatedAt): TradeRoom {
+  if (!existing) return incoming;
+  return {
+    ...incoming,
+    id: existing.id,
+    createdAt: existing.createdAt,
+    state: TRADE_ROOM_STATES.indexOf(existing.state) > TRADE_ROOM_STATES.indexOf(incoming.state) ? existing.state : incoming.state,
+    paymentState: incoming.paymentState === 'none' ? existing.paymentState : incoming.paymentState,
+    deliveryState: incoming.deliveryState === 'none' ? existing.deliveryState : incoming.deliveryState,
+    relatedPaymentAttemptIds: [...new Set([...existing.relatedPaymentAttemptIds, ...incoming.relatedPaymentAttemptIds])],
+    relatedZapReceiptIds: [...new Set([...existing.relatedZapReceiptIds, ...incoming.relatedZapReceiptIds])],
+    relatedMessageThreadIds: [...new Set([...existing.relatedMessageThreadIds, ...incoming.relatedMessageThreadIds])],
+    lastMessageAt: incoming.lastMessageAt ?? existing.lastMessageAt,
+    reviewedAt: incoming.reviewedAt ?? existing.reviewedAt,
+    updatedAt: at
+  };
+}
+
+export function upsertTradeRoom(existingRooms: TradeRoom[], incoming: TradeRoom): TradeRoom {
+  const existing = existingRooms.find((room) => {
+    if (incoming.agreementHash && room.agreementHash === incoming.agreementHash) return true;
+    if (incoming.buyerRequestOfferId && room.buyerRequestOfferId === incoming.buyerRequestOfferId) return true;
+    return Boolean(
+      incoming.listingCoordinate &&
+        room.listingCoordinate?.toLowerCase() === incoming.listingCoordinate.toLowerCase() &&
+        room.buyerPublicKey.toLowerCase() === incoming.buyerPublicKey.toLowerCase() &&
+        room.sellerPublicKey.toLowerCase() === incoming.sellerPublicKey.toLowerCase()
+    );
+  });
+  return mergeTradeRoom(existing, incoming);
+}
+
+export function backfillTradeRoomsFromAgreements<ReceiptRow extends { agreementHash: string }>(
+  agreements: Agreement[],
+  receipts: ReceiptRow[],
+  existingRooms: TradeRoom[],
+  statusForAgreement: (agreement: Agreement, receipts: ReceiptRow[]) => AgreementReceiptStatus
+): TradeRoom[] {
+  const nextRooms = [...existingRooms];
+  for (const agreement of agreements) {
+    if (!agreementHasTradeRoomParties(agreement)) continue;
+    if (nextRooms.some((room) => tradeRoomMatchesAgreement(room, agreement))) continue;
+    const room = applyAgreementReceiptStatus(tradeRoomFromAgreement(agreement), statusForAgreement(agreement, receipts));
+    nextRooms.push(room);
+  }
+  return nextRooms.filter((room) => !existingRooms.some((existing) => existing.id === room.id));
 }
 
 export function tradeRoomFromSelectedOffer({
@@ -264,7 +362,11 @@ export function parseTradeRoomUpdatePayload(plaintext: string): TradeRoomUpdateP
     .map((line) => line.trim())
     .find((line) => line.startsWith('{') && line.endsWith('}'));
   if (!jsonLine) return undefined;
-  return tradeRoomUpdatePayloadSchema.parse(JSON.parse(jsonLine));
+  try {
+    return tradeRoomUpdatePayloadSchema.parse(JSON.parse(jsonLine));
+  } catch {
+    return undefined;
+  }
 }
 
 export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpdatePayload, senderPublicKey: string, ownerPublicKey: string): boolean {
@@ -273,12 +375,25 @@ export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpda
   const participants = [room.buyerPublicKey.toLowerCase(), room.sellerPublicKey.toLowerCase()];
   return (
     room.id === payload.roomId &&
+    payload.senderPublicKey.toLowerCase() === sender &&
     participants.includes(sender) &&
     participants.includes(owner) &&
     (!payload.agreementHash || payload.agreementHash === room.agreementHash) &&
     (!payload.listingId || payload.listingId === room.listingId) &&
     (!payload.listingCoordinate || payload.listingCoordinate.toLowerCase() === room.listingCoordinate?.toLowerCase())
   );
+}
+
+export function applyTradeRoomUpdate(room: TradeRoom, payload: TradeRoomUpdatePayload, threadKey?: string, at = payload.createdAt, lastMessageAt?: string): TradeRoom {
+  return {
+    ...room,
+    state: payload.state && TRADE_ROOM_STATES.indexOf(payload.state) > TRADE_ROOM_STATES.indexOf(room.state) ? payload.state : room.state,
+    paymentState: payload.paymentState ?? room.paymentState,
+    deliveryState: payload.deliveryState ?? room.deliveryState,
+    relatedMessageThreadIds: threadKey ? [...new Set([...room.relatedMessageThreadIds, threadKey])] : room.relatedMessageThreadIds,
+    lastMessageAt: lastMessageAt ?? room.lastMessageAt,
+    updatedAt: at
+  };
 }
 
 export function newDeliveryDraft(roomId: string, senderPublicKey: string): TradeRoomDelivery {

@@ -3625,7 +3625,49 @@ dd {
   background: var(--accent-muted);
 }
 
+.trade-room-next-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+  padding: var(--space-3);
+}
+
+.trade-room-next-action > div {
+  display: grid;
+  gap: var(--space-1);
+  min-width: min(100%, 18rem);
+}
+
+.trade-room-next-action .notice {
+  flex-basis: 100%;
+}
+
+.trade-room-blockers {
+  display: grid;
+  gap: var(--space-1);
+  border-left: 3px solid var(--warning);
+  background: rgba(233, 176, 83, 0.1);
+  padding: var(--space-3);
+}
+
+.trade-room-blockers p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
 .trade-room-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.trade-room-panel-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
@@ -3680,6 +3722,25 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.trade-room-timeline {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.trade-room-timeline-item {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: var(--space-3);
+}
+
+.trade-room-timeline-item span,
+.trade-room-timeline-item small {
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 640px) {
   .identity-summary {
     flex-direction: column;
@@ -3695,6 +3756,7 @@ dd {
   .dm-layout,
   .trade-room-workspace,
   .trade-room-grid,
+  .trade-room-panel-grid,
   .trade-room-unlock-row,
   .trade-room-delivery-form {
     grid-template-columns: 1fr;

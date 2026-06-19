@@ -96,6 +96,17 @@ describe('import/export round trip', () => {
     await expect(db.tradeRoomDeliveries.get('trade_delivery_roundtrip')).resolves.toMatchObject({ roomId: room.id, status: 'sent' });
   });
 
+  it('imports older backups without trade room arrays', async () => {
+    const backup = (await exportAllData()) as Record<string, unknown>;
+    delete backup.tradeRooms;
+    delete backup.tradeRoomDeliveries;
+
+    await importAllData(backup);
+
+    await expect(db.tradeRooms.count()).resolves.toBe(0);
+    await expect(db.tradeRoomDeliveries.count()).resolves.toBe(0);
+  });
+
   it('keeps local public profile and mediator profile as separate backup records', async () => {
     const profile: PublicProfile = {
       id: 'profile_roundtrip',

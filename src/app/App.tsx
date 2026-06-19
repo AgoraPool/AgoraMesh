@@ -116,12 +116,22 @@ import {
 } from '../lib/nostr/events';
 import { normalizeNostrContact } from '../lib/nostr/contact';
 import {
+  deriveTradeRoomCoordinationStatus,
+  selectNostrCoordinationRelays,
+  summarizeNostrCoordinationPayload,
+  type NostrCoordinationPayloadSummary,
+  type NostrCoordinationResult,
+  type NostrLiveInboxState,
+  type TradeRoomCoordinationStatus
+} from '../lib/nostr/coordination';
+import {
   createExtensionNostrIntroEvents,
   createLocalNostrIntroEvents,
   fetchNostrInboxGiftWraps,
   nostrInboxSince,
   nostrIntroPlaintext,
   NOSTR_INTRO_MESSAGE_LIMIT,
+  subscribeToNostrInboxGiftWraps,
   unwrapExtensionNostrGiftWrap,
   unwrapLocalNostrGiftWrap,
   type NostrInboxFetchResult,
@@ -360,7 +370,8 @@ type SendBuyerRequestOfferRequest = {
   contactMethod?: ContactMethod;
   message: string;
 };
-type InboxFetchSummary = { fetched: number; imported: number; duplicates: number; failed: number; relays: number };
+type InboxFetchSummary = NostrCoordinationResult;
+type CachedNostrMessageResult = { status: 'imported' | 'duplicate' | 'skipped'; payload?: NostrCoordinationPayloadSummary };
 type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type SupportFilter = 'all' | 'supporters' | 'non-supporters';
 type WebTrustFilter = 'all' | 'direct' | 'network';
@@ -1243,6 +1254,8 @@ export function App(): ReactNode {
   const [paymentNotificationsSeenAt, setPaymentNotificationsSeenAt] = useState('');
   const [remoteInboxScanCount, setRemoteInboxScanCount] = useState(0);
   const [inboxScanStatus, setInboxScanStatus] = useState('');
+  const [liveInboxPassphrase, setLiveInboxPassphrase] = useState('');
+  const [liveInboxState, setLiveInboxState] = useState<NostrLiveInboxState>({ status: 'idle', relays: 0, imported: 0, duplicates: 0, failed: 0 });
   const appOpenScanKeyRef = useRef('');
   const pageLabels: Record<Page, string> = {
     home: t('nav.home'),
@@ -1433,11 +1446,14 @@ export function App(): ReactNode {
       setInboxSeenAt('');
       setPaymentNotificationsSeenAt('');
       setRemoteInboxScanCount(0);
+      setLiveInboxPassphrase('');
+      setLiveInboxState({ status: 'idle', relays: 0, imported: 0, duplicates: 0, failed: 0 });
       return;
     }
     setInboxSeenAt(readSeenTimestamp(inboxSeenKey(identity.publicKey)));
     setPaymentNotificationsSeenAt(readSeenTimestamp(paymentNotificationsSeenKey(identity.publicKey)));
     setRemoteInboxScanCount(0);
+    setLiveInboxPassphrase('');
   }, [identity?.publicKey]);
 
   useEffect(() => {
@@ -2047,6 +2063,31 @@ export function App(): ReactNode {
     setBuyerRequestOffers(updatedOffers.sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
     setTradeRoomOpenId(room.id);
+    try {
+      await sendNostrContactIntro({
+        recipientPublicKey: offer.sellerPublicKey,
+        label: listing.title,
+        contextType: 'trade-room',
+        contextId: room.id,
+        contextTitle: listing.title,
+        includeContext: true,
+        message: encodeTradeRoomUpdateMessage({
+          schemaVersion: 1,
+          kind: 'trade-room-update',
+          roomId: room.id,
+          senderPublicKey: identity.publicKey.toLowerCase(),
+          agreementHash: agreement.hash,
+          listingId: listing.id,
+          listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id),
+          state: room.state,
+          paymentState: room.paymentState,
+          deliveryState: room.deliveryState,
+          createdAt: at
+        })
+      });
+    } catch {
+      // Room selection stays local-first; failed private notification is visible through room sync diagnostics.
+    }
     showNotice(t('buyerOffers.selected'));
     go('trade');
   };
@@ -2078,15 +2119,16 @@ export function App(): ReactNode {
     unwrapped: UnwrappedNostrMessage,
     relayUrl: string,
     inboxPassphrase: string
-  ): Promise<'imported' | 'duplicate' | 'skipped'> => {
-    if (!identity) return 'skipped';
+  ): Promise<CachedNostrMessageResult> => {
+    if (!identity) return { status: 'skipped' };
     const ownerPublicKey = identity.publicKey.toLowerCase();
     const existing = await db.nostrMessages.where('eventId').equals(unwrapped.wrap.id).first();
     if (existing) {
       const relayUrls = mergeRelayUrls(existing.relayUrls, relayUrl);
       if (relayUrls.length !== existing.relayUrls.length) await db.nostrMessages.put({ ...existing, relayUrls });
-      return 'duplicate';
+      return { status: 'duplicate' };
     }
+    const payload = summarizeNostrCoordinationPayload(unwrapped.rumor.content);
     const parsedContext = messageContextFromPlaintext(unwrapped.rumor.content);
     const direction: NostrMessageRecord['direction'] = unwrapped.senderPublicKey.toLowerCase() === ownerPublicKey ? 'outgoing' : 'incoming';
     const sentReceipt =
@@ -2140,7 +2182,7 @@ export function App(): ReactNode {
       // App-private payload parsing is best-effort; the encrypted message itself remains valid inbox content.
     }
     await rebuildNostrThread(threadKey);
-    return 'imported';
+    return { status: 'imported', payload };
   };
 
   const unwrapFetchedNostrMessage = async (event: NostrEvent): Promise<UnwrappedNostrMessage> => {
@@ -2158,6 +2200,20 @@ export function App(): ReactNode {
     return unwrapExtensionNostrGiftWrap(event, identity.publicKey, decryptWithNostrSigner);
   };
 
+  const liveInboxRuntimeRef = useRef({
+    cache: cacheUnwrappedNostrMessage,
+    unwrap: unwrapFetchedNostrMessage,
+    reload
+  });
+
+  useEffect(() => {
+    liveInboxRuntimeRef.current = {
+      cache: cacheUnwrappedNostrMessage,
+      unwrap: unwrapFetchedNostrMessage,
+      reload
+    };
+  }, [cacheUnwrappedNostrMessage, reload, unwrapFetchedNostrMessage]);
+
   const fetchNostrInbox = async (inboxPassphrase: string): Promise<InboxFetchSummary> => {
     if (!identity) throw new Error(t('nostrInbox.identityRequired'));
     if (inboxPassphrase.length < 10) throw new Error(t('nostrInbox.passphraseTooShort'));
@@ -2172,7 +2228,7 @@ export function App(): ReactNode {
     const cursorMap = new Map(nostrInboxCursors.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
     const sinceByRelay = Object.fromEntries(enabledRelays.map((relay) => [relay.url, nostrInboxSince(cursorMap.get(relay.url)?.newestCreatedAt)]));
     const results: NostrInboxFetchResult[] = await fetchNostrInboxGiftWraps(relays, ownerPublicKey, sinceByRelay);
-    const summary: InboxFetchSummary = { fetched: 0, imported: 0, duplicates: 0, failed: 0, relays: enabledRelays.length };
+    const summary: InboxFetchSummary = { fetched: 0, imported: 0, duplicates: 0, failed: 0, relays: enabledRelays.length, payloads: [] };
 
     for (const result of results) {
       if (!result.ok) summary.failed += 1;
@@ -2180,8 +2236,9 @@ export function App(): ReactNode {
       for (const event of result.events) {
         try {
           const cached = await cacheUnwrappedNostrMessage(await unwrapFetchedNostrMessage(event), result.relayUrl, inboxPassphrase);
-          if (cached === 'imported') summary.imported += 1;
-          if (cached === 'duplicate') summary.duplicates += 1;
+          if (cached.status === 'imported') summary.imported += 1;
+          if (cached.status === 'duplicate') summary.duplicates += 1;
+          if (cached.payload) summary.payloads.push(cached.payload);
         } catch {
           summary.failed += 1;
         }
@@ -2191,16 +2248,143 @@ export function App(): ReactNode {
           id: `nostr_cursor_${ownerPublicKey}_${result.relayUrl}`,
           ownerPublicKey,
           relayUrl: result.relayUrl,
-          since: sinceByRelay[result.relayUrl],
+          since: sinceByRelay[result.relayUrl] ?? nostrInboxSince(cursorMap.get(result.relayUrl)?.newestCreatedAt),
           newestCreatedAt: result.newestCreatedAt,
           lastFetchedAt: nowIso()
         });
       }
     }
+    setLiveInboxPassphrase(inboxPassphrase);
     showNotice(t('nostrInbox.fetchComplete').replace('{count}', String(summary.imported)));
     await reload();
     return summary;
   };
+
+  useEffect(() => {
+    const enabledRelays = selectNostrCoordinationRelays(relays);
+    if (!syncSettings.liveSyncEnabled) {
+      setLiveInboxState((current) => ({ ...current, status: 'paused', relays: enabledRelays.length, message: t('nostrInbox.livePaused') }));
+      return undefined;
+    }
+    if (!identity || enabledRelays.length === 0) {
+      setLiveInboxState((current) => ({ ...current, status: 'idle', relays: enabledRelays.length, message: undefined }));
+      return undefined;
+    }
+    if (liveInboxPassphrase.length < 10) {
+      setLiveInboxState((current) => ({ ...current, status: 'blocked', relays: enabledRelays.length, message: t('nostrInbox.liveNeedsPassphrase') }));
+      return undefined;
+    }
+    const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
+    const canUseSigner = Boolean(
+      nostrSigner.connected &&
+        nostrSigner.publicKey?.toLowerCase() === identity.publicKey.toLowerCase() &&
+        signerSupportsNip44Decryption()
+    );
+    if (!canUseLocal && !canUseSigner) {
+      setLiveInboxState((current) => ({ ...current, status: 'blocked', relays: enabledRelays.length, message: t('nostrInbox.liveNeedsDecrypt') }));
+      return undefined;
+    }
+
+    const ownerPublicKey = identity.publicKey.toLowerCase();
+    const cursorMap = new Map(nostrInboxCursors.filter((cursor) => cursor.ownerPublicKey === ownerPublicKey).map((cursor) => [cursor.relayUrl, cursor]));
+    const sinceByRelay = Object.fromEntries(enabledRelays.map((relay) => [relay.url, nostrInboxSince(cursorMap.get(relay.url)?.newestCreatedAt)]));
+    const seenEventIds = new Set(nostrMessages.filter((message) => message.ownerPublicKey === ownerPublicKey).map((message) => message.eventId));
+    setLiveInboxState((current) => ({ ...current, status: 'listening', relays: enabledRelays.length, message: t('nostrInbox.liveListening') }));
+    const stop = subscribeToNostrInboxGiftWraps({
+      relays: enabledRelays,
+      recipientPublicKey: ownerPublicKey,
+      sinceByRelay,
+      onEvent: (event, relayUrl) => {
+        void (async () => {
+          if (seenEventIds.has(event.id) || (await db.nostrMessages.where('eventId').equals(event.id).first())) {
+            setLiveInboxState((current) => ({ ...current, duplicates: current.duplicates + 1, lastEventAt: nowIso() }));
+            return;
+          }
+          try {
+            const runtime = liveInboxRuntimeRef.current;
+            const cached = await runtime.cache(await runtime.unwrap(event), relayUrl, liveInboxPassphrase);
+            const imported = cached.status === 'imported' ? 1 : 0;
+            const duplicate = cached.status === 'duplicate' ? 1 : 0;
+            await db.nostrInboxCursors.put({
+              id: `nostr_cursor_${ownerPublicKey}_${relayUrl}`,
+              ownerPublicKey,
+              relayUrl,
+              since: sinceByRelay[relayUrl] ?? nostrInboxSince(cursorMap.get(relayUrl)?.newestCreatedAt),
+              newestCreatedAt: event.created_at,
+              lastFetchedAt: nowIso()
+            });
+            const health = (await db.relayHealth.get(relayUrl)) ?? {
+              url: relayUrl,
+              enabled: true,
+              eventsReceived: 0,
+              eventsPublished: 0,
+              consecutiveFailures: 0
+            };
+            await db.relayHealth.put({
+              ...health,
+              lastConnectedAt: nowIso(),
+              lastError: undefined,
+              eventsReceived: health.eventsReceived + imported,
+              consecutiveFailures: 0
+            });
+            setLiveInboxState((current) => ({
+              ...current,
+              status: 'listening',
+              imported: current.imported + imported,
+              duplicates: current.duplicates + duplicate,
+              lastEventAt: nowIso(),
+              message: cached.payload?.kind === 'message' ? t('nostrInbox.liveMessage') : t('nostrInbox.liveCoordination')
+            }));
+            setRemoteInboxScanCount(0);
+            await runtime.reload();
+          } catch (error) {
+            setLiveInboxState((current) => ({
+              ...current,
+              status: 'error',
+              failed: current.failed + 1,
+              lastEventAt: nowIso(),
+              message: error instanceof Error ? error.message : t('nostrInbox.liveFailed')
+            }));
+          }
+        })();
+      },
+      onStatus: (status) => {
+        void (async () => {
+          const health = (await db.relayHealth.get(status.relayUrl)) ?? {
+            url: status.relayUrl,
+            enabled: true,
+            eventsReceived: 0,
+            eventsPublished: 0,
+            consecutiveFailures: 0
+          };
+          await db.relayHealth.put({
+            ...health,
+            lastConnectedAt: status.ok ? status.at : health.lastConnectedAt,
+            lastError: status.ok ? undefined : status.message,
+            consecutiveFailures: status.ok ? 0 : health.consecutiveFailures + 1
+          });
+          setLiveInboxState((current) => ({
+            ...current,
+            status: status.ok ? 'listening' : 'error',
+            relays: enabledRelays.length,
+            message: status.ok ? t('nostrInbox.liveListening') : status.message
+          }));
+        })();
+      }
+    });
+    return stop;
+  }, [
+    identity,
+    liveInboxPassphrase,
+    nostrInboxCursors,
+    nostrMessages,
+    nostrSigner.connected,
+    nostrSigner.publicKey,
+    privateKeyHex,
+    relays,
+    syncSettings.liveSyncEnabled,
+    t
+  ]);
 
   const createLightningPaymentAttempt = async (request: LightningPaymentRequest): Promise<LightningPaymentAttempt> => {
     if (!identity) throw new Error(t('payment.identityRequired'));
@@ -3120,6 +3304,8 @@ export function App(): ReactNode {
             nostrMessages={nostrMessages}
             nostrMessageThreads={nostrMessageThreads}
             nostrContactReceipts={nostrContactReceipts}
+            nostrInboxCursors={nostrInboxCursors}
+            liveInboxState={liveInboxState}
             relays={relays}
             identity={identity}
             privateKeyHex={privateKeyHex}
@@ -3128,6 +3314,8 @@ export function App(): ReactNode {
             openRoomId={tradeRoomOpenId}
             onConnectSigner={() => void connectSigner()}
             onSendNostrIntro={sendNostrContactIntro}
+            onFetchNostrInbox={fetchNostrInbox}
+            onInboxPassphraseReady={setLiveInboxPassphrase}
             onRoomOpened={(roomId) => setTradeRoomOpenId(roomId)}
             onRoomSaved={(room) => {
               setTradeRooms((current) => [room, ...current.filter((entry) => entry.id !== room.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
@@ -3214,6 +3402,7 @@ export function App(): ReactNode {
                 identity={identity}
                 messages={nostrMessages}
                 nostrSigner={nostrSigner}
+                liveState={liveInboxState}
                 notifications={inboxNotifications}
                 paymentNotificationsSeenAt={paymentNotificationsSeenAt}
                 privateKeyHex={privateKeyHex}
@@ -3223,6 +3412,7 @@ export function App(): ReactNode {
                 threads={nostrMessageThreads}
                 onConnectSigner={() => void connectSigner()}
                 onFetch={fetchNostrInbox}
+                onPassphraseReady={setLiveInboxPassphrase}
                 onSend={sendNostrContactIntro}
                 onThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
               />
@@ -3247,6 +3437,7 @@ export function App(): ReactNode {
             inboxNotifications={inboxNotifications}
             paymentNotificationsSeenAt={paymentNotificationsSeenAt}
             inboxScanStatus={inboxScanStatus}
+            liveInboxState={liveInboxState}
             allowlist={allowlist}
             syncedProfiles={syncedProfiles}
             syncedListings={syncedListings}
@@ -3272,6 +3463,7 @@ export function App(): ReactNode {
             onFetchWebOfTrust={fetchWebOfTrust}
             onToggleHidden={(record, hidden) => void setSyncedRecordHidden(record.kind, record.id, hidden)}
             onFetchNostrInbox={fetchNostrInbox}
+            onInboxPassphraseReady={setLiveInboxPassphrase}
             onNostrThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
             onSendNostrIntro={sendNostrContactIntro}
             onSaveNwcConnection={saveNwcConnection}
@@ -8599,10 +8791,12 @@ function NostrInboxPanel({
   notifications,
   paymentNotificationsSeenAt,
   scanStatus,
+  liveState,
   receipts,
   defaultOpen,
   onConnectSigner,
   onFetch,
+  onPassphraseReady,
   onThreadChange,
   onSend
 }: {
@@ -8616,10 +8810,12 @@ function NostrInboxPanel({
   notifications: InboxNotification[];
   paymentNotificationsSeenAt: string;
   scanStatus: string;
+  liveState: NostrLiveInboxState;
   receipts: NostrContactReceipt[];
   defaultOpen: boolean;
   onConnectSigner: () => void;
   onFetch: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onPassphraseReady: (inboxPassphrase: string) => void;
   onThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
   onSend: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
 }): ReactNode {
@@ -8696,6 +8892,7 @@ function NostrInboxPanel({
     try {
       await decryptMessages();
       setUnlocked(true);
+      onPassphraseReady(passphrase);
     } catch {
       setUnlocked(false);
       setDecrypted([]);
@@ -8710,6 +8907,7 @@ function NostrInboxPanel({
       const result = await onFetch(passphrase);
       setSummary(result);
       setUnlocked(true);
+      onPassphraseReady(passphrase);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('nostrInbox.fetchFailed'));
     } finally {
@@ -8859,6 +9057,15 @@ function NostrInboxPanel({
         <SafetyNotice>{t('nostrInbox.metadataWarning')}</SafetyNotice>
         <div className="compact-meta-list">
           <p>{t('nostrContact.relaysEnabled').replace('{count}', String(enabledRelayCount))}</p>
+          <p>{t('nostrInbox.liveRelayCount').replace('{count}', String(liveState.relays))}</p>
+          <p>{t('nostrInbox.liveStatus')}: {t(`nostrInbox.live.${liveState.status}`)}</p>
+          {liveState.message ? <p>{liveState.message}</p> : null}
+          <p>
+            {t('nostrInbox.liveSummary')
+              .replace('{imported}', String(liveState.imported))
+              .replace('{duplicates}', String(liveState.duplicates))
+              .replace('{failed}', String(liveState.failed))}
+          </p>
           <p>{canUseLocal ? t('nostrInbox.decryptLocal') : canUseSigner ? t('nostrInbox.decryptSigner') : t('nostrInbox.decryptUnavailable')}</p>
           {scanStatus ? <p>{scanStatus}</p> : null}
           <p>
@@ -9037,6 +9244,131 @@ function TradeRoomCounterpartyContext({ row }: { row: TradeRoomRow }): ReactNode
   );
 }
 
+function TradeRoomCoordinationPanel({
+  room,
+  relays,
+  receipts,
+  messages,
+  cursors,
+  liveState,
+  status,
+  onSyncNow,
+  onPassphraseReady
+}: {
+  room: TradeRoom;
+  relays: RelayConfig[];
+  receipts: NostrContactReceipt[];
+  messages: NostrMessageRecord[];
+  cursors: NostrInboxCursor[];
+  liveState: NostrLiveInboxState;
+  status: TradeRoomCoordinationStatus;
+  onSyncNow: (passphrase: string) => Promise<InboxFetchSummary>;
+  onPassphraseReady: (passphrase: string) => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const [passphrase, setPassphrase] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [message, setMessage] = useState('');
+  const enabledRelayCount = selectNostrCoordinationRelays(relays).length;
+  const roomReceipts = receipts.filter((receipt) => receipt.contextType === 'trade-room' && receipt.contextId === room.id);
+  const roomMessages = messages.filter((entry) => entry.contextType === 'trade-room' && entry.contextId === room.id);
+  const successfulPublishes = roomReceipts.reduce((total, receipt) => total + receipt.relayReceipts.filter((entry) => entry.ok).length, 0);
+  const failedPublishes = roomReceipts.reduce((total, receipt) => total + receipt.relayReceipts.filter((entry) => !entry.ok).length, 0);
+  const incoming = roomMessages.filter((entry) => entry.direction === 'incoming').length;
+  const outgoing = roomMessages.filter((entry) => entry.direction === 'outgoing').length;
+
+  const syncNow = async (): Promise<void> => {
+    setMessage('');
+    if (passphrase.length < 10) {
+      setMessage(t('nostrInbox.passphraseTooShort'));
+      return;
+    }
+    setSyncing(true);
+    try {
+      const result = await onSyncNow(passphrase);
+      onPassphraseReady(passphrase);
+      const relevant = result.payloads.filter((payload) => payload.kind === 'trade-room-update' && payload.roomId === room.id).length;
+      setMessage(
+        t('tradeRoom.syncSummary')
+          .replace('{imported}', String(result.imported))
+          .replace('{duplicates}', String(result.duplicates))
+          .replace('{relevant}', String(relevant))
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t('nostrInbox.fetchFailed'));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <section className="trade-room-section trade-room-coordination">
+      <div className="row between">
+        <div>
+          <h3>{t('tradeRoom.coordination')}</h3>
+          <p className="muted compact-meta">{t('tradeRoom.coordinationBody')}</p>
+        </div>
+        <span className={status === 'synced' || status === 'received' ? 'ok mini' : status === 'failed' ? 'warning mini' : 'pill'}>
+          {t(`tradeRoom.coordinationStatus.${status}`)}
+        </span>
+      </div>
+      <div className="trade-room-coordination-grid">
+        <span>
+          <strong>{t('tradeRoom.liveSync')}</strong>
+          {t(`nostrInbox.live.${liveState.status}`)}
+        </span>
+        <span>
+          <strong>{t('tradeRoom.configuredRelays')}</strong>
+          {enabledRelayCount}
+        </span>
+        <span>
+          <strong>{t('tradeRoom.sentToRelays')}</strong>
+          {successfulPublishes}
+        </span>
+        <span>
+          <strong>{t('tradeRoom.receivedMessages')}</strong>
+          {incoming}
+        </span>
+      </div>
+      <div className="trade-room-sync-row">
+        <label>
+          {t('nostrInbox.passphrase')}
+          <input
+            type="password"
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            placeholder={t('nostrInbox.passphrasePlaceholder')}
+          />
+        </label>
+        <button className="subtle" disabled={syncing || passphrase.length < 10} onClick={() => void syncNow()} type="button">
+          <Radio size={16} /> {syncing ? t('tradeRoom.syncing') : t('tradeRoom.syncNow')}
+        </button>
+      </div>
+      {message ? <StatusMessage className="notice inline">{message}</StatusMessage> : null}
+      <DisclosurePanel title={t('tradeRoom.coordinationDetails')}>
+        <div className="compact-meta-list">
+          <p>{t('tradeRoom.outgoingMessages').replace('{count}', String(outgoing))}</p>
+          <p>{t('tradeRoom.failedRelays').replace('{count}', String(failedPublishes))}</p>
+          <p>{t('nostrInbox.liveRelayCount').replace('{count}', String(liveState.relays))}</p>
+          {liveState.lastEventAt ? <p>{t('tradeRoom.lastLiveEvent').replace('{at}', liveState.lastEventAt)}</p> : null}
+          {cursors.map((cursor) => (
+            <p className="key" key={cursor.id}>
+              {cursor.relayUrl}: {cursor.lastFetchedAt}
+            </p>
+          ))}
+          {roomReceipts.flatMap((receipt) =>
+            receipt.relayReceipts.map((entry) => (
+              <p className={entry.ok ? 'muted' : 'warning'} key={`${receipt.id}-${entry.relay}-${entry.at}`}>
+                {entry.relay}: {entry.message}
+              </p>
+            ))
+          )}
+        </div>
+      </DisclosurePanel>
+    </section>
+  );
+}
+
 function TradeRoomsPanel({
   rows,
   selectedRoomId,
@@ -9047,9 +9379,13 @@ function TradeRoomsPanel({
   messages,
   threads,
   receipts,
+  cursors,
+  liveState,
   attestations,
   onConnectSigner,
   onSendNostrIntro,
+  onFetchNostrInbox,
+  onInboxPassphraseReady,
   onSelectRoom,
   onRoomSaved,
   onRoomDeliverySaved,
@@ -9066,9 +9402,13 @@ function TradeRoomsPanel({
   messages: NostrMessageRecord[];
   threads: NostrMessageThread[];
   receipts: NostrContactReceipt[];
+  cursors: NostrInboxCursor[];
+  liveState: NostrLiveInboxState;
   attestations: ReputationAttestation[];
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onInboxPassphraseReady: (inboxPassphrase: string) => void;
   onSelectRoom: (roomId: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
@@ -9105,9 +9445,13 @@ function TradeRoomsPanel({
             messages={messages}
             threads={threads}
             receipts={receipts}
+            cursors={cursors}
+            liveState={liveState}
             attestations={attestations}
             onConnectSigner={onConnectSigner}
             onSendNostrIntro={onSendNostrIntro}
+            onFetchNostrInbox={onFetchNostrInbox}
+            onInboxPassphraseReady={onInboxPassphraseReady}
             onRoomSaved={onRoomSaved}
             onRoomDeliverySaved={onRoomDeliverySaved}
             onReviewRoom={onReviewRoom}
@@ -9131,9 +9475,13 @@ function TradeRoomDetail({
   messages,
   threads,
   receipts,
+  cursors,
+  liveState,
   attestations,
   onConnectSigner,
   onSendNostrIntro,
+  onFetchNostrInbox,
+  onInboxPassphraseReady,
   onRoomSaved,
   onRoomDeliverySaved,
   onReviewRoom,
@@ -9148,9 +9496,13 @@ function TradeRoomDetail({
   messages: NostrMessageRecord[];
   threads: NostrMessageThread[];
   receipts: NostrContactReceipt[];
+  cursors: NostrInboxCursor[];
+  liveState: NostrLiveInboxState;
   attestations: ReputationAttestation[];
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onInboxPassphraseReady: (inboxPassphrase: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
   onReviewRoom: (room: TradeRoom) => void;
@@ -9184,6 +9536,14 @@ function TradeRoomDetail({
         : t('agreement.statusDraft');
   const blockers = dealSheet.blockers.map((blocker) => t(`tradeRoom.blocker.${blocker}`));
   const nextAction = t(`tradeRoom.nextAction.${dealSheet.nextAction}`);
+  const ownerCursors = ownerKey ? cursors.filter((cursor) => cursor.ownerPublicKey === ownerKey) : [];
+  const coordinationStatus = deriveTradeRoomCoordinationStatus({
+    room,
+    receipts,
+    messages,
+    cursors: ownerCursors,
+    liveState
+  });
   const notifyRoomUpdate = async (nextRoom: TradeRoom, payload: Partial<TradeRoomUpdatePayload>): Promise<void> => {
     if (!notifyCounterparty) return;
     if (!identity || !counterpartyPublicKey) {
@@ -9251,6 +9611,17 @@ function TradeRoomDetail({
         onReview={() => onReviewRoom(room)}
         agreementReady={agreementReady}
         reviewEnabled={Boolean(identity && (room.state === 'confirmed' || room.state === 'reviewed'))}
+      />
+      <TradeRoomCoordinationPanel
+        room={room}
+        relays={relays}
+        receipts={receipts}
+        messages={messages}
+        cursors={ownerCursors}
+        liveState={liveState}
+        status={coordinationStatus}
+        onSyncNow={onFetchNostrInbox}
+        onPassphraseReady={onInboxPassphraseReady}
       />
       <TradeRoomCounterpartyContext row={row} />
       <section className="trade-room-next-action">
@@ -9765,6 +10136,8 @@ function TradePage({
   nostrMessages,
   nostrMessageThreads,
   nostrContactReceipts,
+  nostrInboxCursors,
+  liveInboxState,
   relays,
   identity,
   privateKeyHex,
@@ -9773,6 +10146,8 @@ function TradePage({
   openRoomId,
   onConnectSigner,
   onSendNostrIntro,
+  onFetchNostrInbox,
+  onInboxPassphraseReady,
   onRoomOpened,
   onRoomSaved,
   onRoomDeliverySaved,
@@ -9803,6 +10178,8 @@ function TradePage({
   nostrMessages: NostrMessageRecord[];
   nostrMessageThreads: NostrMessageThread[];
   nostrContactReceipts: NostrContactReceipt[];
+  nostrInboxCursors: NostrInboxCursor[];
+  liveInboxState: NostrLiveInboxState;
   relays: RelayConfig[];
   identity?: IdentityRecord;
   privateKeyHex: string;
@@ -9811,6 +10188,8 @@ function TradePage({
   openRoomId: string;
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
+  onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onInboxPassphraseReady: (inboxPassphrase: string) => void;
   onRoomOpened: (roomId: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
@@ -10067,6 +10446,37 @@ function TradePage({
         )
       );
       await db.tradeRooms.put(room);
+      const counterpartyPublicKey = identity
+        ? publicKeysMatch(identity.publicKey, room.buyerPublicKey)
+          ? room.sellerPublicKey
+          : publicKeysMatch(identity.publicKey, room.sellerPublicKey)
+            ? room.buyerPublicKey
+            : ''
+        : '';
+      if (identity && counterpartyPublicKey) {
+        const at = nowIso();
+        await onSendNostrIntro({
+          recipientPublicKey: counterpartyPublicKey,
+          label: room.listingTitle || agreement.exchangeDescription || room.id,
+          contextType: 'trade-room',
+          contextId: room.id,
+          contextTitle: room.listingTitle || agreement.exchangeDescription || agreement.hash,
+          includeContext: true,
+          message: encodeTradeRoomUpdateMessage({
+            schemaVersion: 1,
+            kind: 'trade-room-update',
+            roomId: room.id,
+            senderPublicKey: identity.publicKey.toLowerCase(),
+            agreementHash: agreement.hash,
+            listingId: agreement.listingId,
+            listingCoordinate: room.listingCoordinate,
+            state: room.state,
+            paymentState: room.paymentState,
+            deliveryState: room.deliveryState,
+            createdAt: at
+          })
+        }).catch(() => undefined);
+      }
       onRoomSaved(room);
     }
     setAgreementMessage(t('agreement.receiptImported'));
@@ -10285,9 +10695,13 @@ function TradePage({
         messages={nostrMessages}
         threads={nostrMessageThreads}
         receipts={nostrContactReceipts}
+        cursors={nostrInboxCursors}
+        liveState={liveInboxState}
         attestations={attestations}
         onConnectSigner={onConnectSigner}
         onSendNostrIntro={onSendNostrIntro}
+        onFetchNostrInbox={onFetchNostrInbox}
+        onInboxPassphraseReady={onInboxPassphraseReady}
         onSelectRoom={(roomId) => {
           setSelectedRoomId(roomId);
           onRoomOpened(roomId);
@@ -11391,6 +11805,7 @@ function SettingsPage({
   inboxNotifications,
   paymentNotificationsSeenAt,
   inboxScanStatus,
+  liveInboxState,
   allowlist,
   syncedProfiles,
   syncedListings,
@@ -11416,6 +11831,7 @@ function SettingsPage({
   onFetchWebOfTrust,
   onToggleHidden,
   onFetchNostrInbox,
+  onInboxPassphraseReady,
   onNostrThreadChange,
   onSendNostrIntro,
   onSaveNwcConnection,
@@ -11441,6 +11857,7 @@ function SettingsPage({
   inboxNotifications: InboxNotification[];
   paymentNotificationsSeenAt: string;
   inboxScanStatus: string;
+  liveInboxState: NostrLiveInboxState;
   allowlist: CommunityAllowlistEntry[];
   syncedProfiles: SyncedPublicRecord<PublicProfile>[];
   syncedListings: SyncedPublicRecord<Listing>[];
@@ -11469,6 +11886,7 @@ function SettingsPage({
     hidden: boolean
   ) => void;
   onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
+  onInboxPassphraseReady: (inboxPassphrase: string) => void;
   onNostrThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onSaveNwcConnection: (request: SaveNwcConnectionRequest) => Promise<NwcConnection>;
@@ -12494,6 +12912,7 @@ function SettingsPage({
               identity={identity}
               messages={nostrMessages}
               nostrSigner={nostrSigner}
+              liveState={liveInboxState}
               notifications={inboxNotifications}
               paymentNotificationsSeenAt={paymentNotificationsSeenAt}
               privateKeyHex={privateKeyHex}
@@ -12503,6 +12922,7 @@ function SettingsPage({
               threads={nostrMessageThreads}
               onConnectSigner={onConnectSigner}
               onFetch={onFetchNostrInbox}
+              onPassphraseReady={onInboxPassphraseReady}
               onSend={onSendNostrIntro}
               onThreadChange={onNostrThreadChange}
             />

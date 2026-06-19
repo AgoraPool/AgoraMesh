@@ -4,6 +4,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import {
   createExtensionNostrIntroEvents,
   createLocalNostrIntroEvents,
+  isNostrInboxGiftWrapForRecipient,
   NOSTR_GIFT_WRAP_KIND,
   nostrInboxSince,
   nostrIntroPlaintext,
@@ -127,6 +128,22 @@ describe('encrypted Nostr intro messages', () => {
     expect(unwrapped.subject).toBe('Inbox listing');
     expect(unwrapped.rumor.content).toContain(message);
     expect(() => unwrapLocalNostrGiftWrap(recipientWrap!, bytesToHex(generateSecretKey()), getPublicKey(generateSecretKey()))).toThrow();
+  });
+
+  it('filters live inbox gift wraps by kind, recipient, and signature', () => {
+    const senderKey = generateSecretKey();
+    const recipientPublicKey = getPublicKey(generateSecretKey());
+    const otherPublicKey = getPublicKey(generateSecretKey());
+    const events = createLocalNostrIntroEvents({
+      senderPrivateKeyHex: bytesToHex(senderKey),
+      recipientPublicKey,
+      message: 'Live coordination update'
+    });
+    const event = events[0]!;
+
+    expect(isNostrInboxGiftWrapForRecipient(event, recipientPublicKey)).toBe(true);
+    expect(isNostrInboxGiftWrapForRecipient(event, otherPublicKey)).toBe(false);
+    expect(isNostrInboxGiftWrapForRecipient({ ...event, kind: 1 }, recipientPublicKey)).toBe(false);
   });
 
   it('uses a 30-day inbox lookback first and a 3-day overlap after cursors', () => {

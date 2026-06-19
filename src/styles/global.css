@@ -3662,7 +3662,8 @@ dd {
 }
 
 .trade-room-deal-sheet,
-.trade-room-counterparty-context {
+.trade-room-counterparty-context,
+.trade-room-coordination {
   display: grid;
   gap: var(--space-3);
   min-width: 0;
@@ -3686,7 +3687,8 @@ dd {
 }
 
 .trade-room-deal-grid,
-.trade-room-context-grid {
+.trade-room-context-grid,
+.trade-room-coordination-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
   gap: var(--space-2);
@@ -3694,7 +3696,8 @@ dd {
 }
 
 .trade-room-deal-grid span,
-.trade-room-context-grid span {
+.trade-room-context-grid span,
+.trade-room-coordination-grid span {
   display: grid;
   gap: 0.2rem;
   min-width: 0;
@@ -3708,10 +3711,23 @@ dd {
 }
 
 .trade-room-deal-grid strong,
-.trade-room-context-grid strong {
+.trade-room-context-grid strong,
+.trade-room-coordination-grid strong {
   color: var(--text);
   font-size: 0.74rem;
   text-transform: uppercase;
+}
+
+.trade-room-sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+.trade-room-sync-row label {
+  flex: 1 1 16rem;
+  min-width: min(100%, 12rem);
 }
 
 .trade-room-workflow-actions {

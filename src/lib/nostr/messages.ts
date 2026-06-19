@@ -48,6 +48,15 @@ export interface NostrInboxFetchResult {
   message: string;
 }
 
+export type NostrInboxLiveStatus = {
+  relayUrl: string;
+  ok: boolean;
+  message: string;
+  at: string;
+};
+
+export type NostrInboxLiveSubscription = () => void;
+
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -200,6 +209,10 @@ function validateUnwrappedMessage(wrap: NostrEvent, rumor: UnwrappedNostrMessage
   };
 }
 
+export function isNostrInboxGiftWrapForRecipient(event: NostrEvent, recipientPublicKey: string): boolean {
+  return event.kind === NOSTR_GIFT_WRAP_KIND && hasTagValue(event, 'p', recipientPublicKey) && verifyEvent(event);
+}
+
 export function unwrapLocalNostrGiftWrap(wrap: NostrEvent, recipientPrivateKeyHex: string, recipientPublicKey: string): UnwrappedNostrMessage {
   const rumor = parseRumor(unwrapEvent(wrap, hexToBytes(recipientPrivateKeyHex)));
   return validateUnwrappedMessage(wrap, rumor, recipientPublicKey);
@@ -289,7 +302,7 @@ function fetchNostrInboxGiftWrapsFromRelay(relayUrl: string, recipientPublicKey:
       if (data[0] === 'EVENT' && data[1] === subscriptionId) {
         try {
           const event = parseNostrEventObject(data[2]);
-          if (event.kind === NOSTR_GIFT_WRAP_KIND && hasTagValue(event, 'p', recipientPublicKey) && verifyEvent(event)) {
+          if (isNostrInboxGiftWrapForRecipient(event, recipientPublicKey)) {
             events.push(event);
           }
         } catch {
@@ -306,4 +319,66 @@ function fetchNostrInboxGiftWrapsFromRelay(relayUrl: string, recipientPublicKey:
       }
     };
   });
+}
+
+export function subscribeToNostrInboxGiftWraps({
+  relays,
+  recipientPublicKey,
+  sinceByRelay = {},
+  onEvent,
+  onStatus
+}: {
+  relays: RelayConfig[];
+  recipientPublicKey: string;
+  sinceByRelay?: Record<string, number | undefined>;
+  onEvent: (event: NostrEvent, relayUrl: string) => void;
+  onStatus?: (status: NostrInboxLiveStatus) => void;
+}): NostrInboxLiveSubscription {
+  const normalizedRecipient = recipientPublicKey.toLowerCase();
+  const sockets = relays
+    .filter((relay) => relay.enabled)
+    .map((relay) => {
+      const socket = new WebSocket(relay.url);
+      const subscriptionId = `agoramesh-live-inbox-${Math.random().toString(36).slice(2)}`;
+      const report = (ok: boolean, message: string): void =>
+        onStatus?.({ relayUrl: relay.url, ok, message, at: new Date().toISOString() });
+      socket.onopen = () => {
+        socket.send(
+          JSON.stringify([
+            'REQ',
+            subscriptionId,
+            {
+              kinds: [NOSTR_GIFT_WRAP_KIND],
+              '#p': [normalizedRecipient],
+              ...(sinceByRelay[relay.url] ? { since: sinceByRelay[relay.url] } : {}),
+              limit: 200
+            }
+          ])
+        );
+        report(true, 'Live inbox connected.');
+      };
+      socket.onerror = () => report(false, 'Live inbox relay connection failed.');
+      socket.onmessage = (message) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(String(message.data));
+        } catch {
+          return;
+        }
+        const data = Array.isArray(parsed) ? parsed : [];
+        if (data[0] === 'EVENT' && data[1] === subscriptionId) {
+          try {
+            const event = parseNostrEventObject(data[2]);
+            if (isNostrInboxGiftWrapForRecipient(event, normalizedRecipient)) onEvent(event, relay.url);
+          } catch {
+            // Live subscriptions ignore malformed relay payloads; manual fetch remains the diagnostics path.
+          }
+        }
+        if (data[0] === 'CLOSED' && data[1] === subscriptionId) {
+          report(false, String(data[2] ?? 'Live inbox subscription closed.'));
+        }
+      };
+      return socket;
+    });
+  return () => sockets.forEach((socket) => socket.close());
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Agreement, BuyerRequestOffer, Listing, LightningPaymentAttempt, ListingZapReceipt, TradeRoom, TradeRoomDelivery } from '../types/domain';
+import type { Agreement, AgreementAcceptanceReceipt, BuyerRequestOffer, Listing, LightningPaymentAttempt, ListingZapReceipt, TradeRoom, TradeRoomDelivery } from '../types/domain';
+import { agreementTermsPacket } from './crypto/agreementReceipts';
 import {
   applyAgreementReceiptStatus,
   applyTradeRoomUpdate,
@@ -308,6 +309,35 @@ describe('private room payloads', () => {
       sourceMessageId: 'message_1',
       status: 'sent'
     });
+  });
+
+  it('encodes and parses private agreement packets and receipts in room updates', () => {
+    const baseAgreement = agreement();
+    const packet = agreementTermsPacket(baseAgreement);
+    const receipt: AgreementAcceptanceReceipt = {
+      id: 'agreement_receipt_1',
+      schemaVersion: 1,
+      kind: 'agreement-acceptance-receipt',
+      agreementHash: packet.agreementHash,
+      role: 'buyer',
+      signerPublicKey: buyer,
+      acceptedAt: '2026-06-01T03:30:00.000Z',
+      eventId: 'event_1',
+      signature: 'signature'
+    };
+    const encoded = encodeTradeRoomUpdateMessage({
+      schemaVersion: 1,
+      kind: 'trade-room-update',
+      roomId: 'room_1',
+      senderPublicKey: buyer,
+      agreementHash: packet.agreementHash,
+      agreementPacket: packet,
+      agreementReceipt: receipt,
+      createdAt: '2026-06-01T03:30:00.000Z'
+    });
+    const parsed = parseTradeRoomUpdatePayload(encoded);
+    expect(parsed?.agreementPacket?.agreementHash).toBe(packet.agreementHash);
+    expect(parsed?.agreementReceipt?.id).toBe(receipt.id);
   });
 
   it('rejects wrong-room or wrong-sender updates', () => {

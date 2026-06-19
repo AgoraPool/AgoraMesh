@@ -936,23 +936,23 @@ h3 {
 }
 
 .marketplace-searchbar {
-  min-width: min(100%, 24rem);
+  min-width: 0;
 }
 
 .marketplace-searchbar input {
-  min-height: 3.2rem;
-  font-size: 1.05rem;
+  min-height: 2.75rem;
+  font-size: 1rem;
 }
 
 .marketplace-toolbar {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(16rem, 1fr) minmax(0, 2fr);
   gap: var(--space-3);
   align-items: center;
 }
 
 .marketplace-toolbar .marketplace-searchbar {
-  flex: 1 1 22rem;
+  min-width: 0;
 }
 
 .marketplace-scope-switch {
@@ -984,20 +984,21 @@ h3 {
 .marketplace-fetch-panel {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2) var(--space-3);
+  gap: var(--space-2);
   align-items: center;
-  padding: var(--space-3);
+  padding: 0.65rem var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: transparent;
 }
 
 .marketplace-discovery-panel {
-  justify-content: space-between;
+  justify-content: flex-start;
 }
 
-.marketplace-discovery-panel .scope-switch-heading {
-  flex: 1 1 18rem;
+.marketplace-discovery-panel > strong {
+  margin-right: auto;
+  font-size: 0.95rem;
 }
 
 .marketplace-discovery-panel .segmented-control {
@@ -1011,6 +1012,8 @@ h3 {
 .marketplace-discovery-panel > button,
 .marketplace-fetch-panel button {
   flex: 0 0 auto;
+  min-height: 2.55rem;
+  padding-block: 0.45rem;
 }
 
 .marketplace-fetch-help,
@@ -1058,7 +1061,16 @@ h3 {
 }
 
 .quick-filter-group {
-  margin-bottom: var(--space-2);
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin-bottom: 0;
+  overflow-x: auto;
+  padding-bottom: 0.1rem;
+  scrollbar-width: thin;
+}
+
+.quick-filter-group .filter-chip {
+  flex: 0 0 auto;
 }
 
 .category-chip-row {
@@ -2607,32 +2619,6 @@ dd {
   content: "·";
   margin-right: var(--space-2);
   color: var(--muted);
-}
-
-.listing-card-exchange {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.listing-card-exchange > span {
-  display: grid;
-  gap: 0.15rem;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
-  padding: 0.5rem 0.6rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-
-.listing-card-exchange strong {
-  color: var(--text);
-  font-size: 0.72rem;
-  text-transform: uppercase;
 }
 
 .listing-card-actionability span {

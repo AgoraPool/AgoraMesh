@@ -17,7 +17,7 @@ import { newId, nowIso } from './crypto/encoding';
 import { generateAgreementHash } from './crypto/hash';
 import { AGORAMESH_EVENT_KINDS, nostrCoordinate } from './nostr/events';
 import { listingReviewMatches } from './reputation/summary';
-import { tradeRoomDeliverySchema } from './validation/schemas';
+import { agreementAcceptanceReceiptSchema, agreementTermsPacketSchema, tradeRoomDeliverySchema } from './validation/schemas';
 
 export const TRADE_ROOM_UPDATE_MARKER = 'AgoraMesh trade-room-update v1';
 export const TRADE_ROOM_STATES: TradeRoomState[] = ['intent', 'offer', 'accepted', 'payment-pending', 'paid', 'delivered', 'confirmed', 'reviewed'];
@@ -35,6 +35,8 @@ export const tradeRoomUpdatePayloadSchema = z.object({
   state: z.enum(['intent', 'offer', 'accepted', 'payment-pending', 'paid', 'delivered', 'confirmed', 'reviewed']).optional(),
   paymentState: z.enum(['none', 'payment-pending', 'paid', 'receipt-found', 'failed']).optional(),
   deliveryState: z.enum(['none', 'in-progress', 'delivered', 'confirmed']).optional(),
+  agreementPacket: agreementTermsPacketSchema.optional(),
+  agreementReceipt: agreementAcceptanceReceiptSchema.optional(),
   delivery: z
     .object({
       id: z.string().trim().min(1),
@@ -492,6 +494,8 @@ export function encodeTradeRoomUpdateMessage(payload: TradeRoomUpdatePayload): s
     payload.state ? `State: ${payload.state}` : '',
     payload.paymentState ? `Payment: ${payload.paymentState}` : '',
     payload.deliveryState ? `Delivery: ${payload.deliveryState}` : '',
+    payload.agreementPacket ? `Agreement: ${payload.agreementPacket.agreementHash}` : '',
+    payload.agreementReceipt ? `Receipt: ${payload.agreementReceipt.role}` : '',
     payload.delivery ? `File: ${payload.delivery.fileName}` : '',
     '',
     '---',
@@ -527,7 +531,7 @@ export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpda
     payload.senderPublicKey.toLowerCase() === sender &&
     participants.includes(sender) &&
     participants.includes(owner) &&
-    (!payload.agreementHash || payload.agreementHash === room.agreementHash) &&
+    (!payload.agreementHash || !room.agreementHash || payload.agreementHash === room.agreementHash) &&
     (!payload.listingId || payload.listingId === room.listingId) &&
     (!payload.listingCoordinate || payload.listingCoordinate.toLowerCase() === room.listingCoordinate?.toLowerCase())
   );

@@ -1897,11 +1897,74 @@ export function App(): ReactNode {
   const cacheTradeRoomUpdateFromMessage = async (record: NostrMessageRecord, plaintext: string): Promise<void> => {
     const payload = parseTradeRoomUpdatePayload(plaintext);
     if (!payload) return;
+    let packetAgreement: Agreement | undefined;
+    if (payload.agreementPacket) {
+      try {
+        const packet = parseAgreementTermsPacket(payload.agreementPacket);
+        if (payload.agreementHash && packet.agreementHash !== payload.agreementHash) return;
+        packetAgreement = packet.agreement;
+      } catch {
+        return;
+      }
+    }
     const rooms = await db.tradeRooms.toArray();
-    const room = rooms.find((entry) => roomMatchesPrivateUpdate(entry, payload, record.senderPublicKey, record.ownerPublicKey));
+    const agreementsInDb = await db.agreements.toArray();
+    let room = rooms.find((entry) => roomMatchesPrivateUpdate(entry, payload, record.senderPublicKey, record.ownerPublicKey));
+    let agreementForReceipt = packetAgreement
+      ? agreementsInDb.find((entry) => entry.hash === packetAgreement?.hash) ?? packetAgreement
+      : payload.agreementHash
+        ? agreementsInDb.find((entry) => entry.hash === payload.agreementHash)
+        : undefined;
+    if (!room && packetAgreement && agreementHasTradeRoomParties(packetAgreement)) {
+      const participants = [packetAgreement.buyerPublicKey?.toLowerCase(), packetAgreement.sellerPublicKey?.toLowerCase()];
+      if (!participants.includes(record.ownerPublicKey.toLowerCase()) || !participants.includes(record.senderPublicKey.toLowerCase())) return;
+      const created = tradeRoomFromAgreement(packetAgreement);
+      room = {
+        ...created,
+        id: payload.roomId,
+        listingId: payload.listingId ?? created.listingId,
+        listingCoordinate: payload.listingCoordinate ?? created.listingCoordinate,
+        listingTitle: created.listingTitle || payload.listingId || payload.roomId,
+        createdAt: payload.createdAt,
+        updatedAt: payload.createdAt
+      };
+    }
     if (!room) return;
     const at = record.receivedAt || payload.createdAt;
-    const nextRoom = applyTradeRoomUpdate(room, payload, record.threadKey, at, record.messageCreatedAt);
+    if (packetAgreement && agreementForReceipt === packetAgreement) {
+      const importedAgreement = packetAgreement;
+      await db.agreements.put(importedAgreement);
+      setAgreements((current) => [importedAgreement, ...current.filter((entry) => entry.hash !== importedAgreement.hash && entry.id !== importedAgreement.id)]);
+    }
+    if (packetAgreement) {
+      agreementForReceipt = agreementForReceipt ?? packetAgreement;
+      room = {
+        ...room,
+        agreementId: agreementForReceipt.id,
+        agreementHash: agreementForReceipt.hash,
+        buyerPublicKey: agreementForReceipt.buyerPublicKey?.toLowerCase() ?? room.buyerPublicKey,
+        sellerPublicKey: agreementForReceipt.sellerPublicKey?.toLowerCase() ?? room.sellerPublicKey,
+        buyerLabel: agreementForReceipt.buyerLabel || agreementForReceipt.buyer || room.buyerLabel,
+        sellerLabel: agreementForReceipt.sellerLabel || agreementForReceipt.seller || room.sellerLabel,
+        listingId: payload.listingId ?? agreementForReceipt.listingId ?? room.listingId,
+        listingCoordinate: payload.listingCoordinate ?? room.listingCoordinate
+      };
+    }
+    const receiptsInDb = await db.agreementReceipts.toArray();
+    let receiptsForStatus = receiptsInDb;
+    let savedReceipt: AgreementAcceptanceReceipt | undefined;
+    if (payload.agreementReceipt && agreementForReceipt) {
+      const receipt = payload.agreementReceipt;
+      if (verifyAgreementAcceptanceReceipt(receipt, agreementForReceipt) && !isDuplicateAgreementReceipt(receipt, receiptsInDb)) {
+        await db.agreementReceipts.put(receipt);
+        receiptsForStatus = [...receiptsInDb, receipt];
+        savedReceipt = receipt;
+      }
+    }
+    let nextRoom = applyTradeRoomUpdate(room, payload, record.threadKey, at, record.messageCreatedAt);
+    if (agreementForReceipt) {
+      nextRoom = applyAgreementReceiptStatus(nextRoom, agreementReceiptStatus(agreementForReceipt, receiptsForStatus), at);
+    }
     const delivery = deliveryFromUpdatePayload(payload, room.id, record.id);
     const cachedDelivery = delivery
       ? {
@@ -1915,6 +1978,10 @@ export function App(): ReactNode {
       await db.tradeRoomDeliveries.put(cachedDelivery);
     }
     setTradeRooms((current) => [nextRoom, ...current.filter((entry) => entry.id !== nextRoom.id)].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)));
+    if (savedReceipt) {
+      const importedReceipt = savedReceipt;
+      setAgreementReceipts((current) => [importedReceipt, ...current.filter((entry) => entry.id !== importedReceipt.id)]);
+    }
     if (cachedDelivery) {
       setTradeRoomDeliveries((current) => [cachedDelivery, ...current.filter((entry) => entry.id !== cachedDelivery.id)].sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
     }
@@ -2123,6 +2190,7 @@ export function App(): ReactNode {
           roomId: room.id,
           senderPublicKey: identity.publicKey.toLowerCase(),
           agreementHash: agreement.hash,
+          agreementPacket: agreementTermsPacket(agreement),
           listingId: listing.id,
           listingCoordinate: nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id),
           state: room.state,
@@ -6326,6 +6394,7 @@ function BrowsePage({
     };
   });
   const advancedFilterLabels = [
+    type !== 'all' ? `${t('common.type')}: ${type === 'offer' ? t('listing.offer') : t('listing.buyerRequest')}` : undefined,
     category !== 'all' ? `${t('common.category')}: ${categoryLabel(category, t)}` : undefined,
     region ? `${t('common.region')}: ${region}` : undefined,
     fulfillment !== 'all' ? `${t('listing.fulfillment')}: ${t(`fulfillment.${fulfillment}`)}` : undefined,
@@ -6342,6 +6411,7 @@ function BrowsePage({
     showExpired ? t('marketplace.showExpired') : undefined
   ].filter((label): label is string => Boolean(label));
   const resetAdvancedFilters = (): void => {
+    setType('all');
     setCategory('all');
     setPayment('all');
     setFulfillment('all');
@@ -6535,20 +6605,6 @@ function BrowsePage({
             <span>{listing.region || t('listing.location')}</span>
             <span>{expiresInDays >= 0 ? t('marketplace.expiresIn').replace('{days}', String(expiresInDays)) : t('marketplace.expired')}</span>
           </p>
-          <div className="listing-card-exchange">
-            <span>
-              <strong>{listing.type === 'request' ? t('listing.budgetAmount') : t('listing.priceAmount')}</strong>
-              {formatListingPrice(listing)}
-            </span>
-            <span>
-              <strong>{t('listing.fulfillment')}</strong>
-              {listing.fulfillmentType ? t(`fulfillment.${listing.fulfillmentType}`) : t('fulfillment.unspecified')}
-            </span>
-            <span>
-              <strong>{t('payment.options')}</strong>
-              {listing.paymentPreferences.slice(0, 3).map((entry) => paymentBadgeLabel(entry, t)).join(', ')}
-            </span>
-          </div>
           {actionReasons.length > 0 ? (
             <div className="badge-row listing-card-actionability">
               {actionReasons.map((reason) => (
@@ -6613,17 +6669,6 @@ function BrowsePage({
                 onChange={(event) => setQuery(event.target.value)}
               />
             </div>
-            <div className="quick-filter-group" role="group" aria-label={t('common.type')}>
-              {[
-                ['all', t('common.all')],
-                ['offer', t('listing.offer')],
-                ['request', t('listing.buyerRequest')]
-              ].map(([value, label]) => (
-                <button className={type === value ? 'filter-chip active' : 'filter-chip'} key={value} onClick={() => setType(value)} type="button">
-                  {label}
-                </button>
-              ))}
-            </div>
             <div className="quick-filter-group" role="group" aria-label={t('marketplace.quickFilter')}>
               {[
                 ['all', t('common.all')],
@@ -6637,26 +6682,9 @@ function BrowsePage({
                 </button>
               ))}
             </div>
-            <button
-              onClick={() => {
-                setActiveBrowseTab('create');
-                window.location.hash = 'browse:create';
-              }}
-              type="button"
-            >
-              {t('listing.create')}
-            </button>
           </div>
           <div className="marketplace-discovery-panel" aria-live="polite">
-            <div className="scope-switch-heading">
-              <strong>{t('marketplace.discoveryTitle')}</strong>
-              <span className="muted">
-                {t('marketplace.fetchActiveScope').replace(
-                  '{scope}',
-                  syncSettings.listingDiscoveryScope === 'all-nip99' ? t('sync.scopeAllNip99') : t('marketplace.scopeAgoraMeshOnly')
-                )}
-              </span>
-            </div>
+            <strong>{t('marketplace.discoveryTitle')}</strong>
             <div className="segmented-control" role="group" aria-label={t('marketplace.fetchScope')}>
               {[
                 ['agoramesh-native', t('marketplace.scopeAgoraMeshOnly')],
@@ -6758,6 +6786,11 @@ function BrowsePage({
               <section className="filter-drawer-group" aria-labelledby="marketplace-listing-filters">
                 <h2 id="marketplace-listing-filters">{t('marketplace.filtersListing')}</h2>
                 <div className="filters compact-filters">
+                  <select aria-label={t('common.type')} value={type} onChange={(event) => setType(event.target.value)}>
+                    <option value="all">{t('common.all')}</option>
+                    <option value="offer">{t('listing.offer')}</option>
+                    <option value="request">{t('listing.buyerRequest')}</option>
+                  </select>
                   <select aria-label={t('common.category')} value={category} onChange={(event) => setCategory(event.target.value)}>
                     <option value="all">{t('common.all')}</option>
                     {categories.map((entry) => (
@@ -9617,6 +9650,7 @@ function TradeRoomDetail({
           roomId: nextRoom.id,
           senderPublicKey: identity.publicKey.toLowerCase(),
           agreementHash: nextRoom.agreementHash,
+          agreementPacket: agreement ? agreementTermsPacket(agreement) : undefined,
           listingId: nextRoom.listingId,
           listingCoordinate: nextRoom.listingCoordinate,
           createdAt: at,
@@ -10520,6 +10554,8 @@ function TradePage({
             roomId: room.id,
             senderPublicKey: identity.publicKey.toLowerCase(),
             agreementHash: agreement.hash,
+            agreementPacket: agreementTermsPacket(agreement),
+            agreementReceipt: receipt,
             listingId: agreement.listingId,
             listingCoordinate: room.listingCoordinate,
             state: room.state,
@@ -10667,6 +10703,37 @@ function TradePage({
     const room = upsertTradeRoom(await db.tradeRooms.toArray(), tradeRoomFromAgreement(agreement));
     await db.agreements.put(agreement);
     await db.tradeRooms.put(room);
+    const counterpartyPublicKey = identity
+      ? publicKeysMatch(identity.publicKey, room.buyerPublicKey)
+        ? room.sellerPublicKey
+        : publicKeysMatch(identity.publicKey, room.sellerPublicKey)
+          ? room.buyerPublicKey
+          : ''
+      : '';
+    if (identity && counterpartyPublicKey) {
+      await onSendNostrIntro({
+        recipientPublicKey: counterpartyPublicKey,
+        label: room.listingTitle || agreement.exchangeDescription || room.id,
+        contextType: 'trade-room',
+        contextId: room.id,
+        contextTitle: room.listingTitle || agreement.exchangeDescription || agreement.hash,
+        includeContext: true,
+        message: encodeTradeRoomUpdateMessage({
+          schemaVersion: 1,
+          kind: 'trade-room-update',
+          roomId: room.id,
+          senderPublicKey: identity.publicKey.toLowerCase(),
+          agreementHash: agreement.hash,
+          agreementPacket: agreementTermsPacket(agreement),
+          listingId: agreement.listingId,
+          listingCoordinate: room.listingCoordinate,
+          state: room.state,
+          paymentState: room.paymentState,
+          deliveryState: room.deliveryState,
+          createdAt: at
+        })
+      }).catch(() => undefined);
+    }
     setSelectedAgreementHash(agreement.hash);
     setDisputeForm((current) => ({
       ...current,

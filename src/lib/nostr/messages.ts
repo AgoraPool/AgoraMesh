@@ -9,6 +9,7 @@ export const NOSTR_PRIVATE_MESSAGE_KIND = 14;
 export const NOSTR_SEAL_KIND = 13;
 export const NOSTR_GIFT_WRAP_KIND = 1059;
 export const NOSTR_INTRO_MESSAGE_LIMIT = 2000;
+export const NOSTR_COORDINATION_MESSAGE_LIMIT = 32000;
 
 export interface NostrIntroContext {
   title?: string;
@@ -21,6 +22,7 @@ interface CreateLocalNostrIntroEventsArgs {
   recipientPublicKey: string;
   message: string;
   context?: NostrIntroContext;
+  messageLimit?: number;
 }
 
 interface CreateExtensionNostrIntroEventsArgs {
@@ -28,6 +30,7 @@ interface CreateExtensionNostrIntroEventsArgs {
   recipientPublicKey: string;
   message: string;
   context?: NostrIntroContext;
+  messageLimit?: number;
   encryptWithSigner: (recipientPublicKey: string, plaintext: string) => Promise<string>;
   signWithSigner: (event: NostrUnsignedEvent) => Promise<NostrEvent>;
 }
@@ -73,13 +76,13 @@ function contextLabel(context: NostrIntroContext): string {
   return 'Thread';
 }
 
-export function nostrIntroPlaintext(message: string, context?: NostrIntroContext): string {
+export function nostrIntroPlaintext(message: string, context?: NostrIntroContext, messageLimit = NOSTR_INTRO_MESSAGE_LIMIT): string {
   const trimmed = message.trim();
   if (!trimmed) {
     throw new Error('Message is required.');
   }
-  if (trimmed.length > NOSTR_INTRO_MESSAGE_LIMIT) {
-    throw new Error(`Message must be ${NOSTR_INTRO_MESSAGE_LIMIT} characters or less.`);
+  if (trimmed.length > messageLimit) {
+    throw new Error(`Message must be ${messageLimit} characters or less.`);
   }
   if (!context?.title) return trimmed;
   const contextLines = ['---', 'AgoraMesh context', `${contextLabel(context)}: ${context.title}`];
@@ -89,7 +92,7 @@ export function nostrIntroPlaintext(message: string, context?: NostrIntroContext
 }
 
 export function createLocalNostrIntroEvents(args: CreateLocalNostrIntroEventsArgs): NostrEvent[] {
-  const plaintext = nostrIntroPlaintext(args.message, args.context);
+  const plaintext = nostrIntroPlaintext(args.message, args.context, args.messageLimit);
   const senderPrivateKey = hexToBytes(args.senderPrivateKeyHex);
   const senderPublicKey = getPublicKey(senderPrivateKey);
   if (senderPublicKey.toLowerCase() === args.recipientPublicKey.toLowerCase()) {
@@ -99,7 +102,7 @@ export function createLocalNostrIntroEvents(args: CreateLocalNostrIntroEventsArg
 }
 
 export async function createExtensionNostrIntroEvents(args: CreateExtensionNostrIntroEventsArgs): Promise<NostrEvent[]> {
-  const plaintext = nostrIntroPlaintext(args.message, args.context);
+  const plaintext = nostrIntroPlaintext(args.message, args.context, args.messageLimit);
   const recipients = [...new Set([args.senderPublicKey.toLowerCase(), args.recipientPublicKey.toLowerCase()])];
   const events: NostrEvent[] = [];
   for (const recipientPublicKey of recipients) {

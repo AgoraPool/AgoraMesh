@@ -5,7 +5,9 @@ import {
   createExtensionNostrIntroEvents,
   createLocalNostrIntroEvents,
   isNostrInboxGiftWrapForRecipient,
+  NOSTR_COORDINATION_MESSAGE_LIMIT,
   NOSTR_GIFT_WRAP_KIND,
+  NOSTR_INTRO_MESSAGE_LIMIT,
   nostrInboxSince,
   nostrIntroPlaintext,
   unwrapLocalNostrGiftWrap
@@ -22,6 +24,20 @@ describe('encrypted Nostr intro messages', () => {
         title: 'Test listing'
       })
     ).toBe('Is this still available?\n\n---\nAgoraMesh context\nListing: Test listing\nReference: listing-1\n---');
+  });
+
+  it('keeps the human message limit while allowing larger coordination payloads', () => {
+    const longHumanMessage = 'x'.repeat(NOSTR_INTRO_MESSAGE_LIMIT + 1);
+    const coordinationPayload = 'x'.repeat(NOSTR_INTRO_MESSAGE_LIMIT + 1);
+    const tooLargeCoordinationPayload = 'x'.repeat(NOSTR_COORDINATION_MESSAGE_LIMIT + 1);
+
+    expect(() => nostrIntroPlaintext(longHumanMessage)).toThrow(`Message must be ${NOSTR_INTRO_MESSAGE_LIMIT} characters or less.`);
+    expect(nostrIntroPlaintext(coordinationPayload, { type: 'trade-room', id: 'room-1', title: 'Room' }, NOSTR_COORDINATION_MESSAGE_LIMIT)).toContain(
+      coordinationPayload
+    );
+    expect(() => nostrIntroPlaintext(tooLargeCoordinationPayload, undefined, NOSTR_COORDINATION_MESSAGE_LIMIT)).toThrow(
+      `Message must be ${NOSTR_COORDINATION_MESSAGE_LIMIT} characters or less.`
+    );
   });
 
   it('creates valid NIP-17 gift wraps with a local unlocked key without plaintext bodies', () => {

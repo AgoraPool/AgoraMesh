@@ -130,6 +130,7 @@ import {
   fetchNostrInboxGiftWraps,
   nostrInboxSince,
   nostrIntroPlaintext,
+  NOSTR_COORDINATION_MESSAGE_LIMIT,
   NOSTR_INTRO_MESSAGE_LIMIT,
   subscribeToNostrInboxGiftWraps,
   unwrapExtensionNostrGiftWrap,
@@ -364,6 +365,7 @@ type SendNostrContactIntroArgs = NostrContactTarget & {
   message: string;
   includeContext: boolean;
   cachePassphrase?: string;
+  messageLimit?: number;
 };
 type SendBuyerRequestOfferRequest = {
   listing: Listing;
@@ -1955,10 +1957,11 @@ export function App(): ReactNode {
 
   const sendNostrContactIntro = async (args: SendNostrContactIntroArgs): Promise<NostrContactReceipt> => {
     const recipient = normalizeNostrContact(args.recipientPublicKey);
+    const messageLimit = args.messageLimit ?? NOSTR_INTRO_MESSAGE_LIMIT;
     if (!recipient) throw new Error(t('nostrContact.invalidRecipient'));
     if (!identity) throw new Error(t('nostrContact.identityRequired'));
     if (args.message.trim().length === 0) throw new Error(t('nostrContact.messageRequired'));
-    if (args.message.trim().length > NOSTR_INTRO_MESSAGE_LIMIT) throw new Error(t('nostrContact.messageTooLong'));
+    if (args.message.trim().length > messageLimit) throw new Error(t('nostrContact.messageTooLong'));
     if (relays.filter((relay) => relay.enabled).length === 0) throw new Error(t('nostrContact.relaysRequired'));
 
     const context: NostrIntroContext | undefined = args.includeContext
@@ -1973,7 +1976,8 @@ export function App(): ReactNode {
         senderPrivateKeyHex: privateKeyHex,
         recipientPublicKey: recipient.publicKey,
         message: args.message,
-        context
+        context,
+        messageLimit
       });
     } else {
       const signer = nostrSigner.connected && nostrSigner.publicKey ? nostrSigner : await connectSigner();
@@ -1988,6 +1992,7 @@ export function App(): ReactNode {
         recipientPublicKey: recipient.publicKey,
         message: args.message,
         context,
+        messageLimit,
         encryptWithSigner: encryptWithNostrSigner,
         signWithSigner: (event) => signWithNostrSigner(event, senderPublicKey)
       });
@@ -2011,7 +2016,7 @@ export function App(): ReactNode {
     if (args.cachePassphrase && args.cachePassphrase.length >= 10) {
       const selfCopy = events.find((event) => event.tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === senderPublicKey)) ?? events[0];
       if (selfCopy) {
-        const plaintext = nostrIntroPlaintext(args.message, context);
+        const plaintext = nostrIntroPlaintext(args.message, context, messageLimit);
         const subject = context?.title;
         const contextId = context?.id;
         const counterpartPublicKey = recipient.publicKey.toLowerCase();
@@ -2089,7 +2094,8 @@ export function App(): ReactNode {
       contextId: request.listing.id,
       contextTitle: request.listing.title,
       includeContext: true,
-      message: encodeBuyerRequestOfferMessage(payload)
+      message: encodeBuyerRequestOfferMessage(payload),
+      messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
     });
     const offer = buyerRequestOfferFromPayload({
       id: `buyer_offer_${receipt.eventIds[0] ?? receipt.id}`,
@@ -2165,7 +2171,8 @@ export function App(): ReactNode {
           paymentState: room.paymentState,
           deliveryState: room.deliveryState,
           createdAt: at
-        })
+        }),
+        messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
       });
       showNotice(t('buyerOffers.selected'));
     } catch (error) {
@@ -9520,7 +9527,8 @@ function TradeRoomDetail({
           listingCoordinate: nextRoom.listingCoordinate,
           createdAt: at,
           ...payload
-        })
+        }),
+        messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
       });
       setStateStatus(t('tradeRoom.notifySent'));
     } catch (error) {
@@ -10072,7 +10080,8 @@ function TradeRoomDeliveryPanel({
         contextId: room.id,
         contextTitle: room.listingTitle || room.agreementHash || room.id,
         includeContext: true,
-        message: encodeTradeRoomUpdateMessage(payload)
+        message: encodeTradeRoomUpdateMessage(payload),
+        messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
       });
       onRoomDeliverySaved(stateForDelivery({ ...room, relatedMessageThreadIds: [...new Set([...room.relatedMessageThreadIds, receipt.id])] }, 'delivered'), {
         ...delivery,
@@ -10529,7 +10538,8 @@ function TradePage({
         paymentState: room.paymentState,
         deliveryState: room.deliveryState,
         createdAt: at
-      })
+      }),
+      messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
     });
   };
 

@@ -272,7 +272,7 @@ describe('deal sheet derivation', () => {
   });
 
   it('maps selected buyer request offer terms into the deal sheet', () => {
-    const room = tradeRoomFromSelectedOffer({ offer: offer(), listing: listing(), at: '2026-06-01T02:00:00.000Z' });
+    const room = tradeRoomFromSelectedOffer({ offer: offer(), listing: listing(), agreement: agreement(), at: '2026-06-01T02:00:00.000Z' });
     const sheet = deriveTradeRoomDealSheet({ room, listing: listing(), offer: offer(), hasIdentity: true, hasCounterparty: true, enabledRelayCount: 1 });
     expect(sheet.nextAction).toBe('create-agreement');
     expect(sheet.price).toBe('2100 CZK');

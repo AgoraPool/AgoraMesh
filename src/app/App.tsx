@@ -9163,7 +9163,6 @@ function TradeRoomDetail({
   const [notifyCounterparty, setNotifyCounterparty] = useState(false);
   const [stateStatus, setStateStatus] = useState('');
   const ownerKey = identity?.publicKey.toLowerCase();
-  const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
   const counterpartyPublicKey = ownerKey
     ? publicKeysMatch(ownerKey, room.buyerPublicKey)
       ? room.sellerPublicKey

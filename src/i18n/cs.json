@@ -1546,7 +1546,7 @@
   "sync.conflictDuplicate": "Možný duplikát",
   "sync.conflictPreferred": "Nejnovější konfliktní verze",
   "sync.live": "Živá synchronizace při otevřené aplikaci",
-  "sync.outgoingNote": "Živá synchronizace poslouchá veřejné příchozí události. Odchozí synchronizace probíhá při publikování profilu, záznamu, profilu mediátora, recenze nebo komunitního seznamu.",
+  "sync.outgoingNote": "Živá synchronizace při otevřené aplikaci poslouchá veřejné objevování i šifrovanou soukromou koordinaci. Aktualizace obchodních místností zůstávají lokální záznamy a NIP-17 zprávy.",
   "sync.showSource": "Zobrazit štítky zdroje dat",
   "sync.defaultSource": "Výchozí zdroj pro procházení",
   "sync.listingDiscoveryScope": "Rozsah vyhledávání záznamů",

@@ -57,7 +57,7 @@ export const defaultRelays: RelayConfig[] = [
 
 export const defaultSyncSettings: SyncSettings = {
   id: 'default',
-  liveSyncEnabled: false,
+  liveSyncEnabled: true,
   showDataSource: true,
   defaultBrowseSource: 'combined',
   listingDiscoveryScope: 'agoramesh-native'
@@ -513,6 +513,48 @@ export class AgoraMeshDb extends Dexie {
       syncSettings: 'id',
       blossomServers: 'id, url, enabled'
     });
+    this.version(18)
+      .stores({
+        identity: 'id, publicKey',
+        profile: 'id, publicKey, mediatorAvailable',
+        listings: 'id, authorPublicKey, type, category, region, visibility, status, createdAt, expiresAt',
+        agreements: 'id, hash, createdAt',
+        agreementReceipts: 'id, agreementHash, role, signerPublicKey, acceptedAt',
+        mediators: 'id, publicKey, region',
+        disputes: 'id, state, agreementHash, createdAt',
+        attestations: 'id, reviewerPublicKey, subjectPublicKey, agreementHash, eventId',
+        relays: 'url, enabled',
+        nostrReview: 'id, eventId, kind, relay, importStatus, receivedAt, authorPublicKey',
+        publicProfiles: 'id, publicKey, mediatorAvailable',
+        syncedProfiles: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        syncedListings: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        syncedMediators: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        syncedAttestations: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        syncedDisputeOutcomes: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        communityLists: 'id, authorPublicKey, updatedAt',
+        syncedCommunityLists: 'id, eventId, kind, authorPublicKey, importedAt, trusted, hidden',
+        relayHealth: 'url, enabled, lastConnectedAt, consecutiveFailures',
+        publishReceipts: 'id, objectType, objectId, eventId, relayUrl, status, at',
+        nostrContactReceipts: 'id, senderPublicKey, recipientPublicKey, sentAt, status, contextType, contextId',
+        nostrMessages: 'id, ownerPublicKey, eventId, threadKey, counterpartPublicKey, messageCreatedAt, read, archived',
+        nostrMessageThreads: 'id, ownerPublicKey, threadKey, counterpartPublicKey, lastMessageAt, archived',
+        nostrInboxCursors: 'id, ownerPublicKey, relayUrl, lastFetchedAt',
+        lightningPaymentAttempts: 'id, buyerPublicKey, sellerPublicKey, purpose, listingId, badgeSubjectPublicKey, status, createdAt, updatedAt',
+        operatorSupportReceipts: 'id, payerPublicKey, operatorWalletPubkey, receiptEventId, validatedAt',
+        listingZapReceipts: 'id, listingId, listingCoordinate, sellerPublicKey, buyerPublicKey, receiptEventId, validatedAt',
+        buyerRequestOffers: 'id, requestListingId, requestCoordinate, buyerPublicKey, sellerPublicKey, direction, status, createdAt, updatedAt',
+        tradeRooms: 'id, buyerPublicKey, sellerPublicKey, listingId, agreementHash, buyerRequestOfferId, state, updatedAt',
+        tradeRoomDeliveries: 'id, roomId, senderPublicKey, status, createdAt, updatedAt',
+        nwcConnections: 'id, walletPublicKey, clientPublicKey, updatedAt',
+        allowlist: 'id, publicKey, label, createdAt',
+        syncSettings: 'id',
+        blossomServers: 'id, url, enabled'
+      })
+      .upgrade(async (transaction) => {
+        await transaction.table('syncSettings').toCollection().modify((settings) => {
+          settings.liveSyncEnabled = true;
+        });
+      });
   }
 }
 

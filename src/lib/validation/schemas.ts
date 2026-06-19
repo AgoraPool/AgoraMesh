@@ -577,6 +577,7 @@ export const tradeRoomSchema = z.object({
   relatedMessageThreadIds: z.array(nonEmpty).default([]),
   lastMessageAt: optionalText,
   reviewedAt: optionalText,
+  deletedAt: optionalText,
   createdAt: nonEmpty,
   updatedAt: nonEmpty
 });

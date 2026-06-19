@@ -262,14 +262,17 @@ export function mergeTradeRoom(existing: TradeRoom | undefined, incoming: TradeR
 
 export function upsertTradeRoom(existingRooms: TradeRoom[], incoming: TradeRoom): TradeRoom {
   const existing = existingRooms.find((room) => {
-    if (incoming.agreementHash && room.agreementHash === incoming.agreementHash) return true;
     if (incoming.buyerRequestOfferId && room.buyerRequestOfferId === incoming.buyerRequestOfferId) return true;
-    return Boolean(
+    if (
       incoming.listingCoordinate &&
         room.listingCoordinate?.toLowerCase() === incoming.listingCoordinate.toLowerCase() &&
         room.buyerPublicKey.toLowerCase() === incoming.buyerPublicKey.toLowerCase() &&
         room.sellerPublicKey.toLowerCase() === incoming.sellerPublicKey.toLowerCase()
-    );
+    ) {
+      return true;
+    }
+    if (incoming.agreementHash && room.agreementHash === incoming.agreementHash) return true;
+    return false;
   });
   return mergeTradeRoom(existing, incoming);
 }

@@ -587,6 +587,7 @@ export interface TradeRoom {
   relatedMessageThreadIds: string[];
   lastMessageAt?: string;
   reviewedAt?: string;
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

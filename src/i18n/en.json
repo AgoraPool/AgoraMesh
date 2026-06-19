@@ -1546,7 +1546,7 @@
   "sync.conflictDuplicate": "Possible duplicate",
   "sync.conflictPreferred": "Latest conflict version",
   "sync.live": "Live sync while app is open",
-  "sync.outgoingNote": "Live sync listens for public incoming events. Outgoing sync happens when you publish a profile, listing, mediator profile, review, or curation list.",
+  "sync.outgoingNote": "Live sync listens for public discovery events and encrypted private coordination while the app is open. Trade room updates still use local-first records and NIP-17 messages.",
   "sync.showSource": "Show data source labels",
   "sync.defaultSource": "Default browse source",
   "sync.listingDiscoveryScope": "Listing discovery scope",

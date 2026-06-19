@@ -381,7 +381,7 @@ type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type SupportFilter = 'all' | 'supporters' | 'non-supporters';
 type WebTrustFilter = 'all' | 'direct' | 'network';
 type MarketplaceSort = 'newest' | 'expiring' | 'web-trust';
-type MarketplaceQuickFilter = 'all' | 'buyer-requests' | 'actionable' | 'trusted-network' | 'needs-response';
+type MarketplaceQuickFilter = 'all' | 'buyer-requests' | 'seller-offers';
 type ReputationDraftRequest = {
   subjectPublicKey: string;
   role: 'buyer' | 'seller' | 'mediator';
@@ -6247,15 +6247,10 @@ function BrowsePage({
   const quickFilterMatches = useCallback(
     (row: MarketplaceListingRow): boolean => {
       if (quickFilter === 'all') return true;
-      const viewerKey = identity?.publicKey;
-      const actionability = marketplaceActionabilityScore(row, { viewerPublicKey: viewerKey, networkPublicKeys });
-      const ownListing = publicKeysMatch(viewerKey, row.listing.authorPublicKey);
       if (quickFilter === 'buyer-requests') return row.listing.type === 'request';
-      if (quickFilter === 'trusted-network') return row.trusted || webTrustFilterMatches([row.listing.authorPublicKey], webOfTrustMap, 'network');
-      if (quickFilter === 'needs-response') return row.listing.type === 'request' && !ownListing && row.listing.status === 'active' && !isListingExpired(row.listing);
-      return actionability.score >= 45 && !ownListing && row.listing.status === 'active' && !isListingExpired(row.listing);
+      return row.listing.type === 'offer';
     },
-    [identity?.publicKey, networkPublicKeys, quickFilter, webOfTrustMap]
+    [quickFilter]
   );
 
   useEffect(() => {
@@ -6401,10 +6396,9 @@ function BrowsePage({
   };
   const applyMarketplacePreset = (preset: MarketplaceFilterPreset): void => {
     resetAdvancedFilters();
-    if (preset === 'buyer-requests' || preset === 'actionable' || preset === 'trusted-network' || preset === 'needs-response') {
+    if (preset === 'buyer-requests' || preset === 'seller-offers') {
       setQuickFilter(preset);
-      if (preset === 'buyer-requests' || preset === 'needs-response') setType('request');
-      if (preset === 'trusted-network') setWebTrust('network');
+      setType(preset === 'buyer-requests' ? 'request' : 'offer');
       return;
     }
     if (preset === 'trusted-synced') {
@@ -6644,9 +6638,7 @@ function BrowsePage({
               {[
                 ['all', t('common.all')],
                 ['buyer-requests', t('marketplace.quick.buyer-requests')],
-                ['actionable', t('marketplace.quick.actionable')],
-                ['trusted-network', t('marketplace.quick.trusted-network')],
-                ['needs-response', t('marketplace.quick.needs-response')]
+                ['seller-offers', t('marketplace.quick.seller-offers')]
               ].map(([value, label]) => (
                 <button className={quickFilter === value ? 'filter-chip active' : 'filter-chip'} key={value} onClick={() => applyMarketplacePreset(value as MarketplaceFilterPreset)} type="button">
                   {label}
@@ -6655,32 +6647,38 @@ function BrowsePage({
             </div>
           </div>
           <div className="marketplace-discovery-panel" aria-live="polite">
-            <strong>{t('marketplace.discoveryTitle')}</strong>
-            <div className="segmented-control" role="group" aria-label={t('marketplace.fetchScope')}>
-              {[
-                ['agoramesh-native', t('marketplace.scopeAgoraMeshOnly')],
-                ['all-nip99', t('sync.scopeAllNip99')]
-              ].map(([value, label]) => (
-                <button
-                  aria-pressed={syncSettings.listingDiscoveryScope === value}
-                  className={syncSettings.listingDiscoveryScope === value ? 'filter-chip active' : 'filter-chip'}
-                  key={value}
-                  onClick={() => onListingDiscoveryScopeChange(value as ListingDiscoveryScope)}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="marketplace-discovery-heading">
+              <strong>{t('marketplace.discoveryTitle')}</strong>
+              <span className="muted discovery-relay-count">
+                {t('marketplace.enabledRelays').replace('{count}', String(enabledRelays.length))}
+              </span>
             </div>
-            <span className="muted discovery-relay-count">
-              {t('marketplace.enabledRelays').replace('{count}', String(enabledRelays.length))}
-            </span>
-            <button disabled={fetchingMarketplace || prefetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
-              <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
-            </button>
-            <button className="subtle" disabled={fetchingWebTrust || enabledRelays.length === 0} onClick={() => void fetchTrustGraph()} type="button">
-              <ShieldCheck size={16} /> {fetchingWebTrust ? t('wot.fetching') : t('wot.fetch')}
-            </button>
+            <div className="marketplace-discovery-controls">
+              <div className="segmented-control" role="group" aria-label={t('marketplace.fetchScope')}>
+                {[
+                  ['agoramesh-native', t('marketplace.scopeAgoraMeshOnly')],
+                  ['all-nip99', t('sync.scopeAllNip99')]
+                ].map(([value, label]) => (
+                  <button
+                    aria-pressed={syncSettings.listingDiscoveryScope === value}
+                    className={syncSettings.listingDiscoveryScope === value ? 'filter-chip active' : 'filter-chip'}
+                    key={value}
+                    onClick={() => onListingDiscoveryScopeChange(value as ListingDiscoveryScope)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="marketplace-discovery-actions">
+                <button disabled={fetchingMarketplace || prefetchingMarketplace || enabledRelays.length === 0} onClick={() => void fetchMarketplace()} type="button">
+                  <Radio size={16} /> {fetchingMarketplace ? t('marketplace.fetching') : t('marketplace.fetch')}
+                </button>
+                <button className="subtle" disabled={fetchingWebTrust || enabledRelays.length === 0} onClick={() => void fetchTrustGraph()} type="button">
+                  <ShieldCheck size={16} /> {fetchingWebTrust ? t('wot.fetching') : t('wot.fetch')}
+                </button>
+              </div>
+            </div>
             {webOfTrustEntries.length > 0 || webOfTrustStatus ? (
               <p className="muted marketplace-fetch-summary">
                 {webOfTrustStatus || t('wot.marketplaceSummary').replace('{count}', String(webOfTrustEntries.length))}
@@ -6725,9 +6723,7 @@ function BrowsePage({
                 <div className="actions small">
                   {[
                     ['buyer-requests', t('marketplace.quick.buyer-requests')],
-                    ['actionable', t('marketplace.quick.actionable')],
-                    ['trusted-network', t('marketplace.quick.trusted-network')],
-                    ['needs-response', t('marketplace.quick.needs-response')],
+                    ['seller-offers', t('marketplace.quick.seller-offers')],
                     ['fresh', t('marketplace.presetFresh')],
                     ['trusted-synced', t('marketplace.presetTrustedSynced')],
                     ['local-only', t('marketplace.presetLocalOnly')],

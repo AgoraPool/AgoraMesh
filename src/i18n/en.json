@@ -711,6 +711,7 @@
   "marketplace.resetAdvancedFilters": "Reset advanced filters",
   "marketplace.quickFilter": "Quick filter",
   "marketplace.quick.buyer-requests": "Buyer requests",
+  "marketplace.quick.seller-offers": "Seller offers",
   "marketplace.quick.actionable": "Offers I can act on",
   "marketplace.quick.trusted-network": "Trusted/network sellers",
   "marketplace.quick.needs-response": "Needs response",

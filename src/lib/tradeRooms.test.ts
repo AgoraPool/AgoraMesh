@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { Agreement, BuyerRequestOffer, Listing, LightningPaymentAttempt, ListingZapReceipt, TradeRoom } from '../types/domain';
+import type { Agreement, BuyerRequestOffer, Listing, LightningPaymentAttempt, ListingZapReceipt, TradeRoom, TradeRoomDelivery } from '../types/domain';
 import {
   applyAgreementReceiptStatus,
   applyTradeRoomUpdate,
   backfillTradeRoomsFromAgreements,
   deliveryFromUpdatePayload,
   derivePaymentState,
+  deriveTradeRoomDealSheet,
   encodeTradeRoomUpdateMessage,
   parseTradeRoomUpdatePayload,
   roomMatchesPrivateUpdate,
@@ -168,11 +169,115 @@ describe('payment and delivery states', () => {
   });
 
   it('advances the room state without moving backwards', () => {
-    expect(stateForPayment(room, 'payment-pending').state).toBe('payment-pending');
-    const paid = stateForPayment(room, 'paid');
+    const pendingClaim = stateForPayment(room, 'payment-pending');
+    expect(pendingClaim.state).toBe('intent');
+    expect(pendingClaim.paymentState).toBe('payment-pending');
+    const accepted = applyAgreementReceiptStatus(room, 'mutually-signed');
+    expect(stateForPayment(accepted, 'payment-pending').state).toBe('payment-pending');
+    const paid = stateForPayment(accepted, 'paid');
     expect(stateForPayment(paid, 'payment-pending').state).toBe('paid');
     expect(stateForDelivery(paid, 'delivered').state).toBe('delivered');
     expect(stateForDelivery(paid, 'confirmed').state).toBe('confirmed');
+  });
+});
+
+describe('deal sheet derivation', () => {
+  it('derives the ordered voluntary trade workflow from room evidence', () => {
+    const base = tradeRoomFromAgreement(agreement());
+    const draftSheet = deriveTradeRoomDealSheet({
+      room: base,
+      listing: listing(),
+      agreement: agreement(),
+      receiptStatus: 'draft',
+      hasIdentity: true,
+      hasCounterparty: true,
+      enabledRelayCount: 1
+    });
+    expect(draftSheet.nextAction).toBe('sign-agreement');
+    expect(draftSheet.acceptanceStatus).toBe('draft');
+    expect(draftSheet.blockers).toContain('acceptance');
+
+    const accepted = applyAgreementReceiptStatus(base, 'mutually-signed');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: accepted,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('start-payment');
+
+    const paid = stateForPayment(accepted, 'paid');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: paid,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('send-delivery');
+
+    const delivered = stateForDelivery(paid, 'delivered');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: delivered,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        deliveries: [
+          {
+            id: 'delivery_1',
+            roomId: delivered.id,
+            senderPublicKey: seller,
+            fileName: 'proof.pdf',
+            fileHash: 'sha256:abc',
+            note: 'sent',
+            status: 'sent',
+            createdAt: '2026-06-01T04:00:00.000Z',
+            updatedAt: '2026-06-01T04:00:00.000Z'
+          } satisfies TradeRoomDelivery
+        ],
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('confirm-delivery');
+
+    const confirmed = stateForDelivery(paid, 'confirmed');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: confirmed,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        reviewExists: false,
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('write-review');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: confirmed,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        reviewExists: true,
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1
+      }).nextAction
+    ).toBe('complete');
+  });
+
+  it('maps selected buyer request offer terms into the deal sheet', () => {
+    const room = tradeRoomFromSelectedOffer({ offer: offer(), listing: listing(), at: '2026-06-01T02:00:00.000Z' });
+    const sheet = deriveTradeRoomDealSheet({ room, listing: listing(), offer: offer(), hasIdentity: true, hasCounterparty: true, enabledRelayCount: 1 });
+    expect(sheet.nextAction).toBe('create-agreement');
+    expect(sheet.price).toBe('2100 CZK');
+    expect(sheet.fulfillment).toContain('repair');
+    expect(sheet.blockers).toContain('agreement');
   });
 });
 
@@ -241,5 +346,20 @@ describe('private room payloads', () => {
     expect(next.state).toBe('paid');
     expect(next.paymentState).toBe('receipt-found');
     expect(next.relatedMessageThreadIds).toContain('thread_1');
+  });
+
+  it('keeps payment claims from advancing an unaccepted room', () => {
+    const room = { ...tradeRoomFromAgreement(agreement()), id: 'room_1' };
+    const next = applyTradeRoomUpdate(room, {
+      schemaVersion: 1,
+      kind: 'trade-room-update',
+      roomId: 'room_1',
+      senderPublicKey: seller,
+      state: 'paid',
+      paymentState: 'paid',
+      createdAt: '2026-06-01T03:00:00.000Z'
+    });
+    expect(next.state).toBe('intent');
+    expect(next.paymentState).toBe('paid');
   });
 });

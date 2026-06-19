@@ -54,6 +54,45 @@ export const tradeRoomUpdatePayloadSchema = z.object({
 });
 
 export type TradeRoomUpdatePayload = z.infer<typeof tradeRoomUpdatePayloadSchema>;
+export type TradeRoomAcceptanceStatus = 'missing-agreement' | 'draft' | 'partially-signed' | 'mutually-signed';
+export type TradeRoomDealNextAction =
+  | 'create-agreement'
+  | 'sign-agreement'
+  | 'start-payment'
+  | 'confirm-payment'
+  | 'send-delivery'
+  | 'confirm-delivery'
+  | 'write-review'
+  | 'complete';
+export type TradeRoomDealBlocker =
+  | 'identity'
+  | 'counterparty'
+  | 'relays'
+  | 'agreement'
+  | 'acceptance'
+  | 'payment'
+  | 'delivery'
+  | 'review';
+export type TradeRoomSignalState = 'none' | 'claim' | 'receipt' | 'metadata';
+export type TradeRoomDealSheet = {
+  title: string;
+  listingType?: Listing['type'];
+  buyerPublicKey: string;
+  sellerPublicKey: string;
+  buyerLabel?: string;
+  sellerLabel?: string;
+  exchange: string;
+  price: string;
+  fulfillment: string;
+  payment: string;
+  mediator?: string;
+  acceptanceStatus: TradeRoomAcceptanceStatus;
+  paymentSignal: TradeRoomSignalState;
+  deliverySignal: TradeRoomSignalState;
+  reviewStatus: 'needed' | 'complete';
+  nextAction: TradeRoomDealNextAction;
+  blockers: TradeRoomDealBlocker[];
+};
 
 function normalizeKey(value?: string): string {
   return value?.toLowerCase() ?? '';
@@ -288,21 +327,129 @@ export function stateForPayment(room: TradeRoom, paymentState: TradeRoomPaymentS
       : paymentState === 'payment-pending'
         ? 'payment-pending'
         : room.state;
+  const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
   return {
     ...room,
     paymentState,
-    state: TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
+    state: canAdvancePastIntent && TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
     updatedAt: at
   };
 }
 
 export function stateForDelivery(room: TradeRoom, deliveryState: TradeRoomDeliveryState, at = nowIso()): TradeRoom {
   const nextState: TradeRoomState = deliveryState === 'confirmed' ? 'confirmed' : deliveryState === 'delivered' ? 'delivered' : room.state;
+  const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
   return {
     ...room,
     deliveryState,
-    state: TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
+    state: canAdvancePastIntent && TRADE_ROOM_STATES.indexOf(nextState) > TRADE_ROOM_STATES.indexOf(room.state) ? nextState : room.state,
     updatedAt: at
+  };
+}
+
+function formatDealPrice(listing?: Listing, agreement?: Agreement, offer?: BuyerRequestOffer): string {
+  if (agreement?.priceAndPayment) return agreement.priceAndPayment;
+  if (offer) return `${offer.amount} ${offer.currency}`.trim();
+  if (!listing) return '';
+  if (listing.price.currency.toUpperCase() === 'FREE' || listing.price.amount === '0') return 'FREE';
+  return `${listing.price.amount} ${listing.price.currency}`.trim();
+}
+
+function formatDealPayment(listing?: Listing, agreement?: Agreement, offer?: BuyerRequestOffer): string {
+  if (agreement?.priceAndPayment) return agreement.priceAndPayment;
+  if (offer?.paymentPreferences.length) return offer.paymentPreferences.join(', ');
+  if (listing?.paymentPreferences.length) return listing.paymentPreferences.join(', ');
+  return '';
+}
+
+function paymentSignalForRoom(room: TradeRoom, attempts: LightningPaymentAttempt[], receipts: ListingZapReceipt[]): TradeRoomSignalState {
+  if (room.paymentState === 'receipt-found' || receipts.length > 0 || attempts.some((attempt) => attempt.status === 'receipt-found')) return 'receipt';
+  if (room.paymentState === 'paid' || attempts.some((attempt) => attempt.status === 'paid')) return 'claim';
+  return 'none';
+}
+
+function deliverySignalForRoom(room: TradeRoom, deliveries: TradeRoomDelivery[]): TradeRoomSignalState {
+  if (deliveries.some((delivery) => delivery.status === 'sent' || delivery.status === 'received' || delivery.status === 'confirmed')) return 'metadata';
+  if (room.deliveryState === 'delivered' || room.deliveryState === 'confirmed') return 'claim';
+  return 'none';
+}
+
+export function deriveTradeRoomDealSheet({
+  room,
+  listing,
+  agreement,
+  offer,
+  receiptStatus,
+  paymentAttempts = [],
+  zapReceipts = [],
+  deliveries = [],
+  reviewExists = false,
+  hasIdentity = false,
+  hasCounterparty = false,
+  enabledRelayCount = 0
+}: {
+  room: TradeRoom;
+  listing?: Listing;
+  agreement?: Agreement;
+  offer?: BuyerRequestOffer;
+  receiptStatus?: AgreementReceiptStatus;
+  paymentAttempts?: LightningPaymentAttempt[];
+  zapReceipts?: ListingZapReceipt[];
+  deliveries?: TradeRoomDelivery[];
+  reviewExists?: boolean;
+  hasIdentity?: boolean;
+  hasCounterparty?: boolean;
+  enabledRelayCount?: number;
+}): TradeRoomDealSheet {
+  const acceptanceStatus: TradeRoomAcceptanceStatus = agreement ? receiptStatus ?? 'draft' : 'missing-agreement';
+  const accepted = acceptanceStatus === 'mutually-signed';
+  const paymentSignal = paymentSignalForRoom(room, paymentAttempts, zapReceipts);
+  const deliverySignal = deliverySignalForRoom(room, deliveries);
+  const deliveryComplete = room.deliveryState === 'confirmed' || deliveries.some((delivery) => delivery.status === 'confirmed');
+  const nextAction: TradeRoomDealNextAction =
+    !agreement
+      ? 'create-agreement'
+      : !accepted
+        ? 'sign-agreement'
+        : room.paymentState === 'none' || room.paymentState === 'failed'
+          ? 'start-payment'
+          : room.paymentState === 'payment-pending'
+            ? 'confirm-payment'
+            : deliverySignal === 'none'
+              ? 'send-delivery'
+              : !deliveryComplete
+                ? 'confirm-delivery'
+                : !reviewExists
+                  ? 'write-review'
+                  : 'complete';
+  const blockers: TradeRoomDealBlocker[] = [
+    !hasIdentity ? 'identity' : undefined,
+    !hasCounterparty ? 'counterparty' : undefined,
+    enabledRelayCount === 0 ? 'relays' : undefined,
+    !agreement ? 'agreement' : undefined,
+    agreement && !accepted ? 'acceptance' : undefined,
+    accepted && (room.paymentState === 'none' || room.paymentState === 'failed') ? 'payment' : undefined,
+    (room.paymentState === 'paid' || room.paymentState === 'receipt-found') && deliverySignal === 'none' ? 'delivery' : undefined,
+    deliveryComplete && !reviewExists ? 'review' : undefined
+  ].filter((entry): entry is TradeRoomDealBlocker => Boolean(entry));
+  return {
+    title: room.listingTitle || listing?.title || agreement?.exchangeDescription || offer?.requestTitle || room.id,
+    listingType: listing?.type,
+    buyerPublicKey: room.buyerPublicKey,
+    sellerPublicKey: room.sellerPublicKey,
+    buyerLabel: room.buyerLabel,
+    sellerLabel: room.sellerLabel,
+    exchange: agreement?.exchangeDescription || offer?.fulfillmentNotes || listing?.description || '',
+    price: formatDealPrice(listing, agreement, offer),
+    fulfillment: agreement?.fulfillmentTerms || offer?.fulfillmentNotes || listing?.fulfillmentNotes || listing?.fulfillmentType || '',
+    payment: formatDealPayment(listing, agreement, offer),
+    mediator: room.mediator || agreement?.mediator || listing?.mediatorPreference,
+    acceptanceStatus,
+    paymentSignal,
+    deliverySignal,
+    reviewStatus: reviewExists || room.state === 'reviewed' ? 'complete' : 'needed',
+    nextAction,
+    blockers
   };
 }
 
@@ -387,9 +534,17 @@ export function roomMatchesPrivateUpdate(room: TradeRoom, payload: TradeRoomUpda
 }
 
 export function applyTradeRoomUpdate(room: TradeRoom, payload: TradeRoomUpdatePayload, threadKey?: string, at = payload.createdAt, lastMessageAt?: string): TradeRoom {
+  const payloadState = payload.state;
+  const canAdvancePastIntent = TRADE_ROOM_STATES.indexOf(room.state) >= TRADE_ROOM_STATES.indexOf('accepted');
+  const nextState =
+    payloadState &&
+    TRADE_ROOM_STATES.indexOf(payloadState) > TRADE_ROOM_STATES.indexOf(room.state) &&
+    (canAdvancePastIntent || TRADE_ROOM_STATES.indexOf(payloadState) <= TRADE_ROOM_STATES.indexOf('offer'))
+      ? payloadState
+      : room.state;
   return {
     ...room,
-    state: payload.state && TRADE_ROOM_STATES.indexOf(payload.state) > TRADE_ROOM_STATES.indexOf(room.state) ? payload.state : room.state,
+    state: nextState,
     paymentState: payload.paymentState ?? room.paymentState,
     deliveryState: payload.deliveryState ?? room.deliveryState,
     relatedMessageThreadIds: threadKey ? [...new Set([...room.relatedMessageThreadIds, threadKey])] : room.relatedMessageThreadIds,

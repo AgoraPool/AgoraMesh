@@ -1516,6 +1516,10 @@ dd {
   min-width: 0;
 }
 
+.buyer-offer-mini-list button {
+  justify-self: start;
+}
+
 .buyer-offer-composer h2,
 .buyer-offer-composer p {
   margin: 0;
@@ -2594,6 +2598,38 @@ dd {
   color: var(--muted);
 }
 
+.listing-card-exchange {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.listing-card-exchange > span {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.5rem 0.6rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.listing-card-exchange strong {
+  color: var(--text);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.listing-card-actionability span {
+  border-color: rgba(240, 181, 66, 0.45);
+  background: rgba(240, 181, 66, 0.08);
+  color: #f1d28d;
+}
+
 .listing-card-primary,
 .listing-price-hero {
   display: flex;
@@ -3625,6 +3661,70 @@ dd {
   background: var(--accent-muted);
 }
 
+.trade-room-deal-sheet,
+.trade-room-counterparty-context {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.025);
+  padding: var(--space-3);
+}
+
+.trade-room-deal-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: start;
+  justify-content: space-between;
+}
+
+.trade-room-deal-heading h3 {
+  margin: 0.1rem 0;
+  overflow-wrap: anywhere;
+}
+
+.trade-room-deal-grid,
+.trade-room-context-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.trade-room-deal-grid span,
+.trade-room-context-grid span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 0.6rem 0.7rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.trade-room-deal-grid strong,
+.trade-room-context-grid strong {
+  color: var(--text);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+
+.trade-room-workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.trade-room-workflow-actions button {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
 .trade-room-next-action {
   display: flex;
   flex-wrap: wrap;
@@ -3773,6 +3873,15 @@ dd {
 
   .trade-room-state-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trade-room-deal-heading,
+  .trade-room-next-action {
+    align-items: stretch;
+  }
+
+  .trade-room-workflow-actions button {
+    flex-basis: 100%;
   }
 
   .dm-conversation {

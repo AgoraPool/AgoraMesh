@@ -5,6 +5,7 @@ import {
   findSyncedConflictGroups,
   filterReviewItems,
   dedupeMarketplaceListings,
+  marketplaceActionabilityScore,
   mergeCommunityAllowlist,
   parseCommunityAllowlistEnvelope,
   rankMarketplaceListings,
@@ -207,6 +208,40 @@ describe('sync quality helpers', () => {
     expect(rankMarketplaceListings(visible, { query: 'repair', category: 'repairs', type: 'offer' })[0].rankReasons?.map((reason) => reason.code)).toContain(
       'title-match'
     );
+  });
+
+  it('scores actionable buyer requests with practical exchange metadata', () => {
+    const request: Listing = {
+      id: 'request_1',
+      authorPublicKey: 'b'.repeat(64),
+      title: 'Need private courier',
+      type: 'request',
+      category: 'logistics',
+      description: 'Need a courier this week.',
+      region: 'Prague',
+      status: 'active',
+      price: { amount: '5000', currency: 'CZK' },
+      paymentPreferences: ['lightning'],
+      fulfillmentType: 'delivery',
+      fulfillmentNotes: 'Pickup and handoff in Prague.',
+      paymentIntents: [],
+      barterAccepted: false,
+      tags: ['courier'],
+      expiresAt: '2026-06-23',
+      contactMethod: { id: 'contact_1', kind: 'nostr', value: 'b'.repeat(64) },
+      visibility: 'public',
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z'
+    };
+    const score = marketplaceActionabilityScore(
+      { listing: request, source: 'synced', trusted: true, record: record(request, { trusted: true }) },
+      { viewerPublicKey: 'a'.repeat(64), networkPublicKeys: ['b'.repeat(64)], now: new Date('2026-06-19T00:00:00.000Z').getTime() }
+    );
+    expect(score.reasons).toEqual(expect.arrayContaining(['buyer-request', 'trusted', 'network', 'payment', 'fulfillment', 'contact', 'expiring']));
+    expect(score.score).toBeGreaterThanOrEqual(90);
+    expect(
+      rankMarketplaceListings([{ listing: request, source: 'synced', trusted: true, record: record(request, { trusted: true }) }])[0].rankReasons?.map((reason) => reason.code)
+    ).toContain('buyer-request');
   });
 
   it('deduplicates exact copied marketplace listings across different authors', () => {

@@ -28,6 +28,24 @@ export type MarketplaceListingRow = {
   curatedBy?: string[];
 };
 
+export type MarketplaceActionabilityReason =
+  | 'buyer-request'
+  | 'offer'
+  | 'trusted'
+  | 'network'
+  | 'active'
+  | 'payment'
+  | 'fulfillment'
+  | 'contact'
+  | 'expiring'
+  | 'own-listing';
+
+export type MarketplaceActionabilityOptions = {
+  viewerPublicKey?: string;
+  networkPublicKeys?: string[];
+  now?: number;
+};
+
 export function relayScoreFromHealth(health: RelayHealth): RelayScore {
   const reasons: string[] = [];
   let score = health.enabled ? 55 : 10;
@@ -152,6 +170,63 @@ function isListingExpiredForRank(listing: Listing, now = Date.now()): boolean {
   return new Date(listing.expiresAt).getTime() < now;
 }
 
+function daysUntilListingExpiry(listing: Listing, now = Date.now()): number {
+  return Math.ceil((new Date(listing.expiresAt).getTime() - now) / 86_400_000);
+}
+
+export function marketplaceActionabilityScore(
+  row: MarketplaceListingRow,
+  options: MarketplaceActionabilityOptions = {}
+): { score: number; reasons: MarketplaceActionabilityReason[] } {
+  const reasons: MarketplaceActionabilityReason[] = [];
+  let score = 0;
+  const viewer = options.viewerPublicKey?.toLowerCase();
+  const network = new Set((options.networkPublicKeys ?? []).map((key) => key.toLowerCase()));
+  const listing = row.listing;
+  const active = listing.status === 'active' && !isListingExpiredForRank(listing, options.now);
+  if (active) {
+    score += 20;
+    reasons.push('active');
+  }
+  if (listing.type === 'request') {
+    score += 20;
+    reasons.push('buyer-request');
+  } else {
+    score += 12;
+    reasons.push('offer');
+  }
+  if (row.trusted) {
+    score += 18;
+    reasons.push('trusted');
+  }
+  if (network.has(listing.authorPublicKey.toLowerCase())) {
+    score += 16;
+    reasons.push('network');
+  }
+  if (listing.paymentPreferences.length > 0 && !listing.paymentPreferences.includes('other')) {
+    score += 8;
+    reasons.push('payment');
+  }
+  if (listing.fulfillmentType || listing.fulfillmentNotes) {
+    score += 7;
+    reasons.push('fulfillment');
+  }
+  if (listing.contactMethod.value.trim()) {
+    score += 7;
+    reasons.push('contact');
+  }
+  const days = daysUntilListingExpiry(listing, options.now);
+  if (days >= 0 && days <= 7) {
+    score += 6;
+    reasons.push('expiring');
+  }
+  if (viewer && viewer === listing.authorPublicKey.toLowerCase()) {
+    score -= 25;
+    reasons.push('own-listing');
+  }
+  return { score, reasons };
+}
+
 function rowUpdatedAt(row: MarketplaceListingRow): string {
   return row.listing.updatedAt || row.listing.createdAt;
 }
@@ -172,6 +247,9 @@ function rankScore(row: MarketplaceListingRow, query = '', category = 'all', typ
     score += 35;
     reasons.push({ code: 'trusted', label: 'trusted author' });
   }
+  const actionability = marketplaceActionabilityScore(row);
+  score += actionability.score;
+  reasons.push(...actionability.reasons.map((reason) => ({ code: reason, label: reason })));
   if (row.source === 'local') {
     score += 25;
     reasons.push({ code: 'local', label: 'local record' });

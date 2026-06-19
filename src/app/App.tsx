@@ -163,6 +163,7 @@ import {
   filterReviewItems,
   isPreferredConflictRecord,
   isRecordConflicted,
+  marketplaceActionabilityScore,
   mergeCommunityAllowlist,
   rankMarketplaceListings,
   parseCommunityAllowlistEnvelope,
@@ -192,6 +193,7 @@ import {
   backfillTradeRoomsFromAgreements,
   deliveryFromUpdatePayload,
   derivePaymentState,
+  deriveTradeRoomDealSheet,
   encodeTradeRoomUpdateMessage,
   markRoomReviewed,
   newDeliveryDraft,
@@ -205,6 +207,7 @@ import {
   tradeRoomFromPrivateTrade,
   tradeRoomFromSelectedOffer,
   upsertTradeRoom,
+  type TradeRoomDealSheet,
   type TradeRoomUpdatePayload
 } from '../lib/tradeRooms';
 import {
@@ -308,10 +311,16 @@ type TradeRoomRow = {
   room: TradeRoom;
   agreement?: Agreement;
   listing?: Listing;
+  offer?: BuyerRequestOffer;
   receiptStatus?: ReturnType<typeof agreementReceiptStatus>;
   paymentAttempts: LightningPaymentAttempt[];
   zapReceipts: ListingZapReceipt[];
   deliveries: TradeRoomDelivery[];
+  dealSheet: TradeRoomDealSheet;
+  supportReceipt?: OperatorSupportReceipt;
+  webTrust?: WebOfTrustEntry;
+  curatedBy: string[];
+  reviewCount: number;
 };
 type NostrContactTarget = {
   recipientPublicKey: string;
@@ -356,6 +365,7 @@ type DecryptedNostrMessage = NostrMessageRecord & { plaintext: string };
 type SupportFilter = 'all' | 'supporters' | 'non-supporters';
 type WebTrustFilter = 'all' | 'direct' | 'network';
 type MarketplaceSort = 'newest' | 'expiring' | 'web-trust';
+type MarketplaceQuickFilter = 'all' | 'buyer-requests' | 'actionable' | 'trusted-network' | 'needs-response';
 type ReputationDraftRequest = {
   subjectPublicKey: string;
   role: 'buyer' | 'seller' | 'mediator';
@@ -366,7 +376,7 @@ type ReputationDraftRequest = {
 type ListingImageDraft =
   | { id: string; kind: 'existing'; image: ListingImage; previewUrl: string; name: string; altText: string }
   | { id: string; kind: 'new'; file: File; previewUrl: string; name: string; altText: string };
-type MarketplaceFilterPreset = 'fresh' | 'trusted-synced' | 'local-only' | 'moderation';
+type MarketplaceFilterPreset = 'fresh' | 'trusted-synced' | 'local-only' | 'moderation' | MarketplaceQuickFilter;
 type SignerRestoreSummary = {
   profile: number;
   listings: number;
@@ -2879,6 +2889,7 @@ export function App(): ReactNode {
             publishReceipts={publishReceipts}
             nostrContactReceipts={nostrContactReceipts}
             buyerRequestOffers={buyerRequestOffers}
+            tradeRooms={tradeRooms}
             lightningPaymentAttempts={lightningPaymentAttempts}
             operatorSupportReceipts={operatorSupportReceipts}
             listingZapReceipts={listingZapReceipts}
@@ -2919,6 +2930,10 @@ export function App(): ReactNode {
             onSendNostrIntro={sendNostrContactIntro}
             onSendBuyerRequestOffer={sendBuyerRequestOffer}
             onChooseBuyerRequestOffer={(offer, listing) => void chooseBuyerRequestOffer(offer, listing)}
+            onOpenTradeRoom={(roomId) => {
+              setTradeRoomOpenId(roomId);
+              go('trade');
+            }}
             onCreateLightningPaymentAttempt={createLightningPaymentAttempt}
             onCheckLightningPaymentReceipt={checkLightningPaymentReceipt}
             onCheckListingZapReceipts={checkListingZapReceipts}
@@ -3091,8 +3106,13 @@ export function App(): ReactNode {
             agreementReceipts={agreementReceipts}
             tradeRooms={tradeRooms}
             tradeRoomDeliveries={tradeRoomDeliveries}
+            buyerRequestOffers={buyerRequestOffers}
             mediators={mediators}
             syncedMediators={syncedMediators}
+            operatorSupportReceipts={operatorSupportReceipts}
+            webOfTrustMap={webOfTrustMap}
+            communityLists={communityLists}
+            syncedCommunityLists={syncedCommunityLists}
             disputes={disputes}
             attestations={attestations}
             lightningPaymentAttempts={lightningPaymentAttempts}
@@ -5118,12 +5138,16 @@ function BuyerRequestOfferComposer({
   identity,
   profile,
   sentOffers,
+  selectedRoomId,
+  onOpenRoom,
   onSend
 }: {
   listing: Listing;
   identity?: IdentityRecord;
   profile?: PublicProfile;
   sentOffers: BuyerRequestOffer[];
+  selectedRoomId?: string;
+  onOpenRoom?: (roomId: string) => void;
   onSend: (request: SendBuyerRequestOfferRequest) => Promise<BuyerRequestOffer>;
 }): ReactNode {
   const { t } = useI18n();
@@ -5203,6 +5227,11 @@ function BuyerRequestOfferComposer({
               {t('buyerOffers.sentOffer')}: {offer.amount} {offer.currency} · {t(`buyerOffers.status.${offer.status}`)}
             </p>
           ))}
+          {selectedRoomId ? (
+            <button className="subtle" onClick={() => onOpenRoom?.(selectedRoomId)} type="button">
+              <Handshake size={16} /> {t('buyerOffers.openSelectedRoom')}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {expanded ? (
@@ -5381,6 +5410,7 @@ function ListingPage({
   publishReceipts,
   nostrContactReceipts,
   buyerRequestOffers,
+  tradeRooms,
   lightningPaymentAttempts,
   operatorSupportReceipts,
   listingZapReceipts,
@@ -5400,6 +5430,7 @@ function ListingPage({
   onSendNostrIntro,
   onSendBuyerRequestOffer,
   onChooseBuyerRequestOffer,
+  onOpenTradeRoom,
   onCreateLightningPaymentAttempt,
   onCheckLightningPaymentReceipt,
   onCheckListingZapReceipts,
@@ -5429,6 +5460,7 @@ function ListingPage({
   publishReceipts: PublishReceipt[];
   nostrContactReceipts: NostrContactReceipt[];
   buyerRequestOffers: BuyerRequestOffer[];
+  tradeRooms: TradeRoom[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
   operatorSupportReceipts: OperatorSupportReceipt[];
   listingZapReceipts: ListingZapReceipt[];
@@ -5448,6 +5480,7 @@ function ListingPage({
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onSendBuyerRequestOffer: (request: SendBuyerRequestOfferRequest) => Promise<BuyerRequestOffer>;
   onChooseBuyerRequestOffer: (offer: BuyerRequestOffer, listing: Listing) => void;
+  onOpenTradeRoom: (roomId: string) => void;
   onCreateLightningPaymentAttempt: (request: LightningPaymentRequest) => Promise<LightningPaymentAttempt>;
   onCheckLightningPaymentReceipt: (attempt: LightningPaymentAttempt) => Promise<LightningPaymentAttempt>;
   onCheckListingZapReceipts: (listing: Listing, sellerProfile?: PublicProfile) => Promise<ListingZapReceipt[]>;
@@ -5502,6 +5535,9 @@ function ListingPage({
   const receiptSummary = summarizeListingReceipts(listing, publishReceipts);
   const nostrContact = nostrContactForMethod(listing.contactMethod, listing.authorPublicKey);
   const requestOffers = activeBuyerRequestOffersForListing(buyerRequestOffers, listing);
+  const sentRequestOffers = requestOffers.filter((offer) => publicKeysMatch(offer.sellerPublicKey, identity?.publicKey) && offer.direction === 'outgoing');
+  const selectedSellerOffer = sentRequestOffers.find((offer) => offer.status === 'selected');
+  const selectedSellerOfferRoom = selectedSellerOffer ? tradeRooms.find((room) => tradeRoomMatchesSelectedOffer(room, selectedSellerOffer, listing)) : undefined;
   const canPublish = relays.some((relay) => relay.enabled);
   const isRequestOwner = Boolean(identity && publicKeysMatch(identity.publicKey, listing.authorPublicKey));
   const canSendBuyerOffer = Boolean(listing.type === 'request' && identity && !publicKeysMatch(identity.publicKey, listing.authorPublicKey));
@@ -5712,7 +5748,9 @@ function ListingPage({
                   listing={listing}
                   identity={identity}
                   profile={profile}
-                  sentOffers={requestOffers.filter((offer) => publicKeysMatch(offer.sellerPublicKey, identity?.publicKey) && offer.direction === 'outgoing')}
+                  sentOffers={sentRequestOffers}
+                  selectedRoomId={selectedSellerOfferRoom?.id}
+                  onOpenRoom={onOpenTradeRoom}
                   onSend={onSendBuyerRequestOffer}
                 />
               </section>
@@ -5867,6 +5905,7 @@ function BrowsePage({
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [type, setType] = useState('all');
+  const [quickFilter, setQuickFilter] = useState<MarketplaceQuickFilter>('all');
   const [payment, setPayment] = useState('all');
   const [fulfillment, setFulfillment] = useState('all');
   const [region, setRegion] = useState('');
@@ -5923,7 +5962,22 @@ function BrowsePage({
 
   useEffect(() => {
     setVisibleLimit(marketplacePageSize);
-  }, [category, curationFilter, fulfillment, hidden, imageOnly, payment, query, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type, webTrust]);
+  }, [category, curationFilter, fulfillment, hidden, imageOnly, payment, query, quickFilter, region, showExpired, sort, source, support, syncSettings.listingDiscoveryScope, trust, type, webTrust]);
+
+  const networkPublicKeys = useMemo(() => [...webOfTrustMap.keys()], [webOfTrustMap]);
+  const quickFilterMatches = useCallback(
+    (row: MarketplaceListingRow): boolean => {
+      if (quickFilter === 'all') return true;
+      const viewerKey = identity?.publicKey;
+      const actionability = marketplaceActionabilityScore(row, { viewerPublicKey: viewerKey, networkPublicKeys });
+      const ownListing = publicKeysMatch(viewerKey, row.listing.authorPublicKey);
+      if (quickFilter === 'buyer-requests') return row.listing.type === 'request';
+      if (quickFilter === 'trusted-network') return row.trusted || webTrustFilterMatches([row.listing.authorPublicKey], webOfTrustMap, 'network');
+      if (quickFilter === 'needs-response') return row.listing.type === 'request' && !ownListing && row.listing.status === 'active' && !isListingExpired(row.listing);
+      return actionability.score >= 45 && !ownListing && row.listing.status === 'active' && !isListingExpired(row.listing);
+    },
+    [identity?.publicKey, networkPublicKeys, quickFilter, webOfTrustMap]
+  );
 
   useEffect(() => {
     if (activeBrowseTab !== 'discover') return;
@@ -5971,7 +6025,8 @@ function BrowsePage({
       .filter(({ listing }) => webTrustFilterMatches([listing.authorPublicKey], webOfTrustMap, webTrust))
       .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
-      .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
+      .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true))
+      .filter(quickFilterMatches);
     const { visible } = dedupeMarketplaceListings(filteredRows);
     const ranked = rankMarketplaceListings(visible, { query, category, type }, curationCoordinateMap);
     if (sort === 'expiring') return ranked.sort((left, right) => left.listing.expiresAt.localeCompare(right.listing.expiresAt));
@@ -5987,7 +6042,7 @@ function BrowsePage({
         .map(({ row }) => row);
     }
     return ranked;
-  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, imageOnly, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type, webOfTrustMap, webTrust]);
+  }, [category, curationCoordinateMap, failedListingImages, fulfillment, hidden, imageOnly, listings, operatorSupportReceipts, payment, query, quickFilterMatches, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, sort, source, support, trust, type, webOfTrustMap, webTrust]);
   const duplicateHiddenCount = useMemo(() => {
     const normalized = query.toLowerCase();
     const localRows: MarketplaceListingRow[] =
@@ -6013,9 +6068,10 @@ function BrowsePage({
       .filter(({ listing }) => webTrustFilterMatches([listing.authorPublicKey], webOfTrustMap, webTrust))
       .filter(({ listing }) => supportFilterMatches(listing.authorPublicKey, operatorSupportReceipts, support))
       .filter(({ listing }) => `${listing.title} ${listing.description} ${listing.tags.join(' ')}`.toLowerCase().includes(normalized))
-      .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true));
+      .filter(({ listing }) => (curated ? curated.has(`${listing.authorPublicKey}:${listing.id}`) : true))
+      .filter(quickFilterMatches);
     return dedupeMarketplaceListings(filteredRows).duplicates.length;
-  }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type, webOfTrustMap, webTrust]);
+  }, [category, fulfillment, hidden, listings, operatorSupportReceipts, payment, query, quickFilterMatches, region, scopedSyncedListings, selectedCurationCoordinates, showExpired, source, support, trust, type, webOfTrustMap, webTrust]);
   const visibleFiltered = filtered.slice(0, visibleLimit);
   const curationCandidates = visibleFiltered.slice(0, 12).map(({ listing, source: rowSource }) => {
     const sellerProfile =
@@ -6034,6 +6090,7 @@ function BrowsePage({
     region ? `${t('common.region')}: ${region}` : undefined,
     fulfillment !== 'all' ? `${t('listing.fulfillment')}: ${t(`fulfillment.${fulfillment}`)}` : undefined,
     payment !== 'all' ? `${t('listing.paymentIntentMethod')}: ${paymentBadgeLabel(payment as PaymentPreference, t)}` : undefined,
+    quickFilter !== 'all' ? `${t('marketplace.quickFilter')}: ${t(`marketplace.quick.${quickFilter}`)}` : undefined,
     sort !== 'newest' ? `${t('common.sort')}: ${webTrustSortLabel(sort, t)}` : undefined,
     imageOnly ? t('marketplace.imagesOnly') : undefined,
     source !== syncSettings.defaultBrowseSource ? `${t('sync.source')}: ${source}` : undefined,
@@ -6049,19 +6106,26 @@ function BrowsePage({
     setPayment('all');
     setFulfillment('all');
     setRegion('');
-                        setSort('newest');
-                        setImageOnly(false);
+    setQuickFilter('all');
+    setSort('newest');
+    setImageOnly(false);
     setSource(syncSettings.defaultBrowseSource);
     setTrust('all');
     setWebTrust('all');
     setSupport('all');
     setHidden('visible');
     setCurationFilter('all');
-                        setShowExpired(false);
-                        setImageOnly(false);
+    setShowExpired(false);
+    setImageOnly(false);
   };
   const applyMarketplacePreset = (preset: MarketplaceFilterPreset): void => {
     resetAdvancedFilters();
+    if (preset === 'buyer-requests' || preset === 'actionable' || preset === 'trusted-network' || preset === 'needs-response') {
+      setQuickFilter(preset);
+      if (preset === 'buyer-requests' || preset === 'needs-response') setType('request');
+      if (preset === 'trusted-network') setWebTrust('network');
+      return;
+    }
     if (preset === 'trusted-synced') {
       setSource('synced');
       setTrust('trusted');
@@ -6078,6 +6142,7 @@ function BrowsePage({
   const resetFilters = (): void => {
     setQuery('');
     setType('all');
+    setQuickFilter('all');
     resetAdvancedFilters();
   };
 
@@ -6210,6 +6275,12 @@ function BrowsePage({
         : syncedProfiles.find((entry) => entry.payload.publicKey.toLowerCase() === listing.authorPublicKey.toLowerCase())?.payload;
     const supportReceipt = supportReceiptForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, seller.publicKey], operatorSupportReceipts);
     const sellerWebTrust = webTrustEntryForPublicKeys([sellerProfile?.publicKey, listing.authorPublicKey, seller.publicKey], webOfTrustMap);
+    const actionability = marketplaceActionabilityScore(
+      { listing, source: rowSource, trusted, record },
+      { viewerPublicKey: identity?.publicKey, networkPublicKeys }
+    );
+    const actionReasons = actionability.reasons.filter((reason) => reason !== 'own-listing').slice(0, 3);
+    const expiresInDays = Math.ceil((new Date(listing.expiresAt).getTime() - Date.now()) / 86_400_000);
     return (
       <article className="card listing-card" key={listingKey}>
         {renderListingThumb(listing)}
@@ -6222,7 +6293,29 @@ function BrowsePage({
           <p className="listing-card-facts">
             <span>{listing.type === 'offer' ? t('listing.offer') : t('listing.buyerRequest')}</span>
             <span>{listing.region || t('listing.location')}</span>
+            <span>{expiresInDays >= 0 ? t('marketplace.expiresIn').replace('{days}', String(expiresInDays)) : t('marketplace.expired')}</span>
           </p>
+          <div className="listing-card-exchange">
+            <span>
+              <strong>{listing.type === 'request' ? t('listing.budgetAmount') : t('listing.priceAmount')}</strong>
+              {formatListingPrice(listing)}
+            </span>
+            <span>
+              <strong>{t('listing.fulfillment')}</strong>
+              {listing.fulfillmentType ? t(`fulfillment.${listing.fulfillmentType}`) : t('fulfillment.unspecified')}
+            </span>
+            <span>
+              <strong>{t('payment.options')}</strong>
+              {listing.paymentPreferences.slice(0, 3).map((entry) => paymentBadgeLabel(entry, t)).join(', ')}
+            </span>
+          </div>
+          {actionReasons.length > 0 ? (
+            <div className="badge-row listing-card-actionability">
+              {actionReasons.map((reason) => (
+                <span key={reason}>{t(`marketplace.action.reason.${reason}`)}</span>
+              ))}
+            </div>
+          ) : null}
           <div className="badge-row listing-card-taxonomy">
             <span>{categoryLabel(listing.category, t)}</span>
             {visibleTags.map((tag) => (
@@ -6287,6 +6380,19 @@ function BrowsePage({
                 ['request', t('listing.buyerRequest')]
               ].map(([value, label]) => (
                 <button className={type === value ? 'filter-chip active' : 'filter-chip'} key={value} onClick={() => setType(value)} type="button">
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="quick-filter-group" role="group" aria-label={t('marketplace.quickFilter')}>
+              {[
+                ['all', t('common.all')],
+                ['buyer-requests', t('marketplace.quick.buyer-requests')],
+                ['actionable', t('marketplace.quick.actionable')],
+                ['trusted-network', t('marketplace.quick.trusted-network')],
+                ['needs-response', t('marketplace.quick.needs-response')]
+              ].map(([value, label]) => (
+                <button className={quickFilter === value ? 'filter-chip active' : 'filter-chip'} key={value} onClick={() => applyMarketplacePreset(value as MarketplaceFilterPreset)} type="button">
                   {label}
                 </button>
               ))}
@@ -6379,6 +6485,10 @@ function BrowsePage({
                 <h2 id="marketplace-filter-presets">{t('marketplace.filterPresets')}</h2>
                 <div className="actions small">
                   {[
+                    ['buyer-requests', t('marketplace.quick.buyer-requests')],
+                    ['actionable', t('marketplace.quick.actionable')],
+                    ['trusted-network', t('marketplace.quick.trusted-network')],
+                    ['needs-response', t('marketplace.quick.needs-response')],
                     ['fresh', t('marketplace.presetFresh')],
                     ['trusted-synced', t('marketplace.presetTrustedSynced')],
                     ['local-only', t('marketplace.presetLocalOnly')],
@@ -8790,6 +8900,143 @@ function TradeRoomStateStepper({ state }: { state: TradeRoomState }): ReactNode 
   );
 }
 
+function TradeRoomDealSheetPanel({
+  dealSheet,
+  acceptanceLabel,
+  agreementReady,
+  reviewEnabled,
+  onOpenAgreement,
+  onOpenDispute,
+  onPaymentPending,
+  onMarkPaid,
+  onMarkDelivered,
+  onConfirmDelivery,
+  onReview
+}: {
+  dealSheet: TradeRoomDealSheet;
+  acceptanceLabel: string;
+  agreementReady: boolean;
+  reviewEnabled: boolean;
+  onOpenAgreement: () => void;
+  onOpenDispute: () => void;
+  onPaymentPending: () => void;
+  onMarkPaid: () => void;
+  onMarkDelivered: () => void;
+  onConfirmDelivery: () => void;
+  onReview: () => void;
+}): ReactNode {
+  const { t } = useI18n();
+  const blockedTitle = agreementReady ? undefined : t('tradeRoom.acceptanceRequired');
+  return (
+    <section className="trade-room-deal-sheet">
+      <div className="trade-room-deal-heading">
+        <div>
+          <span className="form-eyebrow">{t('tradeRoom.dealSheet')}</span>
+          <h3>{dealSheet.title}</h3>
+          <p className="muted compact-meta">{t('tradeRoom.dealSheetBody')}</p>
+        </div>
+        <span className={agreementReady ? 'ok mini' : 'pill'}>{acceptanceLabel}</span>
+      </div>
+      <div className="trade-room-deal-grid">
+        <span>
+          <strong>{t('role.buyer')}</strong>
+          {tradeRoomPartyLabel(dealSheet.buyerPublicKey, dealSheet.buyerLabel)} · {shortPublicKey(dealSheet.buyerPublicKey)}
+        </span>
+        <span>
+          <strong>{t('role.seller')}</strong>
+          {tradeRoomPartyLabel(dealSheet.sellerPublicKey, dealSheet.sellerLabel)} · {shortPublicKey(dealSheet.sellerPublicKey)}
+        </span>
+        <span>
+          <strong>{dealSheet.listingType === 'request' ? t('listing.budgetAmount') : t('listing.priceAmount')}</strong>
+          {dealSheet.price || t('common.none')}
+        </span>
+        <span>
+          <strong>{t('payment.options')}</strong>
+          {dealSheet.payment || t('common.none')}
+        </span>
+        <span>
+          <strong>{t('listing.fulfillment')}</strong>
+          {dealSheet.fulfillment || t('common.none')}
+        </span>
+        <span>
+          <strong>{t('agreement.mediator')}</strong>
+          {dealSheet.mediator || t('common.none')}
+        </span>
+      </div>
+      <StatusChipRow
+        items={[
+          [t('tradeRoom.acceptance'), t(`tradeRoom.acceptanceStatus.${dealSheet.acceptanceStatus}`)],
+          [t('tradeRoom.payment'), t(`tradeRoom.signal.${dealSheet.paymentSignal}`)],
+          [t('tradeRoom.delivery'), t(`tradeRoom.signal.${dealSheet.deliverySignal}`)],
+          [t('tradeRoom.review'), t(`tradeRoom.reviewStatus.${dealSheet.reviewStatus}`)]
+        ]}
+      />
+      <p className="muted compact-meta">{agreementReady ? t('tradeRoom.acceptanceMutual') : t('tradeRoom.acceptancePending')}</p>
+      <div className="trade-room-workflow-actions">
+        <button className={dealSheet.nextAction === 'create-agreement' || dealSheet.nextAction === 'sign-agreement' ? undefined : 'subtle'} onClick={onOpenAgreement} type="button">
+          <Handshake size={16} /> {dealSheet.nextAction === 'create-agreement' ? t('tradeRoom.openAdvancedAgreement') : t('agreement.title')}
+        </button>
+        <button className="subtle" disabled={!agreementReady} title={blockedTitle} onClick={onPaymentPending} type="button">
+          {t('tradeRoom.markPaymentPending')}
+        </button>
+        <button className={dealSheet.nextAction === 'confirm-payment' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onMarkPaid} type="button">
+          {t('tradeRoom.markPaid')}
+        </button>
+        <button className={dealSheet.nextAction === 'send-delivery' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onMarkDelivered} type="button">
+          {t('tradeRoom.markDelivered')}
+        </button>
+        <button className={dealSheet.nextAction === 'confirm-delivery' ? undefined : 'subtle'} disabled={!agreementReady} title={blockedTitle} onClick={onConfirmDelivery} type="button">
+          {t('tradeRoom.markConfirmed')}
+        </button>
+        <button className={dealSheet.nextAction === 'write-review' ? undefined : 'subtle'} disabled={!reviewEnabled} onClick={onReview} type="button">
+          <BadgeCheck size={16} /> {t('tradeRoom.writeReview')}
+        </button>
+        <button className="subtle" disabled={!agreementReady} title={blockedTitle} onClick={onOpenDispute} type="button">
+          <Scale size={16} /> {t('tradeRoom.openAdvancedDispute')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function TradeRoomCounterpartyContext({ row }: { row: TradeRoomRow }): ReactNode {
+  const { t } = useI18n();
+  return (
+    <section className="trade-room-section trade-room-counterparty-context">
+      <div className="row between">
+        <div>
+          <h3>{t('tradeRoom.counterpartyContext')}</h3>
+          <p className="muted compact-meta">{t('tradeRoom.counterpartyContextBody')}</p>
+        </div>
+        <span className="pill">{shortPublicKey(row.room.sellerPublicKey)}</span>
+      </div>
+      <div className="trade-room-context-grid">
+        <span>
+          <strong>{t('reputation.title')}</strong>
+          {t('tradeRoom.reviewCount').replace('{count}', String(row.reviewCount))}
+        </span>
+        <span>
+          <strong>{t('listingZap.receipts')}</strong>
+          {t('tradeRoom.zapCount').replace('{count}', String(row.zapReceipts.length))}
+        </span>
+        <span>
+          <strong>{t('support.badge')}</strong>
+          {row.supportReceipt ? t('support.badgeShort') : t('common.none')}
+        </span>
+        <span>
+          <strong>{t('wot.filter')}</strong>
+          {row.webTrust ? webTrustEntryLabel(row.webTrust, t) : t('common.none')}
+        </span>
+      </div>
+      {row.curatedBy.length > 0 ? (
+        <p className="muted compact-meta">
+          {t('curation.curatedBy')}: {row.curatedBy.join(', ')}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function TradeRoomsPanel({
   rows,
   selectedRoomId,
@@ -8912,6 +9159,7 @@ function TradeRoomDetail({
 }): ReactNode {
   const { t } = useI18n();
   const { room, agreement, listing, paymentAttempts, zapReceipts, deliveries } = row;
+  const dealSheet = row.dealSheet;
   const [notifyCounterparty, setNotifyCounterparty] = useState(false);
   const [stateStatus, setStateStatus] = useState('');
   const ownerKey = identity?.publicKey.toLowerCase();
@@ -8935,31 +9183,8 @@ function TradeRoomDetail({
       : row.receiptStatus === 'partially-signed'
         ? t('agreement.statusPartiallySigned')
         : t('agreement.statusDraft');
-  const blockers = [
-    !identity ? t('tradeRoom.blocker.identity') : '',
-    !counterpartyPublicKey ? t('tradeRoom.blocker.counterparty') : '',
-    enabledRelayCount === 0 ? t('tradeRoom.blocker.relays') : '',
-    !agreement ? t('tradeRoom.blocker.agreement') : '',
-    agreement && !agreementReady ? t('tradeRoom.blocker.acceptance') : '',
-    room.state === 'paid' && deliveries.length === 0 ? t('tradeRoom.blocker.delivery') : '',
-    room.state === 'confirmed' && !reviewExists ? t('tradeRoom.blocker.review') : ''
-  ].filter(Boolean);
-  const nextAction =
-    !agreement
-      ? t('tradeRoom.next.createAgreement')
-      : !agreementReady
-        ? t('tradeRoom.next.signAgreement')
-        : room.paymentState === 'none'
-          ? t('tradeRoom.next.startPayment')
-          : room.paymentState === 'payment-pending'
-            ? t('tradeRoom.next.markPaid')
-            : room.deliveryState === 'none'
-              ? t('tradeRoom.next.addDelivery')
-              : room.deliveryState === 'delivered'
-                ? t('tradeRoom.next.confirmDelivery')
-                : !reviewExists
-                  ? t('tradeRoom.next.writeReview')
-                  : t('tradeRoom.next.complete');
+  const blockers = dealSheet.blockers.map((blocker) => t(`tradeRoom.blocker.${blocker}`));
+  const nextAction = t(`tradeRoom.nextAction.${dealSheet.nextAction}`);
   const notifyRoomUpdate = async (nextRoom: TradeRoom, payload: Partial<TradeRoomUpdatePayload>): Promise<void> => {
     if (!notifyCounterparty) return;
     if (!identity || !counterpartyPublicKey) {
@@ -9015,6 +9240,20 @@ function TradeRoomDetail({
         <span className="pill">{t(`tradeRoom.state.${room.state}`)}</span>
       </header>
       <TradeRoomStateStepper state={room.state} />
+      <TradeRoomDealSheetPanel
+        dealSheet={dealSheet}
+        acceptanceLabel={agreementStatusLabel}
+        onOpenAgreement={() => onOpenAdvancedAgreement(row)}
+        onOpenDispute={() => onOpenAdvancedDispute(row)}
+        onPaymentPending={() => void savePaymentState('payment-pending')}
+        onMarkPaid={() => void savePaymentState('paid')}
+        onMarkDelivered={() => void saveDeliveryState('delivered')}
+        onConfirmDelivery={() => void saveDeliveryState('confirmed')}
+        onReview={() => onReviewRoom(room)}
+        agreementReady={agreementReady}
+        reviewEnabled={Boolean(identity && (room.state === 'confirmed' || room.state === 'reviewed'))}
+      />
+      <TradeRoomCounterpartyContext row={row} />
       <section className="trade-room-next-action">
         <div>
           <span className="form-eyebrow">{t('tradeRoom.nextAction')}</span>
@@ -9048,10 +9287,10 @@ function TradeRoomDetail({
           <h3>{t('tradeRoom.payment')}</h3>
           <p className="muted compact-meta">{t(`tradeRoom.paymentState.${room.paymentState}`)}</p>
           <div className="actions small">
-            <button className="subtle" onClick={() => void savePaymentState('payment-pending')} type="button">
+            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void savePaymentState('payment-pending')} type="button">
               {t('tradeRoom.markPaymentPending')}
             </button>
-            <button className="subtle" onClick={() => void savePaymentState('paid')} type="button">
+            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void savePaymentState('paid')} type="button">
               {t('tradeRoom.markPaid')}
             </button>
           </div>
@@ -9063,10 +9302,10 @@ function TradeRoomDetail({
           <h3>{t('tradeRoom.delivery')}</h3>
           <p className="muted compact-meta">{t(`tradeRoom.deliveryState.${room.deliveryState}`)}</p>
           <div className="actions small">
-            <button className="subtle" onClick={() => void saveDeliveryState('delivered')} type="button">
+            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void saveDeliveryState('delivered')} type="button">
               {t('tradeRoom.markDelivered')}
             </button>
-            <button className="subtle" onClick={() => void saveDeliveryState('confirmed')} type="button">
+            <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => void saveDeliveryState('confirmed')} type="button">
               {t('tradeRoom.markConfirmed')}
             </button>
           </div>
@@ -9130,7 +9369,7 @@ function TradeRoomDetail({
             <span className="pill">{room.mediator || t('common.none')}</span>
           </div>
           <p className="muted compact-meta">{t('tradeRoom.disputePanelBody')}</p>
-          <button className="subtle" onClick={() => onOpenAdvancedDispute(row)} type="button">
+          <button className="subtle" disabled={!agreementReady} title={!agreementReady ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => onOpenAdvancedDispute(row)} type="button">
             {t('tradeRoom.openAdvancedDispute')}
           </button>
         </section>
@@ -9513,8 +9752,13 @@ function TradePage({
   agreementReceipts,
   tradeRooms,
   tradeRoomDeliveries,
+  buyerRequestOffers,
   mediators,
   syncedMediators,
+  operatorSupportReceipts,
+  webOfTrustMap,
+  communityLists,
+  syncedCommunityLists,
   disputes,
   attestations,
   lightningPaymentAttempts,
@@ -9546,8 +9790,13 @@ function TradePage({
   agreementReceipts: AgreementAcceptanceReceipt[];
   tradeRooms: TradeRoom[];
   tradeRoomDeliveries: TradeRoomDelivery[];
+  buyerRequestOffers: BuyerRequestOffer[];
   mediators: MediatorProfile[];
   syncedMediators: SyncedPublicRecord<MediatorProfile>[];
+  operatorSupportReceipts: OperatorSupportReceipt[];
+  webOfTrustMap: Map<string, WebOfTrustEntry>;
+  communityLists: CommunityCurationList[];
+  syncedCommunityLists: SyncedPublicRecord<CommunityCurationList>[];
   disputes: DisputeCase[];
   attestations: ReputationAttestation[];
   lightningPaymentAttempts: LightningPaymentAttempt[];
@@ -9688,6 +9937,7 @@ function TradePage({
     return tradeRooms.map((room) => {
       const agreement = room.agreementHash ? agreements.find((entry) => entry.hash === room.agreementHash) : undefined;
       const listing = room.listingId ? listingById.get(room.listingId) : undefined;
+      const offer = room.buyerRequestOfferId ? buyerRequestOffers.find((entry) => entry.id === room.buyerRequestOfferId) : undefined;
       const paymentAttempts = lightningPaymentAttempts.filter((attempt) => {
         if (room.relatedPaymentAttemptIds.includes(attempt.id)) return true;
         return Boolean(room.listingId && attempt.listingId === room.listingId && publicKeysMatch(attempt.sellerPublicKey, room.sellerPublicKey));
@@ -9707,17 +9957,48 @@ function TradePage({
           : hydrated.deliveryState;
       hydrated = stateForDelivery(hydrated, deliveryState);
       hydrated = markRoomReviewed(hydrated, attestations);
+      const reviewExists = hydrated.state === 'reviewed' || Boolean(hydrated.reviewedAt);
+      const ownerKey = identity?.publicKey.toLowerCase();
+      const hasCounterparty = ownerKey
+        ? publicKeysMatch(ownerKey, hydrated.buyerPublicKey) || publicKeysMatch(ownerKey, hydrated.sellerPublicKey)
+        : false;
+      const dealSheet = deriveTradeRoomDealSheet({
+        room: hydrated,
+        agreement,
+        listing,
+        offer,
+        receiptStatus,
+        paymentAttempts,
+        zapReceipts,
+        deliveries: deliveryRows,
+        reviewExists,
+        hasIdentity: Boolean(identity),
+        hasCounterparty,
+        enabledRelayCount: relays.filter((relay) => relay.enabled).length
+      });
+      const listingCoordinate = listing ? nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id) : undefined;
+      const curatedBy = listingCoordinate
+        ? [...communityLists, ...syncedCommunityLists.map((record) => record.payload)]
+            .filter((list) => list.referencedCoordinates.includes(listingCoordinate))
+            .map((list) => list.title)
+        : [];
       return {
         room: hydrated,
         agreement,
         listing,
+        offer,
         receiptStatus,
         paymentAttempts,
         zapReceipts,
-        deliveries: deliveryRows
+        deliveries: deliveryRows,
+        dealSheet,
+        supportReceipt: supportReceiptForPublicKeys([hydrated.sellerPublicKey], operatorSupportReceipts),
+        webTrust: webTrustEntryForPublicKeys([hydrated.sellerPublicKey], webOfTrustMap),
+        curatedBy,
+        reviewCount: attestations.filter((attestation) => publicKeysMatch(attestation.subjectPublicKey, hydrated.sellerPublicKey)).length
       };
     });
-  }, [agreementReceipts, agreements, attestations, lightningPaymentAttempts, listingSourceRefs, listingZapReceipts, tradeRoomDeliveries, tradeRooms]);
+  }, [agreementReceipts, agreements, attestations, buyerRequestOffers, communityLists, identity, lightningPaymentAttempts, listingSourceRefs, listingZapReceipts, operatorSupportReceipts, relays, syncedCommunityLists, tradeRoomDeliveries, tradeRooms, webOfTrustMap]);
   const selectedRoomRow = roomRows.find((row) => row.room.id === selectedRoomId) ?? roomRows[0];
 
   const openAdvancedTradeTool = (tab: Exclude<TradeTab, 'rooms'>, row?: TradeRoomRow): void => {

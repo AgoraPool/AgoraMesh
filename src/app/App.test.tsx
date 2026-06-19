@@ -1674,7 +1674,7 @@ describe('production readiness UI', () => {
         contactMethod: { id: 'contact_nostr', kind: 'nostr', value: 'b'.repeat(64) },
         paymentPreferences: ['lightning', 'cashu'],
         paymentIntents: [
-          { id: 'intent_lightning', method: 'lightning', value: 'seller@example.com' },
+          { id: 'intent_lightning', method: 'lightning', value: 'seller@example.com', note: '' },
           { id: 'intent_cashu', method: 'cashu', value: 'cashuAcompact', note: 'Manual Cashu handoff' }
         ]
       })

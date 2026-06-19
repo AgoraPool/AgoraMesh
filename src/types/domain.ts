@@ -125,6 +125,7 @@ export interface NostrSignerState {
   publicKey?: string;
   lastError?: string;
   provider?: 'nip07' | 'nip46';
+  connectedAtMs?: number;
 }
 
 export interface NostrProfileMetadata {

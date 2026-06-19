@@ -153,14 +153,18 @@ import {
   type ZapRequestArgs
 } from '../lib/nostr/zaps';
 import {
+  cancelNostrConnectPairing,
   connectNostrSigner,
   decryptWithNostrSigner,
   detectNostrSigner,
+  disconnectNostrSigner,
   encryptWithNostrSigner,
+  openNostrConnectPairingUri,
   resumeNostrConnectPairing,
+  restoreNostrSignerSession,
   signerSupportsNip44Decryption,
   signerSupportsNip44Encryption,
-  startNostrConnectPairing,
+  startOrResumeNostrConnectPairing,
   signWithNostrSigner
 } from '../lib/nostr/signer';
 import { db, defaultSyncSettings, deleteLocalData, downloadJson, ensureDefaults, exportAllData, importAllData } from '../lib/storage/db';
@@ -1241,6 +1245,7 @@ export function App(): ReactNode {
   const [syncStatuses, setSyncStatuses] = useState<SyncStatus[]>([]);
   const [relayFetchSummaries, setRelayFetchSummaries] = useState<RelayFetchSummary[]>([]);
   const [nostrSigner, setNostrSigner] = useState<NostrSignerState>(() => detectNostrSigner());
+  const nostrSignerRef = useRef(nostrSigner);
   const [privateKeyHex, setPrivateKeyHex] = useState('');
   const [identityBackedUp, setIdentityBackedUp] = useState(false);
   const [notice, setNotice] = useState('');
@@ -1268,6 +1273,41 @@ export function App(): ReactNode {
     reputation: t('nav.reputation'),
     settings: t('nav.settings')
   };
+
+  useEffect(() => {
+    nostrSignerRef.current = nostrSigner;
+  }, [nostrSigner]);
+
+  useEffect(() => {
+    let mounted = true;
+    let restoring = false;
+    const restoreSigner = async (): Promise<void> => {
+      if (restoring || nostrSignerRef.current.connected) return;
+      restoring = true;
+      try {
+        const next = await restoreNostrSignerSession();
+        if (!mounted) return;
+        setNostrSigner((current) => (current.connected ? current : next));
+      } finally {
+        restoring = false;
+      }
+    };
+    const onFocus = (): void => {
+      void restoreSigner();
+    };
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') void restoreSigner();
+    };
+    void restoreSigner();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      mounted = false;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
   const inboxNotifications = useMemo(
     () =>
       buildInboxNotifications({
@@ -1687,6 +1727,12 @@ export function App(): ReactNode {
     setNostrSigner(next);
     showNotice(next.connected ? t('signer.connected') : next.lastError ?? t('signer.unavailable'));
     return next;
+  };
+
+  const disconnectSigner = (): void => {
+    const next = disconnectNostrSigner();
+    setNostrSigner(next);
+    showNotice(t('signer.disconnected'));
   };
 
   const localProfileForSigner = async (publicKey: string): Promise<PublicProfile | undefined> => {
@@ -3191,6 +3237,7 @@ export function App(): ReactNode {
             onPrivateKey={setPrivateKeyHex}
             onLock={() => setPrivateKeyHex('')}
             onConnectSigner={connectSigner}
+            onDisconnectSigner={disconnectSigner}
             onNostrConnectConnected={setNostrSigner}
             onUseConnectedSignerAsIdentity={useConnectedSignerAsIdentity}
             onIdentityForgotten={async () => {
@@ -3457,6 +3504,7 @@ export function App(): ReactNode {
             privateKeyHex={privateKeyHex}
             go={go}
             onConnectSigner={() => void connectSigner()}
+            onDisconnectSigner={disconnectSigner}
             onNostrConnectConnected={setNostrSigner}
             onUseConnectedSignerAsIdentity={() => void useConnectedSignerAsIdentity()}
             onRelayFetchSummaries={setRelayFetchSummaries}
@@ -7619,6 +7667,7 @@ function ProfilePage({
   onPrivateKey,
   onLock,
   onConnectSigner,
+  onDisconnectSigner,
   onNostrConnectConnected,
   onUseConnectedSignerAsIdentity,
   onIdentityForgotten,
@@ -7648,6 +7697,7 @@ function ProfilePage({
   onPrivateKey: (privateKey: string) => void;
   onLock: () => void;
   onConnectSigner: () => Promise<NostrSignerState>;
+  onDisconnectSigner: () => void;
   onNostrConnectConnected: (state: NostrSignerState) => void;
   onUseConnectedSignerAsIdentity: (displayName?: string, signerOverride?: NostrSignerState) => Promise<void>;
   onIdentityForgotten: () => Promise<void>;
@@ -8123,8 +8173,10 @@ function ProfilePage({
                   </section>
                   <SignerStatusStrip
                     status={signerStatus}
+                    signer={nostrSigner}
                     relays={relays}
                     onConnect={() => void onConnectSigner()}
+                    onDisconnect={onDisconnectSigner}
                     onNostrConnectConnected={(state) => {
                       onNostrConnectConnected(state);
                       void onUseConnectedSignerAsIdentity(name || profile?.displayName || undefined, state);
@@ -11825,6 +11877,7 @@ function SettingsPage({
   privateKeyHex,
   go,
   onConnectSigner,
+  onDisconnectSigner,
   onNostrConnectConnected,
   onUseConnectedSignerAsIdentity,
   onRelayFetchSummaries,
@@ -11877,6 +11930,7 @@ function SettingsPage({
   privateKeyHex: string;
   go: (page: RouteTarget) => void;
   onConnectSigner: () => void;
+  onDisconnectSigner: () => void;
   onNostrConnectConnected: (state: NostrSignerState) => void;
   onUseConnectedSignerAsIdentity: () => void;
   onRelayFetchSummaries: (summaries: RelayFetchSummary[]) => void;
@@ -12452,8 +12506,10 @@ function SettingsPage({
             <p className="muted">{t('signer.body')}</p>
             <SignerStatusStrip
               status={signerStatus}
+              signer={nostrSigner}
               relays={relays}
               onConnect={onConnectSigner}
+              onDisconnect={onDisconnectSigner}
               onNostrConnectConnected={onNostrConnectConnected}
               onUseAsIdentity={onUseConnectedSignerAsIdentity}
             />
@@ -13119,11 +13175,34 @@ function NostrConnectPairingPanel({
   const [error, setError] = useState('');
   const onConnectedRef = useRef(onConnected);
   const failureMessageRef = useRef(t('signer.nostrConnectFailed'));
+  const mountedRef = useRef(true);
+
+  const watchPairing = (pairing: ReturnType<typeof startOrResumeNostrConnectPairing>): void => {
+    void pairing.promise
+      .then((state) => {
+        if (!mountedRef.current) return;
+        onConnectedRef.current(state);
+        setConnecting(false);
+        setError('');
+      })
+      .catch((err) => {
+        if (!mountedRef.current) return;
+        setError(err instanceof Error ? err.message : failureMessageRef.current);
+        setConnecting(false);
+      });
+  };
 
   useEffect(() => {
     onConnectedRef.current = onConnected;
     failureMessageRef.current = t('signer.nostrConnectFailed');
   }, [onConnected, t]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const pairing = resumeNostrConnectPairing();
@@ -13151,35 +13230,43 @@ function NostrConnectPairingPanel({
   const startPairing = (): void => {
     setError('');
     setConnecting(true);
-    const pairing = startNostrConnectPairing(relays.filter((relay) => relay.enabled).map((relay) => relay.url));
+    const pairing = startOrResumeNostrConnectPairing(relays.filter((relay) => relay.enabled).map((relay) => relay.url));
     setConnectUri(pairing.uri);
-    void pairing.promise
-      .then((state) => {
-        onConnected(state);
-        setConnecting(false);
-      })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : t('signer.nostrConnectFailed'));
-        setConnecting(false);
-      });
+    openNostrConnectPairingUri(pairing.uri);
+    watchPairing(pairing);
+  };
+  const cancelPairing = (): void => {
+    cancelNostrConnectPairing();
+    setConnectUri('');
+    setConnecting(false);
+    setError(t('signer.pairingCancelled'));
   };
   return (
     <div className="nostr-connect-pairing">
-      <p className="muted">{t('signer.nostrConnectFallback')}</p>
+      <p className="muted">{t('signer.amberPersistent')}</p>
       <div className="actions small">
-        <button className="subtle" disabled={connecting} onClick={startPairing} type="button">
-          {connecting ? t('signer.nostrConnectWaiting') : t('signer.startNostrConnect')}
+        <button onClick={startPairing} type="button">
+          <KeyRound size={16} /> {connectUri ? t('signer.resumeAmber') : t('signer.connectAmber')}
         </button>
         {connectUri ? (
-          <a className="button subtle" href={connectUri} rel="noopener noreferrer" target="_blank">
-            {t('signer.openNostrConnect')}
-          </a>
+          <button className="subtle" onClick={() => openNostrConnectPairingUri(connectUri)} type="button">
+            {t('signer.openAmberAgain')}
+          </button>
         ) : null}
         <button className="subtle" disabled={!connectUri} onClick={() => void navigator.clipboard?.writeText(connectUri)} type="button">
           {t('signer.copyNostrConnectUrl')}
         </button>
+        <button className="subtle" disabled={!connectUri} onClick={cancelPairing} type="button">
+          {t('signer.cancelPairing')}
+        </button>
       </div>
-      {connectUri ? <p className="key">{connectUri}</p> : null}
+      {connecting ? <p className="muted compact-meta">{t('signer.nostrConnectWaiting')}</p> : null}
+      {connectUri ? (
+        <DisclosurePanel title={t('signer.manualPairing')}>
+          <p className="muted">{t('signer.nostrConnectFallback')}</p>
+          <p className="key">{connectUri}</p>
+        </DisclosurePanel>
+      ) : null}
       {error ? <p className="warning compact-warning">{error}</p> : null}
     </div>
   );
@@ -13187,19 +13274,35 @@ function NostrConnectPairingPanel({
 
 function SignerStatusStrip({
   status,
+  signer,
   relays,
   onConnect,
+  onDisconnect,
   onNostrConnectConnected,
   onUseAsIdentity
 }: {
   status: SignerIdentityStatus;
+  signer: NostrSignerState;
   relays: RelayConfig[];
   onConnect: () => void;
+  onDisconnect: () => void;
   onNostrConnectConnected: (state: NostrSignerState) => void;
   onUseAsIdentity?: () => void;
 }): ReactNode {
   const { t } = useI18n();
   const showNostrConnectPairing = status.state !== 'active-identity' && status.state !== 'connected';
+  let providerLabel = t('signer.providerUnknown');
+  if (signer.provider === 'nip46') {
+    providerLabel = t('signer.providerAmber');
+  } else if (signer.provider === 'nip07') {
+    providerLabel = t('signer.providerNip07');
+  }
+  let connectLabel = t('signer.connect');
+  if (status.state === 'connected-mismatch') {
+    connectLabel = t('signer.reconnect');
+  } else if (showNostrConnectPairing && signer.provider !== 'nip07') {
+    connectLabel = signer.provider === 'nip46' ? t('signer.resumeAmber') : t('signer.connectAmber');
+  }
   return (
     <article className="inline-card signer-strip">
       <div className="row between">
@@ -13209,11 +13312,22 @@ function SignerStatusStrip({
         </span>
       </div>
       <p className="muted">{t(`signer.status.${status.state}.body`)}</p>
+      {signer.provider ? (
+        <p className="muted compact-meta">
+          {providerLabel}
+          {signer.connectedAtMs ? ` · ${t('signer.connectedAt').replace('{time}', new Date(signer.connectedAtMs).toLocaleString())}` : ''}
+        </p>
+      ) : null}
       {status.signerPublicKey ? <p className="key">{status.signerPublicKey}</p> : null}
       <div className="actions small">
         <button onClick={onConnect} type="button">
-          <KeyRound size={16} /> {status.state === 'connected-mismatch' ? t('signer.reconnect') : t('signer.connect')}
+          <KeyRound size={16} /> {connectLabel}
         </button>
+        {signer.connected || signer.provider === 'nip46' ? (
+          <button className="subtle" onClick={onDisconnect} type="button">
+            {t('signer.disconnect')}
+          </button>
+        ) : null}
         {status.signerPublicKey && status.state !== 'active-identity' && onUseAsIdentity ? (
           <button onClick={onUseAsIdentity} type="button">
             {t('signer.useAsIdentity')}

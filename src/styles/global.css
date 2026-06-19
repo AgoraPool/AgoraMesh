@@ -472,6 +472,17 @@ pre {
   min-width: 0;
 }
 
+.signer-strip,
+.signer-strip .actions,
+.nostr-connect-pairing .actions {
+  min-width: 0;
+}
+
+.signer-strip .actions button,
+.nostr-connect-pairing .actions button {
+  min-width: 0;
+}
+
 .nostr-connect-pairing .key {
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -3865,6 +3876,12 @@ dd {
 
   .profile-onboarding-grid,
   .copy-field {
+    grid-template-columns: 1fr;
+  }
+
+  .signer-strip .actions,
+  .nostr-connect-pairing .actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

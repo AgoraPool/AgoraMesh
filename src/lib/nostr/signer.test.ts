@@ -1,17 +1,48 @@
 import { bytesToHex } from '@noble/hashes/utils';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { detectNostrSigner, connectNostrSigner, signWithNostrSigner } from './signer';
+import { detectNostrSigner, connectNostrSigner, disconnectNostrSigner, signWithNostrSigner } from './signer';
 import { unsignedAgoraEvent, AGORAMESH_EVENT_KINDS } from './events';
 
 describe('NIP-07 browser signer helpers', () => {
   afterEach(() => {
     Reflect.deleteProperty(window, 'nostr');
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    disconnectNostrSigner();
     vi.restoreAllMocks();
   });
 
   it('detects unavailable signer extensions', () => {
     expect(detectNostrSigner()).toEqual({ available: false, connected: false });
+  });
+
+  it('migrates stored Nostr Connect sessions from sessionStorage to localStorage', () => {
+    const session = {
+      clientSecretHex: '1'.repeat(64),
+      clientPubkey: '2'.repeat(64),
+      remotePubkey: '3'.repeat(64),
+      publicKey: '4'.repeat(64),
+      relays: ['wss://relay.example'],
+      secret: 'pairing-secret',
+      connectedAtMs: 123
+    };
+    window.sessionStorage.setItem('agoramesh:nip46:session', JSON.stringify(session));
+
+    expect(detectNostrSigner()).toMatchObject({ available: true, connected: false, provider: 'nip46', connectedAtMs: 123 });
+    expect(window.localStorage.getItem('agoramesh:nip46:session')).toBe(JSON.stringify(session));
+    expect(window.sessionStorage.getItem('agoramesh:nip46:session')).toBeNull();
+  });
+
+  it('disconnects and clears stored Amber session and pending pairing data', () => {
+    window.localStorage.setItem('agoramesh:nip46:session', '{"stored":true}');
+    window.localStorage.setItem('agoramesh:nip46:pending', '{"pending":true}');
+    window.sessionStorage.setItem('agoramesh:nip07:connected', '{"publicKey":"' + 'a'.repeat(64) + '","connectedAtMs":123}');
+
+    expect(disconnectNostrSigner()).toEqual({ available: false, connected: false });
+    expect(window.localStorage.getItem('agoramesh:nip46:session')).toBeNull();
+    expect(window.localStorage.getItem('agoramesh:nip46:pending')).toBeNull();
+    expect(window.sessionStorage.getItem('agoramesh:nip07:connected')).toBeNull();
   });
 
   it('connects to an available signer public key', async () => {

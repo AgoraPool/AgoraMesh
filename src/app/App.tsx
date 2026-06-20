@@ -221,6 +221,7 @@ import {
   tradeRoomMatchesSelectedOffer,
   tradeRoomFromAgreement,
   tradeRoomFromPrivateTrade,
+  tradeRoomFromPrivateUpdatePayload,
   tradeRoomFromSelectedOffer,
   upsertTradeRoom,
   type TradeRoomDealSheet,
@@ -541,6 +542,16 @@ function compactTradeRoomsForDisplay(rooms: TradeRoom[]): { visible: TradeRoom[]
     visible: [...visibleByKey.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     redundantIds: [...new Set(redundantIds)]
   };
+}
+
+async function putTradeRoomReplacingTombstones(room: TradeRoom, existingRooms: TradeRoom[]): Promise<void> {
+  const tombstoneIds = existingRooms.filter((entry) => entry.deletedAt && tradeRoomSameDeal(entry, room)).map((entry) => entry.id);
+  await db.transaction('rw', db.tradeRooms, async () => {
+    if (tombstoneIds.length > 0) {
+      await Promise.all(tombstoneIds.map((id) => db.tradeRooms.delete(id)));
+    }
+    await db.tradeRooms.put(room);
+  });
 }
 
 async function markSyncedRecordsTrusted<T>(
@@ -1984,7 +1995,7 @@ export function App(): ReactNode {
     const rooms = await db.tradeRooms.toArray();
     const agreementsInDb = await db.agreements.toArray();
     const deletedRoom = rooms.find((entry) => entry.deletedAt && roomMatchesPrivateUpdate(entry, payload, record.senderPublicKey, record.ownerPublicKey));
-    if (deletedRoom) return;
+    if (deletedRoom?.deletedAt && payload.createdAt <= deletedRoom.deletedAt) return;
     let room = rooms.find((entry) => !entry.deletedAt && roomMatchesPrivateUpdate(entry, payload, record.senderPublicKey, record.ownerPublicKey));
     let agreementForReceipt = packetAgreement
       ? agreementsInDb.find((entry) => entry.hash === packetAgreement?.hash) ?? packetAgreement
@@ -2004,6 +2015,9 @@ export function App(): ReactNode {
         createdAt: payload.createdAt,
         updatedAt: payload.createdAt
       };
+    }
+    if (!room) {
+      room = tradeRoomFromPrivateUpdatePayload(payload, record.ownerPublicKey, record.senderPublicKey);
     }
     if (!room) return;
     const at = record.receivedAt || payload.createdAt;
@@ -2041,6 +2055,8 @@ export function App(): ReactNode {
     if (agreementForReceipt) {
       nextRoom = applyAgreementReceiptStatus(nextRoom, agreementReceiptStatus(agreementForReceipt, receiptsForStatus), at);
     }
+    const matchingDeletedRooms = rooms.filter((entry) => entry.deletedAt && tradeRoomSameDeal(entry, nextRoom));
+    if (matchingDeletedRooms.some((entry) => entry.deletedAt && payload.createdAt <= entry.deletedAt)) return;
     const delivery = deliveryFromUpdatePayload(payload, room.id, record.id);
     const cachedDelivery = delivery
       ? {
@@ -2049,6 +2065,9 @@ export function App(): ReactNode {
           updatedAt: at
         }
       : undefined;
+    if (matchingDeletedRooms.length > 0) {
+      await Promise.all(matchingDeletedRooms.map((entry) => db.tradeRooms.delete(entry.id)));
+    }
     await db.tradeRooms.put(nextRoom);
     if (cachedDelivery) {
       await db.tradeRoomDeliveries.put(cachedDelivery);
@@ -2251,7 +2270,7 @@ export function App(): ReactNode {
       return entry;
     });
     await db.agreements.put(agreement);
-    await db.tradeRooms.put(room);
+    await putTradeRoomReplacingTombstones(room, existingRooms);
     await db.buyerRequestOffers.bulkPut(updatedOffers);
     setAgreements((current) => [agreement, ...current.filter((entry) => entry.id !== agreement.id)]);
     setBuyerRequestOffers(updatedOffers.sort((left, right) => right.createdAt.localeCompare(left.createdAt)));
@@ -3361,9 +3380,36 @@ export function App(): ReactNode {
                       at
                     })
                   );
-                  await db.tradeRooms.put(room);
+                  await putTradeRoomReplacingTombstones(room, existingRooms);
                   setTradeRooms((current) => compactTradeRoomsForDisplay([room, ...current.filter((entry) => entry.id !== room.id)]).visible);
                   setTradeRoomOpenId(room.id);
+                  if (!publicKeysMatch(identity.publicKey, room.sellerPublicKey)) {
+                    void sendNostrContactIntro({
+                      recipientPublicKey: room.sellerPublicKey,
+                      label: room.listingTitle || listingRef.listing.title,
+                      contextType: 'trade-room',
+                      contextId: room.id,
+                      contextTitle: room.listingTitle || listingRef.listing.title,
+                      includeContext: true,
+                      message: encodeTradeRoomUpdateMessage({
+                        schemaVersion: 1,
+                        kind: 'trade-room-update',
+                        roomId: room.id,
+                        senderPublicKey: identity.publicKey.toLowerCase(),
+                        clientActionId: newId('room_action'),
+                        listingId: room.listingId,
+                        listingCoordinate: room.listingCoordinate,
+                        state: room.state,
+                        paymentState: room.paymentState,
+                        deliveryState: room.deliveryState,
+                        createdAt: at
+                      }),
+                      messageLimit: NOSTR_COORDINATION_MESSAGE_LIMIT
+                    }).catch((error) => {
+                      const message = error instanceof Error ? error.message : t('tradeRoom.notifyFailed');
+                      showNotice(t('agreement.syncFailed').replace('{reason}', message));
+                    });
+                  }
                 }
                 go('trade');
               })();
@@ -10919,7 +10965,7 @@ function TradePage({
         : undefined;
     const room = upsertTradeRoom(activeRooms, tradeRoomFromAgreement(agreement, activeRoom));
     await db.agreements.put(agreement);
-    await db.tradeRooms.put(room);
+    await putTradeRoomReplacingTombstones(room, existingRooms);
     try {
       await sendAgreementRoomUpdate({ room, agreement, workflowAction: 'agreement-created' });
       setAgreementMessage(t('agreement.synced'));

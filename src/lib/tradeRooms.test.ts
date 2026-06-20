@@ -16,6 +16,7 @@ import {
   stateForPayment,
   tradeRoomFromAgreement,
   tradeRoomFromPrivateTrade,
+  tradeRoomFromPrivateUpdatePayload,
   tradeRoomFromSelectedOffer,
   tradeRoomListingCoordinate,
   tradeRoomMatchesPrivateTrade,
@@ -467,6 +468,38 @@ describe('private room payloads', () => {
     const parsed = parseTradeRoomUpdatePayload(encoded);
     expect(parsed?.agreementPacket?.agreementHash).toBe(packet.agreementHash);
     expect(parsed?.agreementReceipt?.id).toBe(receipt.id);
+  });
+
+  it('creates a listing-only room from a private room update without an agreement packet', () => {
+    const listingCoordinate = tradeRoomListingCoordinate(listing({ authorPublicKey: seller, id: 'listing_1' }));
+    const payload = parseTradeRoomUpdatePayload(
+      encodeTradeRoomUpdateMessage({
+        schemaVersion: 1,
+        kind: 'trade-room-update',
+        roomId: 'trade_room_listing_1',
+        senderPublicKey: buyer,
+        listingId: 'listing_1',
+        listingCoordinate,
+        state: 'intent',
+        paymentState: 'none',
+        deliveryState: 'none',
+        createdAt: '2026-06-01T03:00:00.000Z'
+      })
+    );
+    const room = tradeRoomFromPrivateUpdatePayload(payload!, seller, buyer);
+    expect(room).toMatchObject({
+      id: 'trade_room_listing_1',
+      buyerPublicKey: buyer,
+      sellerPublicKey: seller,
+      listingId: 'listing_1',
+      listingCoordinate,
+      state: 'intent'
+    });
+    expect(tradeRoomFromPrivateUpdatePayload({ ...payload!, senderPublicKey: seller }, buyer, seller)).toMatchObject({
+      buyerPublicKey: buyer,
+      sellerPublicKey: seller
+    });
+    expect(tradeRoomFromPrivateUpdatePayload({ ...payload!, senderPublicKey: 'd'.repeat(64) }, seller, buyer)).toBeUndefined();
   });
 
   it('encodes and applies cockpit workflow payload fields', () => {

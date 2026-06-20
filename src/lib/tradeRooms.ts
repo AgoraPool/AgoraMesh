@@ -440,6 +440,39 @@ export function stateForDelivery(room: TradeRoom, deliveryState: TradeRoomDelive
   };
 }
 
+export function tradeRoomFromPrivateUpdatePayload(payload: TradeRoomUpdatePayload, ownerPublicKey: string, senderPublicKey: string): TradeRoom | undefined {
+  const sender = senderPublicKey.toLowerCase();
+  const owner = ownerPublicKey.toLowerCase();
+  if (!isTradeRoomPublicKey(sender) || !isTradeRoomPublicKey(owner) || payload.senderPublicKey.toLowerCase() !== sender) return undefined;
+  const [, coordinateSeller] = payload.listingCoordinate?.split(':') ?? [];
+  const sellerPublicKey = coordinateSeller?.toLowerCase();
+  if (!isTradeRoomPublicKey(sellerPublicKey) || (sellerPublicKey !== sender && sellerPublicKey !== owner)) return undefined;
+  const buyerPublicKey = sellerPublicKey === sender ? owner : sender;
+  if (!isTradeRoomPublicKey(buyerPublicKey) || buyerPublicKey === sellerPublicKey) return undefined;
+  const state: TradeRoomState = payload.state === 'offer' ? 'offer' : 'intent';
+  return {
+    id: payload.roomId,
+    buyerPublicKey,
+    sellerPublicKey,
+    buyerLabel: buyerPublicKey.slice(0, 16),
+    sellerLabel: sellerPublicKey.slice(0, 16),
+    listingId: payload.listingId,
+    listingCoordinate: payload.listingCoordinate,
+    listingTitle: payload.listingId || payload.roomId,
+    agreementHash: payload.agreementHash,
+    state,
+    paymentState: 'none',
+    deliveryState: 'none',
+    paymentClaimedBy: [],
+    deliveryClaimedBy: [],
+    relatedPaymentAttemptIds: [],
+    relatedZapReceiptIds: [],
+    relatedMessageThreadIds: [],
+    createdAt: payload.createdAt,
+    updatedAt: payload.createdAt
+  };
+}
+
 function formatDealPrice(listing?: Listing, agreement?: Agreement, offer?: BuyerRequestOffer): string {
   if (agreement?.priceAndPayment) return agreement.priceAndPayment;
   if (offer) return `${offer.amount} ${offer.currency}`.trim();

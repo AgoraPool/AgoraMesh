@@ -9703,10 +9703,15 @@ function TradeRoomDetail({
     });
   };
   const workflowActionDisabled = (action: TradeRoomWorkflowAction): boolean => {
+    if (action === 'wait-payment' || action === 'wait-delivery') return true;
     if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !identity) return true;
     if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !counterpartyPublicKey) return true;
     if (['mark-payment-pending', 'mark-paid', 'send-delivery', 'confirm-delivery', 'write-review'].includes(action) && !agreementReady) return true;
     return false;
+  };
+  const workflowActionDisabledTitle = (action: TradeRoomWorkflowAction): string | undefined => {
+    if (action === 'wait-payment' || action === 'wait-delivery') return t(`tradeRoom.nextAction.${dealSheet.nextAction}`);
+    return workflowActionDisabled(action) ? t('tradeRoom.acceptanceRequired') : undefined;
   };
   const runWorkflowAction = (action: TradeRoomWorkflowAction): void => {
     setStateStatus('');
@@ -9727,6 +9732,12 @@ function TradeRoomDetail({
         return;
       case 'confirm-delivery':
         void saveDeliveryState('confirmed');
+        return;
+      case 'wait-payment':
+        setStateStatus(t('tradeRoom.waitPayment'));
+        return;
+      case 'wait-delivery':
+        setStateStatus(t('tradeRoom.waitDelivery'));
         return;
       case 'write-review':
         void (async () => {
@@ -9785,7 +9796,7 @@ function TradeRoomDetail({
             <p className="muted compact-meta">{nextAction}</p>
             <p className="muted compact-meta">{agreementReady ? t('tradeRoom.acceptanceMutual') : t('tradeRoom.acceptancePending')}</p>
           </div>
-          <button disabled={workflowActionDisabled(workflow.primaryAction)} title={workflowActionDisabled(workflow.primaryAction) ? t('tradeRoom.acceptanceRequired') : undefined} onClick={() => runWorkflowAction(workflow.primaryAction)} type="button">
+          <button disabled={workflowActionDisabled(workflow.primaryAction)} title={workflowActionDisabledTitle(workflow.primaryAction)} onClick={() => runWorkflowAction(workflow.primaryAction)} type="button">
             {t(`tradeRoom.workflowAction.${workflow.primaryAction}`)}
           </button>
         </div>
@@ -10506,20 +10517,24 @@ function TradePage({
       });
       const receiptStatus = agreement ? agreementReceiptStatus(agreement, agreementReceipts) : undefined;
       let hydrated = agreement ? applyAgreementReceiptStatus(room, receiptStatus ?? 'draft') : room;
+      const ownerKey = identity?.publicKey.toLowerCase();
       const derivedPaymentState = derivePaymentState(paymentAttempts, zapReceipts);
       if (derivedPaymentState !== 'none') {
-        hydrated = stateForPayment(hydrated, derivedPaymentState);
+        hydrated = stateForPayment(hydrated, derivedPaymentState, nowIso(), ownerKey);
       }
       const deliveryRows = tradeRoomDeliveries.filter((delivery) => delivery.roomId === room.id);
-      const deliveryState: TradeRoomDeliveryState = deliveryRows.some((delivery) => delivery.status === 'confirmed')
-        ? 'confirmed'
-        : deliveryRows.some((delivery) => delivery.status === 'sent' || delivery.status === 'received')
-          ? 'delivered'
-          : hydrated.deliveryState;
-      hydrated = stateForDelivery(hydrated, deliveryState);
+      for (const delivery of deliveryRows) {
+        if (delivery.status === 'sent' || delivery.status === 'received' || delivery.status === 'confirmed') {
+          hydrated = stateForDelivery(
+            hydrated,
+            delivery.status === 'confirmed' ? 'confirmed' : 'delivered',
+            delivery.updatedAt,
+            delivery.senderPublicKey
+          );
+        }
+      }
       hydrated = markRoomReviewed(hydrated, attestations);
       const reviewExists = hydrated.state === 'reviewed' || Boolean(hydrated.reviewedAt);
-      const ownerKey = identity?.publicKey.toLowerCase();
       const hasCounterparty = ownerKey
         ? publicKeysMatch(ownerKey, hydrated.buyerPublicKey) || publicKeysMatch(ownerKey, hydrated.sellerPublicKey)
         : false;
@@ -10535,7 +10550,8 @@ function TradePage({
         reviewExists,
         hasIdentity: Boolean(identity),
         hasCounterparty,
-        enabledRelayCount: relays.filter((relay) => relay.enabled).length
+        enabledRelayCount: relays.filter((relay) => relay.enabled).length,
+        actorPublicKey: ownerKey
       });
       const listingCoordinate = listing ? nostrCoordinate(AGORAMESH_EVENT_KINDS.listing, listing.authorPublicKey, listing.id) : undefined;
       const curatedBy = listingCoordinate

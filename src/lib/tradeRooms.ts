@@ -93,8 +93,10 @@ export type TradeRoomDealNextAction =
   | 'sign-agreement'
   | 'start-payment'
   | 'confirm-payment'
+  | 'wait-payment'
   | 'send-delivery'
   | 'confirm-delivery'
+  | 'wait-delivery'
   | 'write-review'
   | 'complete';
 export type TradeRoomWorkflowAction =
@@ -102,8 +104,10 @@ export type TradeRoomWorkflowAction =
   | 'sign-agreement'
   | 'mark-payment-pending'
   | 'mark-paid'
+  | 'wait-payment'
   | 'send-delivery'
   | 'confirm-delivery'
+  | 'wait-delivery'
   | 'write-review'
   | 'complete';
 export type TradeRoomWorkflowStep = 'intent' | 'offer' | 'agreement' | 'accepted' | 'payment' | 'delivery' | 'confirmed' | 'reviewed';
@@ -475,7 +479,8 @@ export function deriveTradeRoomDealSheet({
   reviewExists = false,
   hasIdentity = false,
   hasCounterparty = false,
-  enabledRelayCount = 0
+  enabledRelayCount = 0,
+  actorPublicKey
 }: {
   room: TradeRoom;
   listing?: Listing;
@@ -489,6 +494,7 @@ export function deriveTradeRoomDealSheet({
   hasIdentity?: boolean;
   hasCounterparty?: boolean;
   enabledRelayCount?: number;
+  actorPublicKey?: string;
 }): TradeRoomDealSheet {
   const acceptanceStatus: TradeRoomAcceptanceStatus = agreement ? receiptStatus ?? 'draft' : 'missing-agreement';
   const accepted = acceptanceStatus === 'mutually-signed';
@@ -496,22 +502,32 @@ export function deriveTradeRoomDealSheet({
   const deliverySignal = deliverySignalForRoom(room, deliveries);
   const paymentComplete = paymentSignal === 'receipt' || hasBothParticipantSignals(room, room.paymentClaimedBy);
   const deliveryComplete = hasBothParticipantSignals(room, room.deliveryClaimedBy);
+  const actor = actorPublicKey?.toLowerCase();
+  const actorIsBuyer = Boolean(actor && actor === room.buyerPublicKey.toLowerCase());
+  const actorHasPaymentSignal = Boolean(actor && normalizedPublicKeyList(room.paymentClaimedBy).includes(actor));
+  const actorHasDeliverySignal = Boolean(actor && normalizedPublicKeyList(room.deliveryClaimedBy).includes(actor));
   const nextAction: TradeRoomDealNextAction =
     !agreement
       ? 'create-agreement'
       : !accepted
         ? 'sign-agreement'
-        : !paymentComplete && (room.paymentState === 'none' || room.paymentState === 'failed')
+        : !paymentComplete && paymentSignal === 'none' && (room.paymentState === 'none' || room.paymentState === 'failed')
           ? 'start-payment'
-          : !paymentComplete
-            ? 'confirm-payment'
-            : deliverySignal === 'none'
-              ? 'send-delivery'
-              : !deliveryComplete
-                ? 'confirm-delivery'
-                : !reviewExists
-                  ? 'write-review'
-                  : 'complete';
+        : !paymentComplete
+          ? actorHasPaymentSignal
+            ? 'wait-payment'
+            : 'confirm-payment'
+        : deliverySignal === 'none'
+          ? actorIsBuyer
+            ? 'wait-delivery'
+            : 'send-delivery'
+          : !deliveryComplete
+            ? actorHasDeliverySignal
+              ? 'wait-delivery'
+              : 'confirm-delivery'
+            : !reviewExists
+              ? 'write-review'
+              : 'complete';
   const blockers: TradeRoomDealBlocker[] = [
     !hasIdentity ? 'identity' : undefined,
     !hasCounterparty ? 'counterparty' : undefined,
@@ -549,6 +565,10 @@ function workflowActionForNextAction(nextAction: TradeRoomDealNextAction): Trade
       return 'mark-payment-pending';
     case 'confirm-payment':
       return 'mark-paid';
+    case 'wait-payment':
+      return 'wait-payment';
+    case 'wait-delivery':
+      return 'wait-delivery';
     default:
       return nextAction;
   }

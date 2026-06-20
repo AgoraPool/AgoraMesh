@@ -228,9 +228,21 @@ describe('deal sheet derivation', () => {
         receiptStatus: 'mutually-signed',
         hasIdentity: true,
         hasCounterparty: true,
-        enabledRelayCount: 1
+        enabledRelayCount: 1,
+        actorPublicKey: seller
       }).nextAction
     ).toBe('confirm-payment');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: buyerPaid,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1,
+        actorPublicKey: buyer
+      }).nextAction
+    ).toBe('wait-payment');
 
     const paid = stateForPayment(buyerPaid, 'paid', '2026-06-01T03:05:00.000Z', seller);
     expect(
@@ -243,6 +255,17 @@ describe('deal sheet derivation', () => {
         enabledRelayCount: 1
       }).nextAction
     ).toBe('send-delivery');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: paid,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1,
+        actorPublicKey: buyer
+      }).nextAction
+    ).toBe('wait-delivery');
 
     const delivered = stateForDelivery(paid, 'delivered', '2026-06-01T04:00:00.000Z', seller);
     expect(
@@ -265,9 +288,34 @@ describe('deal sheet derivation', () => {
         ],
         hasIdentity: true,
         hasCounterparty: true,
-        enabledRelayCount: 1
+        enabledRelayCount: 1,
+        actorPublicKey: buyer
       }).nextAction
     ).toBe('confirm-delivery');
+    expect(
+      deriveTradeRoomDealSheet({
+        room: delivered,
+        agreement: agreement(),
+        receiptStatus: 'mutually-signed',
+        deliveries: [
+          {
+            id: 'delivery_1',
+            roomId: delivered.id,
+            senderPublicKey: seller,
+            fileName: 'proof.pdf',
+            fileHash: 'sha256:abc',
+            note: 'sent',
+            status: 'sent',
+            createdAt: '2026-06-01T04:00:00.000Z',
+            updatedAt: '2026-06-01T04:00:00.000Z'
+          } satisfies TradeRoomDelivery
+        ],
+        hasIdentity: true,
+        hasCounterparty: true,
+        enabledRelayCount: 1,
+        actorPublicKey: seller
+      }).nextAction
+    ).toBe('wait-delivery');
 
     const confirmed = stateForDelivery(delivered, 'confirmed', '2026-06-01T04:05:00.000Z', buyer);
     expect(

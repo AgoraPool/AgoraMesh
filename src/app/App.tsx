@@ -1363,9 +1363,8 @@ export function App(): ReactNode {
     browse: t('nav.browse'),
     listing: t('listing.details'),
     profile: t('nav.profile'),
-    inbox: t('nav.inbox'),
     mediators: t('nav.mediators'),
-    trade: t('nav.trade'),
+    trade: t('nav.tradeCockpit'),
     reputation: t('nav.reputation'),
     settings: t('nav.settings')
   };

@@ -3697,7 +3697,8 @@ dd {
 .trade-room-deal-sheet,
 .trade-room-cockpit,
 .trade-room-counterparty-context,
-.trade-room-coordination {
+.trade-room-coordination,
+.trade-deal-inbox {
   display: grid;
   gap: var(--space-3);
   min-width: 0;
@@ -3709,6 +3710,12 @@ dd {
 
 .trade-room-cockpit {
   background: var(--surface-muted);
+}
+
+.trade-deal-inbox .nostr-inbox {
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .trade-room-cockpit-main {

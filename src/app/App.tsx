@@ -298,7 +298,7 @@ import type {
   WebOfTrustEntry
 } from '../types/domain';
 
-type Page = 'home' | 'browse' | 'listing' | 'profile' | 'inbox' | 'mediators' | 'trade' | 'reputation' | 'settings';
+type Page = 'home' | 'browse' | 'listing' | 'profile' | 'mediators' | 'trade' | 'reputation' | 'settings';
 type ListingRoute = `listing/local/${string}` | `listing/synced/${string}`;
 type RouteTarget =
   | Page
@@ -921,11 +921,12 @@ async function cachePublicReviewItem(
 
 function navFromRoute(value: string): Page {
   if (value.startsWith('listing/local/') || value.startsWith('listing/synced/')) return 'listing';
+  if (value === 'inbox') return 'trade';
   if (value === 'agreements' || value === 'disputes') return 'trade';
   if (value === 'listing' || value === 'browse:create' || value === 'browse:mine') return 'browse';
   if (value === 'profile:public') return 'profile';
   if (value === 'settings:relays' || value === 'settings:review' || value === 'settings:backup' || value === 'settings:inbox') return 'settings';
-  const pages: Page[] = ['home', 'browse', 'listing', 'profile', 'inbox', 'mediators', 'trade', 'reputation', 'settings'];
+  const pages: Page[] = ['home', 'browse', 'listing', 'profile', 'mediators', 'trade', 'reputation', 'settings'];
   return pages.includes(value as Page) ? (value as Page) : 'home';
 }
 
@@ -1418,7 +1419,7 @@ export function App(): ReactNode {
     { key: 'browse', label: t('nav.browse'), route: 'browse', icon: <ShoppingBag size={18} aria-hidden="true" /> },
     { key: 'post', label: t('nav.listing'), route: 'browse:create', icon: <PlusCircle size={18} aria-hidden="true" /> },
     { key: 'profile', label: t('nav.profile'), route: 'profile', icon: <UserRound size={18} aria-hidden="true" /> },
-    { key: 'inbox', label: t('nav.inbox'), route: 'inbox', icon: <Radio size={18} aria-hidden="true" />, badgeCount: inboxNavBadgeCount }
+    { key: 'trade', label: t('nav.tradeCockpit'), route: 'trade', icon: <Handshake size={18} aria-hidden="true" />, badgeCount: inboxNavBadgeCount }
   ];
   const settingsNavItem = { key: 'settings', label: t('nav.settings'), route: 'settings' as RouteTarget, icon: <SettingsIcon size={18} aria-hidden="true" /> };
   const mobileNavItems = [...primaryNavItems, settingsNavItem];
@@ -1566,7 +1567,7 @@ export function App(): ReactNode {
   }, [identity?.publicKey]);
 
   useEffect(() => {
-    if (page === 'inbox') markInboxNotificationsSeen();
+    if (page === 'trade') markInboxNotificationsSeen();
   }, [markInboxNotificationsSeen, page]);
 
   const go = (next: RouteTarget): void => {
@@ -3504,6 +3505,9 @@ export function App(): ReactNode {
             nostrMessageThreads={nostrMessageThreads}
             nostrContactReceipts={nostrContactReceipts}
             nostrInboxCursors={nostrInboxCursors}
+            inboxNotifications={inboxNotifications}
+            paymentNotificationsSeenAt={paymentNotificationsSeenAt}
+            inboxScanStatus={inboxScanStatus}
             liveInboxState={liveInboxState}
             relays={relays}
             identity={identity}
@@ -3511,10 +3515,12 @@ export function App(): ReactNode {
             nostrSigner={nostrSigner}
             syncSettings={syncSettings}
             openRoomId={tradeRoomOpenId}
+            dealInboxDefaultOpen={routeHash === 'inbox'}
             onConnectSigner={() => void connectSigner()}
             onSendNostrIntro={sendNostrContactIntro}
             onFetchNostrInbox={fetchNostrInbox}
             onInboxPassphraseReady={setLiveInboxPassphrase}
+            onThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
             onRoomOpened={(roomId) => setTradeRoomOpenId(roomId)}
             onRoomSaved={(room) => {
               setTradeRooms((current) => compactTradeRoomsForDisplay([room, ...current.filter((entry) => entry.id !== room.id)]).visible);
@@ -3606,33 +3612,6 @@ export function App(): ReactNode {
               )
             }
           />
-        ) : null}
-        {page === 'inbox' ? (
-          <section className="page">
-            <div className="panel">
-              <SectionHeader icon={<Radio />} title={t('nostrInbox.title')} body={t('nostrInbox.pageBody')} />
-              <NostrInboxPanel
-                cursors={nostrInboxCursors}
-                defaultOpen
-                identity={identity}
-                messages={nostrMessages}
-                nostrSigner={nostrSigner}
-                liveState={liveInboxState}
-                notifications={inboxNotifications}
-                paymentNotificationsSeenAt={paymentNotificationsSeenAt}
-                privateKeyHex={privateKeyHex}
-                receipts={nostrContactReceipts}
-                relays={relays}
-                scanStatus={inboxScanStatus}
-                threads={nostrMessageThreads}
-                onConnectSigner={() => void connectSigner()}
-                onFetch={fetchNostrInbox}
-                onPassphraseReady={setLiveInboxPassphrase}
-                onSend={sendNostrContactIntro}
-                onThreadChange={(thread, changes) => void updateNostrThread(thread, changes)}
-              />
-            </div>
-          </section>
         ) : null}
         {page === 'settings' ? (
           <SettingsPage
@@ -3729,7 +3708,7 @@ function HomePage({
       </div>
       <div className="product-story" aria-label={t('home.productSections')}>
         <ProductSection title={t('home.publicNostr')} body={t('home.publicNostrBody')} actions={[{ label: t('home.browseMarketplace'), page: 'browse' }]} onNavigate={go} />
-        <ProductSection title={t('home.privateTrade')} body={t('home.privateTradeBody')} actions={[{ label: t('nav.inbox'), page: 'inbox' }]} onNavigate={go} />
+        <ProductSection title={t('home.privateTrade')} body={t('home.privateTradeBody')} actions={[{ label: t('nav.tradeCockpit'), page: 'trade' }]} onNavigate={go} />
         <ProductSection title={t('home.paymentsReputation')} body={t('home.paymentsReputationBody')} actions={[{ label: t('nav.reputation'), page: 'reputation' }]} onNavigate={go} />
         <ProductSection title={t('home.localFirst')} body={t('home.localFirstBody')} actions={[{ label: t('settings.tab.backupDanger'), page: 'settings:backup' }]} onNavigate={go} />
       </div>
@@ -5331,7 +5310,7 @@ function NostrContactPanel({
             {!canUseLocal && !canUseSigner ? <ActionHint>{t('nostrContact.copyFallback')}</ActionHint> : null}
             <div className="actions small">
               <button className="subtle" onClick={() => (window.location.hash = 'inbox')} type="button">
-                {t('nostrInbox.open')}
+                {t('trade.dealInbox')}
               </button>
               <button className="subtle" onClick={() => copy(normalized.npub)} type="button">
                 {t('nostrContact.copyNpub')}
@@ -9009,6 +8988,7 @@ function NostrInboxPanel({
   const [decrypted, setDecrypted] = useState<DecryptedNostrMessage[]>([]);
   const [activeThreadKey, setActiveThreadKey] = useState('');
   const [boxFilter, setBoxFilter] = useState<'all' | 'inbox' | 'outbox'>('all');
+  const [manualRecipient, setManualRecipient] = useState('');
   const enabledRelayCount = relays.filter((relay) => relay.enabled).length;
   const canUseLocal = Boolean(identityCanUseLocalUnlock(identity) && privateKeyHex);
   const canUseSigner = Boolean(
@@ -9042,6 +9022,7 @@ function NostrInboxPanel({
     if (boxFilter === 'outbox') return Boolean(directions?.outgoing);
     return true;
   });
+  const normalizedManualRecipient = manualRecipient.trim() ? normalizeNostrContact(manualRecipient) : undefined;
   const activeThread = visibleThreads.find((thread) => thread.threadKey === activeThreadKey) ?? visibleThreads[0];
   const activeMessages = activeThread ? decrypted.filter((message) => message.threadKey === activeThread.threadKey).sort((left, right) => left.messageCreatedAt.localeCompare(right.messageCreatedAt)) : [];
 
@@ -9132,6 +9113,37 @@ function NostrInboxPanel({
       </header>
       {fetchBlocker ? <p className="warning compact-warning">{fetchBlocker}</p> : null}
       {error ? <p className="warning" role="alert">{error}</p> : null}
+      <section className="inbox-section">
+        <div className="row between">
+          <div>
+            <h3>{t('nostrInbox.customMessage')}</h3>
+            <p className="muted compact-meta">{t('nostrInbox.customMessageBody')}</p>
+          </div>
+        </div>
+        <label>
+          {t('nostrInbox.customRecipient')}
+          <input value={manualRecipient} onChange={(event) => setManualRecipient(event.target.value)} placeholder={t('nostrInbox.customRecipientPlaceholder')} />
+        </label>
+        {manualRecipient.trim() ? (
+          <NostrContactPanel
+            key={manualRecipient.trim()}
+            target={{
+              recipientPublicKey: manualRecipient.trim(),
+              label: normalizedManualRecipient ? shortPublicKey(normalizedManualRecipient.publicKey) : t('nostrInbox.customRecipient'),
+              contextType: 'manual'
+            }}
+            identity={identity}
+            relays={relays}
+            nostrSigner={nostrSigner}
+            privateKeyHex={privateKeyHex}
+            receipts={receipts}
+            defaultOpen
+            embedded
+            onConnectSigner={() => void onConnectSigner()}
+            onSend={(args) => onSend({ ...args, cachePassphrase: unlocked ? passphrase : undefined })}
+          />
+        ) : null}
+      </section>
       <section className="inbox-section">
         <div className="row between">
           <h3>{t('nostrInbox.messages')}</h3>
@@ -10321,6 +10333,9 @@ function TradePage({
   nostrMessageThreads,
   nostrContactReceipts,
   nostrInboxCursors,
+  inboxNotifications,
+  paymentNotificationsSeenAt,
+  inboxScanStatus,
   liveInboxState,
   relays,
   identity,
@@ -10328,10 +10343,12 @@ function TradePage({
   nostrSigner,
   syncSettings,
   openRoomId,
+  dealInboxDefaultOpen,
   onConnectSigner,
   onSendNostrIntro,
   onFetchNostrInbox,
   onInboxPassphraseReady,
+  onThreadChange,
   onRoomOpened,
   onRoomSaved,
   onRoomDeliverySaved,
@@ -10364,6 +10381,9 @@ function TradePage({
   nostrMessageThreads: NostrMessageThread[];
   nostrContactReceipts: NostrContactReceipt[];
   nostrInboxCursors: NostrInboxCursor[];
+  inboxNotifications: InboxNotification[];
+  paymentNotificationsSeenAt: string;
+  inboxScanStatus: string;
   liveInboxState: NostrLiveInboxState;
   relays: RelayConfig[];
   identity?: IdentityRecord;
@@ -10371,10 +10391,12 @@ function TradePage({
   nostrSigner: NostrSignerState;
   syncSettings: SyncSettings;
   openRoomId: string;
+  dealInboxDefaultOpen: boolean;
   onConnectSigner: () => void;
   onSendNostrIntro: (args: SendNostrContactIntroArgs) => Promise<NostrContactReceipt>;
   onFetchNostrInbox: (inboxPassphrase: string) => Promise<InboxFetchSummary>;
   onInboxPassphraseReady: (inboxPassphrase: string) => void;
+  onThreadChange: (thread: NostrMessageThread, changes: { read?: boolean; archived?: boolean }) => void;
   onRoomOpened: (roomId: string) => void;
   onRoomSaved: (room: TradeRoom) => void;
   onRoomDeliverySaved: (room: TradeRoom, delivery: TradeRoomDelivery) => void;
@@ -11004,6 +11026,31 @@ function TradePage({
         onOpenAdvancedAgreement={(row) => openAdvancedTradeTool('agreement', row)}
         onOpenAdvancedDispute={(row) => openAdvancedTradeTool('dispute', row)}
       />
+      <DisclosurePanel key={dealInboxDefaultOpen ? 'deal-inbox-open' : 'deal-inbox-closed'} title={t('trade.dealInbox')} defaultOpen={dealInboxDefaultOpen}>
+        <section className="trade-deal-inbox">
+          <SectionHeader icon={<Radio />} title={t('trade.dealInbox')} body={t('trade.dealInboxBody')} />
+          <NostrInboxPanel
+            cursors={nostrInboxCursors}
+            defaultOpen={false}
+            identity={identity}
+            messages={nostrMessages}
+            nostrSigner={nostrSigner}
+            liveState={liveInboxState}
+            notifications={inboxNotifications}
+            paymentNotificationsSeenAt={paymentNotificationsSeenAt}
+            privateKeyHex={privateKeyHex}
+            receipts={nostrContactReceipts}
+            relays={relays}
+            scanStatus={inboxScanStatus}
+            threads={nostrMessageThreads}
+            onConnectSigner={() => void onConnectSigner()}
+            onFetch={onFetchNostrInbox}
+            onPassphraseReady={onInboxPassphraseReady}
+            onSend={onSendNostrIntro}
+            onThreadChange={onThreadChange}
+          />
+        </section>
+      </DisclosurePanel>
       <div ref={advancedToolsRef}>
         <DisclosurePanel title={t('trade.advancedTools')} open={advancedToolsOpen} onOpenChange={setAdvancedToolsOpen}>
           <InlineHelp>{t('trade.advancedToolsBody')}</InlineHelp>
